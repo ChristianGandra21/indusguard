@@ -1,0 +1,66 @@
+openapi: 3.1.0
+info:
+  title: IndusGuard Synthetic Connector API
+  version: 0.1.0
+  description: Contrato mínimo usado para provar extensibilidade sem alterar o runtime.
+servers:
+  - url: http://localhost:9000
+paths:
+  /widgets/{widgetId}:
+    get:
+      operationId: getWidget
+      summary: Consulta um widget sintético.
+      parameters:
+        - name: widgetId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Widget encontrado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Widget"
+    patch:
+      operationId: updateWidget
+      summary: Atualiza o estado de um widget sintético.
+      parameters:
+        - name: widgetId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status, justification]
+              properties:
+                status:
+                  type: string
+                  enum: [active, inactive]
+                justification:
+                  type: string
+                  minLength: 20
+      responses:
+        "200":
+          description: Atualização aceita.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Widget"
+components:
+  schemas:
+    Widget:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [active, inactive]

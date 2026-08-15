@@ -1,0 +1,16 @@
+id: synthetic
+language: pt-BR
+context_fields:
+  - user_id
+  - widget_id
+
+terminology:
+  widget: recurso sintético usado para testar a arquitetura
+
+intents:
+  - id: consultar
+    description: Consultar o estado atual de um widget.
+    evidence_operations: [getWidget]
+  - id: atualizar
+    description: Propor ou executar uma alteração autorizada no widget.
+    action_operations: [updateWidget]

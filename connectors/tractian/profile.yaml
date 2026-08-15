@@ -1,0 +1,76 @@
+id: tractian
+name: Tractian Industrial Support
+description: API industrial sintética fornecida no desafio TRACTIAN × Inteli.
+openapi: ./openapi.yaml
+base_url_env: TRACTIAN_API_URL
+allowed_base_urls:
+  - http://localhost:8000
+
+auth:
+  type: context_header
+  name: x-user-id
+  context_field: user_id
+
+operations:
+  getCompany: &read_operation
+    enabled: true
+    access: read
+    risk: low
+    timeout_seconds: 10
+    max_retries: 2
+    idempotent: true
+  listAssetsByCompany: *read_operation
+  getCurrentUser: *read_operation
+  getAsset: *read_operation
+  listAnalyses: *read_operation
+  getAnalysis: *read_operation
+  getBaseline: *read_operation
+  getRmsSeries: *read_operation
+  getSpectrum: *read_operation
+  getDataQuality: *read_operation
+  getModel: *read_operation
+  searchKnowledge: *read_operation
+  getKnowledgeDoc: *read_operation
+
+  updateAssetConfig:
+    enabled: true
+    access: write
+    risk: high
+    permission: action_high
+    requires_direct_request: true
+    requires_confirmation: true
+    justification_min_length: 20
+    timeout_seconds: 10
+  reprocessAnalysis:
+    enabled: true
+    access: write
+    risk: medium
+    permission: action_low
+    requires_direct_request: true
+    justification_min_length: 20
+    timeout_seconds: 10
+  requestSpecialistAnalysis:
+    enabled: true
+    access: write
+    risk: medium
+    permission: action_low
+    requires_direct_request: true
+    justification_min_length: 20
+    timeout_seconds: 10
+  requestRetraining:
+    enabled: true
+    access: write
+    risk: high
+    permission: action_high
+    requires_direct_request: true
+    requires_confirmation: true
+    justification_min_length: 20
+    timeout_seconds: 10
+  escalateCase:
+    enabled: true
+    access: write
+    risk: medium
+    permission: escalate
+    requires_direct_request: true
+    justification_min_length: 20
+    timeout_seconds: 10

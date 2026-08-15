@@ -1,0 +1,48 @@
+id: tractian
+language: pt-BR
+context_fields:
+  - user_id
+  - company_id
+  - asset_id
+  - case_id
+
+terminology:
+  asset: ativo industrial monitorado
+  analysis: diagnóstico produzido a partir dos sinais do ativo
+  baseline: estado normal aprendido para um ativo ou ponto de medição
+  data_quality: completude, frescor e relação sinal-ruído dos dados
+  escalation: encaminhamento explícito do caso para análise humana
+
+intents:
+  - id: contextualizar
+    description: Identificar pessoa usuária, empresa, ativo e permissões.
+    evidence_operations: [getCurrentUser, getCompany, getAsset]
+  - id: investigar
+    description: Consultar análises, sinais, baseline, modelo e conhecimento técnico.
+    evidence_operations:
+      - listAnalyses
+      - getAnalysis
+      - getBaseline
+      - getRmsSeries
+      - getSpectrum
+      - getDataQuality
+      - getModel
+      - searchKnowledge
+      - getKnowledgeDoc
+  - id: agir
+    description: Propor ou executar uma operação mutável autorizada.
+    action_operations:
+      - updateAssetConfig
+      - reprocessAnalysis
+      - requestSpecialistAnalysis
+      - requestRetraining
+  - id: escalar
+    description: Encaminhar um caso quando a evidência ou a autoridade forem insuficientes.
+    action_operations: [escalateCase]
+
+evidence_states:
+  - complete
+  - partial
+  - inconclusive
+  - conflict
+  - unavailable

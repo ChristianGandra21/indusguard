@@ -1,0 +1,28 @@
+id: synthetic
+name: API sintética de extensibilidade
+description: Segundo conector mínimo carregado apenas por OpenAPI e YAML.
+openapi: ./openapi.yaml
+base_url_env: SYNTHETIC_API_URL
+allowed_base_urls:
+  - http://localhost:9000
+
+auth:
+  type: none
+
+operations:
+  getWidget:
+    enabled: true
+    access: read
+    risk: low
+    timeout_seconds: 5
+    max_retries: 2
+    idempotent: true
+  updateWidget:
+    enabled: true
+    access: write
+    risk: high
+    permission: action_high
+    requires_direct_request: true
+    requires_confirmation: true
+    justification_min_length: 20
+    timeout_seconds: 5
