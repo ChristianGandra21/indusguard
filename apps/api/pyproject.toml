@@ -1,4 +1,5 @@
 [build-system]
+# Hatchling empacota somente o backend Python; frontend e conectores continuam na raiz do monorepo.
 requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
 
@@ -9,8 +10,11 @@ description = "API e runtime genérico de conectores OpenAPI do IndusGuard"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  # FastAPI/Pydantic expõem contratos tipados; Uvicorn serve a aplicação ASGI.
   "fastapi>=0.115,<1.0",
+  # httpx será usado pelo executor e já fornece transporte ASGI para os testes.
   "httpx>=0.27,<1.0",
+  # Validação estrutural complementa as restrições locais implementadas em connectors.py.
   "openapi-spec-validator>=0.7,<1.0",
   "pydantic-settings>=2.6,<3.0",
   "PyYAML>=6.0,<7.0",
@@ -18,6 +22,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Estas bibliotecas não entram no runtime mínimo de produção.
 dev = [
   "pytest>=8.3,<9.0",
   "pytest-cov>=6.0,<7.0",
@@ -25,6 +30,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
+# O layout src/ evita importar acidentalmente arquivos da raiz durante o desenvolvimento.
 packages = ["src/indusguard_api"]
 
 [tool.pytest.ini_options]
@@ -37,6 +43,7 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
+# Regras focadas em erros, imports, modernização e simplificações seguras.
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.coverage.run]

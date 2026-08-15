@@ -1,3 +1,5 @@
+# Este conector pequeno é uma prova arquitetural: se ele carregar sem mudanças no
+# backend, então o runtime não está acoplado ao domínio Tractian.
 id: synthetic
 name: API sintética de extensibilidade
 description: Segundo conector mínimo carregado apenas por OpenAPI e YAML.
@@ -10,6 +12,7 @@ auth:
   type: none
 
 operations:
+  # Mantemos uma leitura e uma escrita para testar os dois ramos de política.
   getWidget:
     enabled: true
     access: read

@@ -1,4 +1,16 @@
-"""Descoberta e validação de conectores declarativos OpenAPI + YAML."""
+"""Descoberta e validação de conectores declarativos OpenAPI + YAML.
+
+Este módulo é a fronteira entre arquivos fornecidos por cada integração e o núcleo do
+IndusGuard. Ele transforma três arquivos declarativos em objetos Python confiáveis:
+
+* ``openapi.yaml`` descreve os endpoints e seus formatos;
+* ``profile.yaml`` decide quais endpoints podem virar tools e sob quais políticas;
+* ``domain.yaml`` adiciona vocabulário e campos de contexto do domínio.
+
+Nesta etapa o catálogo apenas lê e valida metadados. Ele ainda não executa requisições HTTP e
+não acessa credenciais. Essa separação é intencional: primeiro provamos que uma operação é
+conhecida e permitida; somente depois o executor, em outro módulo, poderá chamá-la.
+"""
 
 from __future__ import annotations
 
@@ -21,16 +33,26 @@ from indusguard_api.schemas import (
     RiskLevel,
 )
 
+# O OpenAPI permite outros campos dentro de um path, como ``parameters``. Esta allowlist evita
+# interpretar esses campos acidentalmente como operações executáveis.
 HTTP_METHODS: Final = {"get", "post", "put", "patch", "delete", "head", "options", "trace"}
+
+# O método HTTP fornece um primeiro limite determinístico entre consulta e mutação. A política
+# declarada no profile não pode contradizer esse limite.
 READ_METHODS: Final = {"get", "head", "options"}
 
 
 class ConnectorValidationError(ValueError):
-    """Erro seguro e contextualizado na configuração de um conector."""
+    """Indica que um conector não é seguro ou consistente o bastante para ser carregado."""
 
 
 class UniqueKeyLoader(yaml.SafeLoader):
-    """Loader que rejeita chaves YAML duplicadas em vez de descartar dados silenciosamente."""
+    """Loader que rejeita chaves YAML duplicadas em vez de descartar dados silenciosamente.
+
+    A maioria dos parsers YAML mantém apenas a última ocorrência de uma chave. Em OpenAPI isso
+    pode fazer um path GET desaparecer quando o mesmo path é repetido para PATCH. Falhar no
+    startup torna o problema visível antes que uma tool seja gerada incorretamente.
+    """
 
 
 def _construct_unique_mapping(
@@ -38,6 +60,10 @@ def _construct_unique_mapping(
     node: yaml.MappingNode,
     deep: bool = False,
 ) -> dict[Any, Any]:
+    """Constrói um mapa YAML garantindo que cada chave apareça uma única vez."""
+
+    # ``flatten_mapping`` resolve aliases e merges YAML antes da verificação. Assim, a regra de
+    # unicidade também vale para profiles que reutilizam configurações com âncoras.
     loader.flatten_mapping(node)
     mapping: dict[Any, Any] = {}
     for key_node, value_node in node.value:
@@ -50,6 +76,8 @@ def _construct_unique_mapping(
     return mapping
 
 
+# Substitui somente o construtor de mapas; strings, listas e números continuam usando o
+# comportamento seguro do ``yaml.SafeLoader``.
 UniqueKeyLoader.add_constructor(
     yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
     _construct_unique_mapping,
@@ -57,6 +85,8 @@ UniqueKeyLoader.add_constructor(
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
+    """Lê YAML como objeto e converte erros de parser em erros do domínio de conectores."""
+
     try:
         with path.open(encoding="utf-8") as source:
             content = yaml.load(source, Loader=UniqueKeyLoader)
@@ -69,6 +99,8 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 
 
 def _walk(value: Any) -> Iterator[tuple[str, Any]]:
+    """Percorre recursivamente mapas e listas para aplicar regras em todo o contrato."""
+
     if isinstance(value, Mapping):
         for key, child in value.items():
             yield str(key), child
@@ -79,16 +111,26 @@ def _walk(value: Any) -> Iterator[tuple[str, Any]]:
 
 
 def _validate_runtime_constraints(spec: dict[str, Any], path: Path) -> None:
+    """Valida o OpenAPI e os limites deliberados da primeira versão do runtime.
+
+    O validador oficial verifica a estrutura do OpenAPI. As verificações anteriores representam
+    escolhas do IndusGuard: somente referências locais, JSON e ausência de payload binário.
+    Recusar cedo mantém o executor menor e reduz superfícies de SSRF e exfiltração.
+    """
+
     version = str(spec.get("openapi", ""))
     if not version.startswith("3."):
         raise ConnectorValidationError(f"{path}: somente OpenAPI 3.x é suportado")
 
+    # Referências remotas poderiam fazer o loader buscar arquivos ou hosts fora do conector.
     for key, value in _walk(spec):
         if key == "$ref" and (not isinstance(value, str) or not value.startswith("#/")):
             raise ConnectorValidationError(f"{path}: $ref externo não é permitido: {value!r}")
         if key == "format" and value in {"binary", "byte"}:
             raise ConnectorValidationError(f"{path}: payload binário não é suportado")
 
+    # A v1 é orientada a REST JSON. Uploads, streams e outros formatos exigirão executores
+    # especializados e, por isso, são rejeitados por enquanto.
     for endpoint, path_item in spec.get("paths", {}).items():
         if not isinstance(path_item, Mapping):
             continue
@@ -114,6 +156,7 @@ def _validate_runtime_constraints(spec: dict[str, Any], path: Path) -> None:
                     f"{', '.join(sorted(unsupported))}"
                 )
 
+    # Só depois das restrições locais aplicamos a validação completa da especificação.
     try:
         validate_openapi(spec)
     except Exception as exc:
@@ -121,10 +164,14 @@ def _validate_runtime_constraints(spec: dict[str, Any], path: Path) -> None:
 
 
 def _operation_access(method: str) -> AccessMode:
+    """Classifica o efeito esperado do método sem depender de interpretação do modelo."""
+
     return AccessMode.READ if method in READ_METHODS else AccessMode.WRITE
 
 
 def _operation_risk(access: AccessMode) -> RiskLevel:
+    """Fornece um default conservador quando o perfil não explicita o risco."""
+
     return RiskLevel.LOW if access == AccessMode.READ else RiskLevel.HIGH
 
 
@@ -134,6 +181,8 @@ def _build_operation(
     raw_operation: Mapping[str, Any],
     policy: OperationPolicy,
 ) -> OperationSummary:
+    """Combina a descrição técnica do OpenAPI com a política local da operação."""
+
     access = _operation_access(method)
     if policy.access is not None and policy.access != access:
         raise ConnectorValidationError(
@@ -164,6 +213,13 @@ def _parse_operations(
     spec: dict[str, Any],
     policies: dict[str, OperationPolicy],
 ) -> list[OperationSummary]:
+    """Extrai operações do OpenAPI e garante correspondência exata com o profile.
+
+    Uma operação existente apenas no OpenAPI é conhecida, mas nasce desabilitada. Já uma política
+    que aponta para um ``operationId`` inexistente é provavelmente um erro de digitação ou drift
+    de contrato e invalida o conector inteiro.
+    """
+
     operations: list[OperationSummary] = []
     seen_ids: set[str] = set()
 
@@ -183,7 +239,8 @@ def _parse_operations(
                 raise ConnectorValidationError(f"operationId duplicado: '{operation_id}'")
             seen_ids.add(operation_id)
 
-            # Operações ausentes do perfil, inclusive leituras, nascem desabilitadas.
+            # Segurança por default: descobrir um endpoint novo não o torna automaticamente
+            # disponível ao agente, nem mesmo quando ele é somente leitura.
             policy = policies.get(operation_id, OperationPolicy())
             operations.append(_build_operation(path, normalized_method, raw_operation, policy))
 
@@ -198,19 +255,27 @@ def _parse_operations(
 
 
 class ConnectorCatalog:
-    """Catálogo imutável em memória construído a partir do diretório configurado."""
+    """Catálogo em memória construído a partir do diretório configurado.
+
+    O catálogo é recarregado como um conjunto completo: primeiro todos os conectores são
+    validados em uma variável temporária e só então substituem o estado atual. Isso evita expor
+    um catálogo parcialmente carregado quando um dos profiles contém erro.
+    """
 
     def __init__(self, connectors_dir: Path) -> None:
         self.connectors_dir = connectors_dir.resolve()
         self._connectors: dict[str, ConnectorDetails] = {}
 
     def load(self) -> None:
+        """Descobre ``*/profile.yaml`` e carrega todos os conectores de forma fail-fast."""
+
         if not self.connectors_dir.is_dir():
             raise ConnectorValidationError(
                 f"diretório de conectores não encontrado: {self.connectors_dir}"
             )
 
         loaded: dict[str, ConnectorDetails] = {}
+        # Ordenar torna respostas e testes reprodutíveis entre sistemas de arquivos diferentes.
         for profile_path in sorted(self.connectors_dir.glob("*/profile.yaml")):
             connector = self._load_connector(profile_path)
             if connector.id in loaded:
@@ -222,6 +287,8 @@ class ConnectorCatalog:
         self._connectors = loaded
 
     def _load_connector(self, profile_path: Path) -> ConnectorDetails:
+        """Valida os três arquivos de um conector e produz sua visão pública consolidada."""
+
         connector_dir = profile_path.parent.resolve()
         try:
             profile = ConnectorProfile.model_validate(_load_yaml(profile_path))
@@ -234,12 +301,16 @@ class ConnectorCatalog:
             )
 
         openapi_path = (connector_dir / profile.openapi).resolve()
+        # Impede ``../../arquivo`` no profile. Mesmo um arquivo local só é confiável quando faz
+        # parte do diretório do conector que está sendo validado.
         if not openapi_path.is_relative_to(connector_dir):
             raise ConnectorValidationError("o arquivo OpenAPI deve permanecer dentro do conector")
         spec = _load_yaml(openapi_path)
         _validate_runtime_constraints(spec, openapi_path)
         operations = _parse_operations(spec, profile.operations)
 
+        # ``domain.yaml`` é opcional no loader para permitir contratos puramente técnicos. Quando
+        # existe, seus campos de contexto precisam ser simples e previsíveis para a futura UI.
         domain_path = connector_dir / "domain.yaml"
         domain = _load_yaml(domain_path) if domain_path.exists() else {}
         context_fields = domain.get("context_fields", [])
@@ -261,11 +332,15 @@ class ConnectorCatalog:
         )
 
     def list(self) -> list[ConnectorSummary]:
+        """Retorna a visão resumida, adequada para a listagem da API e da futura interface."""
+
         return [
             ConnectorSummary.model_validate(connector.model_dump(exclude={"operations"}))
             for connector in self._connectors.values()
         ]
 
     def get(self, connector_id: str) -> ConnectorDetails | None:
+        """Retorna uma cópia para impedir que consumidores alterem o catálogo compartilhado."""
+
         connector = self._connectors.get(connector_id)
         return deepcopy(connector) if connector else None

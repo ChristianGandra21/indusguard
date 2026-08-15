@@ -1,3 +1,5 @@
+"""Testes do contrato declarativo e dos defaults seguros dos conectores."""
+
 from pathlib import Path
 
 import pytest
@@ -7,6 +9,8 @@ from indusguard_api.connectors import ConnectorCatalog, ConnectorValidationError
 
 
 def test_lists_both_declarative_connectors(client: ASGITestClient) -> None:
+    """Prova que uma API nova é descoberta sem registro específico em Python."""
+
     response = client.get("/api/v1/connectors")
 
     assert response.status_code == 200
@@ -17,6 +21,8 @@ def test_lists_both_declarative_connectors(client: ASGITestClient) -> None:
 
 
 def test_tractian_keeps_get_and_patch_on_same_path(client: ASGITestClient) -> None:
+    """Protege a normalização feita no OpenAPI originalmente entregue com path duplicado."""
+
     response = client.get("/api/v1/connectors/tractian/operations")
 
     assert response.status_code == 200
@@ -28,6 +34,8 @@ def test_tractian_keeps_get_and_patch_on_same_path(client: ASGITestClient) -> No
 
 
 def test_unknown_connector_returns_404(client: ASGITestClient) -> None:
+    """Mantém um erro HTTP explícito em vez de devolver uma lista vazia ambígua."""
+
     response = client.get("/api/v1/connectors/unknown/operations")
 
     assert response.status_code == 404
@@ -35,6 +43,8 @@ def test_unknown_connector_returns_404(client: ASGITestClient) -> None:
 
 
 def test_unconfigured_operations_are_disabled(tmp_path: Path) -> None:
+    """Garante que endpoints recém-descobertos não sejam liberados automaticamente."""
+
     connector_dir = tmp_path / "example"
     connector_dir.mkdir()
     (connector_dir / "profile.yaml").write_text(
@@ -75,6 +85,8 @@ paths:
 
 
 def test_duplicate_yaml_keys_are_rejected(tmp_path: Path) -> None:
+    """Evita perda silenciosa de operações quando uma chave YAML é repetida."""
+
     connector_dir = tmp_path / "duplicate"
     connector_dir.mkdir()
     (connector_dir / "profile.yaml").write_text(

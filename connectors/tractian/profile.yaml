@@ -1,17 +1,24 @@
+# O profile é a política local do IndusGuard. O OpenAPI diz o que a API oferece;
+# este arquivo diz o que queremos permitir ao agente e sob quais condições.
 id: tractian
 name: Tractian Industrial Support
 description: API industrial sintética fornecida no desafio TRACTIAN × Inteli.
 openapi: ./openapi.yaml
 base_url_env: TRACTIAN_API_URL
+# A URL real vem do ambiente, mas precisa coincidir com um destino aprovado nesta lista.
 allowed_base_urls:
   - http://localhost:8000
 
 auth:
+  # O desafio identifica a pessoa pelo header x-user-id. O valor será obtido do
+  # campo user_id do contexto da execução, nunca inventado pelo modelo.
   type: context_header
   name: x-user-id
   context_field: user_id
 
 operations:
+  # A âncora &read_operation evita repetir a mesma política em todas as consultas.
+  # Cada alias *read_operation é expandido pelo YAML antes da validação.
   getCompany: &read_operation
     enabled: true
     access: read
@@ -32,12 +39,14 @@ operations:
   searchKnowledge: *read_operation
   getKnowledgeDoc: *read_operation
 
+  # Escritas são descritas individualmente porque risco e permissão variam.
   updateAssetConfig:
     enabled: true
     access: write
     risk: high
     permission: action_high
     requires_direct_request: true
+    # Mudanças de configuração exigem uma confirmação adicional mesmo quando solicitadas.
     requires_confirmation: true
     justification_min_length: 20
     timeout_seconds: 10
@@ -47,6 +56,7 @@ operations:
     risk: medium
     permission: action_low
     requires_direct_request: true
+    # O limite replica o contrato didático da API fornecida.
     justification_min_length: 20
     timeout_seconds: 10
   requestSpecialistAnalysis:

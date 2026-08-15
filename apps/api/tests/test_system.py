@@ -1,7 +1,11 @@
+"""Testes dos sinais operacionais usados por desenvolvimento e deployment."""
+
 from conftest import ASGITestClient
 
 
 def test_health(client: ASGITestClient) -> None:
+    """Liveness deve manter um contrato mínimo e estável."""
+
     response = client.get("/api/v1/health")
 
     assert response.status_code == 200
@@ -9,6 +13,8 @@ def test_health(client: ASGITestClient) -> None:
 
 
 def test_ready_reports_loaded_connectors(client: ASGITestClient) -> None:
+    """Readiness comprova que o catálogo foi carregado durante o lifespan."""
+
     response = client.get("/api/v1/ready")
 
     assert response.status_code == 200
@@ -16,6 +22,8 @@ def test_ready_reports_loaded_connectors(client: ASGITestClient) -> None:
 
 
 def test_version_defaults_to_safe_simulation(client: ASGITestClient) -> None:
+    """Uma instalação nova nunca deve começar habilitada para mutações reais."""
+
     response = client.get("/api/v1/version")
 
     assert response.status_code == 200

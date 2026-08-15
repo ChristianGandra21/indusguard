@@ -1,12 +1,16 @@
+# O domain não descreve HTTP. Ele registra como o domínio industrial será apresentado
+# ao classificador de intenção, à UI e, futuramente, ao agente.
 id: tractian
 language: pt-BR
 context_fields:
+  # Estes campos formam o contexto mínimo esperado para fundamentar autorização e evidência.
   - user_id
   - company_id
   - asset_id
   - case_id
 
 terminology:
+  # Definições curtas evitam espalhar vocabulário industrial pelo código Python.
   asset: ativo industrial monitorado
   analysis: diagnóstico produzido a partir dos sinais do ativo
   baseline: estado normal aprendido para um ativo ou ponto de medição
@@ -14,6 +18,8 @@ terminology:
   escalation: encaminhamento explícito do caso para análise humana
 
 intents:
+  # Cada intenção referencia operationIds do OpenAPI, não URLs. Isso permite que o
+  # planejamento continue estável mesmo se a API mudar um path.
   - id: contextualizar
     description: Identificar pessoa usuária, empresa, ativo e permissões.
     evidence_operations: [getCurrentUser, getCompany, getAsset]
@@ -41,6 +47,7 @@ intents:
     action_operations: [escalateCase]
 
 evidence_states:
+  # A API retorna estes estados dentro do JSON, inclusive quando o HTTP é 200.
   - complete
   - partial
   - inconclusive
