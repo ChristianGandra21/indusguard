@@ -8,7 +8,7 @@ Comece em [`settings.py`](../apps/api/src/indusguard_api/settings.py). A classe 
 prefixo `INDUSGUARD_`, portanto o campo `execution_mode` é configurado por
 `INDUSGUARD_EXECUTION_MODE`.
 
-O default é `simulate`. O primeiro executor ainda bloqueia toda escrita; manter esse default no
+O default é `simulate`. O executor atual ainda bloqueia toda escrita; manter esse default no
 contrato prepara a simulação de mutações sem permitir que uma etapa futura escreva por acidente.
 
 ## 2. `schemas.py`: qual é o formato aceito
@@ -77,16 +77,24 @@ uma interface interna e ainda não foi conectado ao FastAPI.
 ```text
 OperationExecutionRequest
     -> localizar conector e operação
-    -> conferir enabled, GET e auth none
-    -> validar argumentos de path
+    -> conferir enabled
+    -> resolver $ref e validar path/query/header/body
+    -> derivar autenticação do contexto
     -> resolver e conferir URL-base
+    -> manter escrita fora da rede
     -> executar com timeout
     -> OperationExecutionResult
 ```
 
 Estude primeiro `HttpExecutor.execute()`. Cada retorno antecipado representa uma regra que impede a
-rede de ser acessada. Depois leia `_render_path()`: além de validar o tipo pelo JSON Schema, ele usa
-percent-encoding para uma barra recebida como dado não criar outro segmento de URL.
+rede de ser acessada. Depois acompanhe `_render_path()`, `_build_query()`, `_build_headers()`,
+`_build_auth_headers()` e `_build_body()`. Uma barra no path é percent-encoded; o header de
+autenticação não pode vir dos argumentos; e um body de escrita é validado antes de o método ser
+bloqueado.
+
+O catálogo resolve Reference Objects de parâmetros e conserva a raiz OpenAPI no objeto interno.
+Durante a validação, essa raiz permite que schemas como
+`#/components/schemas/ActionRequest` sejam resolvidos sem arquivos ou rede.
 
 O `environment` e o `httpx.AsyncClient` podem ser injetados. Essa escolha torna o teste
 determinístico: uma variável de ambiente falsa e um transporte em memória substituem dependências
@@ -116,7 +124,6 @@ provar que URLs e envelopes estão corretos sem acessar a internet.
 
 ## 7. O que ainda não procurar no código
 
-Ainda não existem chamada de LLM, MCP, LangGraph, banco ou frontend. O executor atual também não
-possui query, body, autenticação, retry ou escrita simulada. Esses limites são bloqueios explícitos,
-e cada capacidade será acrescentada sobre o catálogo validado sem colocar lógica Tractian no
-núcleo.
+Ainda não existem chamada de LLM, MCP, LangGraph, banco ou frontend. O executor atual não possui
+API key, Bearer, retry, redaction ou escrita simulada. Esses limites são bloqueios explícitos, e
+cada capacidade será acrescentada sobre o catálogo validado sem colocar lógica Tractian no núcleo.

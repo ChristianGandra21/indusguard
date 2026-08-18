@@ -98,7 +98,7 @@ class OperationPolicy(BaseModel):
     max_retries: Annotated[int, Field(ge=0, le=2)] = 0
     idempotent: bool = False
 
-    # Campos listados aqui serão removidos de traces e persistência pelo futuro executor.
+    # Campos listados aqui serão removidos quando redaction entrar no próximo corte do executor.
     redact_fields: list[str] = Field(default_factory=list)
 
 
@@ -160,14 +160,19 @@ class ConnectorDetails(ConnectorSummary):
 class ExecutionArguments(BaseModel):
     """Argumentos separados por sua posição no request HTTP.
 
-    Este primeiro corte vertical aceita somente parâmetros de path. Manter um objeto próprio,
-    com campos extras proibidos, faz usos prematuros de query ou body falharem explicitamente em
-    vez de serem ignorados. Esses campos serão adicionados nos próximos incrementos.
+    Separar as posições evita ambiguidades. Um mesmo nome pode existir no path e na query, e um
+    header não deve ser confundido com um campo livre que o executor inventaria. Cookie permanece
+    fora da primeira versão e, por isso, continua sendo rejeitado como campo extra.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     path: dict[str, Any] = Field(default_factory=dict)
+    query: dict[str, Any] = Field(default_factory=dict)
+    headers: dict[str, Any] = Field(default_factory=dict)
+    # ``None`` pode ser um body JSON válido. O executor usa ``model_fields_set`` para distinguir
+    # "body ausente" de "body enviado explicitamente como null".
+    body: Any = None
 
 
 class OperationExecutionRequest(BaseModel):

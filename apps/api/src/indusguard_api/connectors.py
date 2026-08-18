@@ -54,6 +54,8 @@ class RuntimeOperation:
 
     summary: OperationSummary
     parameters: tuple[dict[str, Any], ...]
+    request_body: dict[str, Any] | None
+    reference_document: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,8 @@ class ResolvedOperation:
     profile: ConnectorProfile
     operation: OperationSummary
     parameters: tuple[dict[str, Any], ...]
+    request_body: dict[str, Any] | None
+    reference_document: dict[str, Any]
 
 
 class ConnectorValidationError(ValueError):
@@ -241,28 +245,90 @@ def _build_operation(
     )
 
 
+def _resolve_json_pointer(document: Mapping[str, Any], reference: str) -> Any:
+    """Resolve um JSON Pointer local sem acessar arquivos ou rede.
+
+    ``_validate_runtime_constraints`` já impede referências externas. Esta função implementa a
+    parte restante de ``$ref`` necessária em runtime e trata os escapes definidos por RFC 6901.
+    """
+
+    if not reference.startswith("#/"):
+        raise ConnectorValidationError(f"$ref local inválido: {reference!r}")
+
+    current: Any = document
+    for raw_token in reference[2:].split("/"):
+        token = raw_token.replace("~1", "/").replace("~0", "~")
+        try:
+            if isinstance(current, Mapping):
+                current = current[token]
+            elif isinstance(current, list):
+                current = current[int(token)]
+            else:
+                raise KeyError(token)
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise ConnectorValidationError(f"$ref local não encontrado: {reference}") from exc
+    return deepcopy(current)
+
+
+def _resolve_reference_object(
+    document: Mapping[str, Any],
+    value: Mapping[str, Any],
+    *,
+    seen: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    """Resolve uma cadeia de Reference Objects e detecta ciclos de configuração."""
+
+    reference = value.get("$ref")
+    if reference is None:
+        return deepcopy(dict(value))
+    if not isinstance(reference, str):
+        raise ConnectorValidationError("$ref precisa ser uma string")
+    if reference in seen:
+        raise ConnectorValidationError(f"ciclo de $ref detectado em {reference}")
+
+    target = _resolve_json_pointer(document, reference)
+    if not isinstance(target, Mapping):
+        raise ConnectorValidationError(f"$ref precisa apontar para um objeto: {reference}")
+    resolved = _resolve_reference_object(document, target, seen=seen | {reference})
+
+    # OpenAPI 3.1 permite summary/description ao lado de $ref. Preservar qualquer sibling é mais
+    # previsível que descartá-lo silenciosamente e não amplia o destino da referência.
+    resolved.update({key: deepcopy(child) for key, child in value.items() if key != "$ref"})
+    return resolved
+
+
 def _merge_parameters(
+    spec: Mapping[str, Any],
     path_item: Mapping[str, Any],
     raw_operation: Mapping[str, Any],
 ) -> tuple[dict[str, Any], ...]:
     """Combina parâmetros do path e da operação conforme a regra de override do OpenAPI.
 
     Um parâmetro declarado diretamente na operação substitui outro com o mesmo par ``(in,
-    name)`` declarado no path. Referências locais são preservadas para o resolvedor que será
-    acrescentado quando query e headers entrarem no executor.
+    name)`` declarado no path. Referências locais são resolvidas antes da comparação; assim, um
+    parâmetro direto da operação também consegue substituir outro referenciado no path.
     """
 
     merged: dict[tuple[str, str], dict[str, Any]] = {}
     parameter_groups = (path_item.get("parameters", []), raw_operation.get("parameters", []))
     for parameters in parameter_groups:
         for parameter in parameters:
-            copied = deepcopy(parameter)
-            if "$ref" in copied:
-                key = ("$ref", str(copied["$ref"]))
-            else:
-                key = (str(copied.get("in", "")), str(copied.get("name", "")))
-            merged[key] = copied
+            resolved = _resolve_reference_object(spec, parameter)
+            key = (str(resolved.get("in", "")), str(resolved.get("name", "")))
+            merged[key] = resolved
     return tuple(merged.values())
+
+
+def _request_body(
+    spec: Mapping[str, Any],
+    raw_operation: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Obtém o requestBody já resolvido quando a operação declara um."""
+
+    value = raw_operation.get("requestBody")
+    if value is None:
+        return None
+    return _resolve_reference_object(spec, value)
 
 
 def _parse_operations(
@@ -302,7 +368,11 @@ def _parse_operations(
             operations.append(
                 RuntimeOperation(
                     summary=summary,
-                    parameters=_merge_parameters(path_item, raw_operation),
+                    parameters=_merge_parameters(spec, path_item, raw_operation),
+                    request_body=_request_body(spec, raw_operation),
+                    # O documento é a raiz usada para resolver $refs que aparecem dentro de
+                    # schemas. Ele nunca é exposto pelas rotas públicas.
+                    reference_document=spec,
                 )
             )
 
@@ -384,6 +454,15 @@ class ConnectorCatalog:
             isinstance(field, str) for field in context_fields
         ):
             raise ConnectorValidationError(f"{domain_path}: context_fields deve ser uma lista")
+        if len(context_fields) != len(set(context_fields)):
+            raise ConnectorValidationError(f"{domain_path}: context_fields contém duplicatas")
+        if (
+            profile.auth.type == "context_header"
+            and profile.auth.context_field not in context_fields
+        ):
+            raise ConnectorValidationError(
+                f"{domain_path}: autenticação exige o context_field '{profile.auth.context_field}'"
+            )
 
         details = ConnectorDetails(
             id=profile.id,
@@ -438,4 +517,6 @@ class ConnectorCatalog:
             profile=deepcopy(connector.profile),
             operation=deepcopy(operation.summary),
             parameters=deepcopy(operation.parameters),
+            request_body=deepcopy(operation.request_body),
+            reference_document=deepcopy(operation.reference_document),
         )

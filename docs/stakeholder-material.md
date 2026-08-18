@@ -33,8 +33,8 @@ métodos sob um único path. Nenhuma outra alteração foi feita no contrato.
 ### Escritas permissivas
 
 A fixture valida permissão e justificativa, mas aceita alguns payloads fora do domínio, como uma
-criticidade não prevista no enum. Por isso, o futuro executor precisa validar argumentos pelo
-OpenAPI antes de fazer a chamada.
+criticidade não prevista no enum. Por isso, o executor valida argumentos pelo OpenAPI antes de
+fazer a chamada; um teste de body protege esse comportamento.
 
 ### Sem isolamento por empresa
 

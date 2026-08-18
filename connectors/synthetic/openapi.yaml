@@ -16,6 +16,18 @@ paths:
           required: true
           schema:
             type: string
+        - name: labels
+          in: query
+          required: false
+          schema:
+            type: array
+            items: {type: string}
+        - name: x-request-id
+          in: header
+          required: false
+          schema:
+            type: string
+            minLength: 1
       responses:
         "200":
           description: Widget encontrado.

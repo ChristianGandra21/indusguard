@@ -75,11 +75,12 @@ As principais barreiras atuais são:
 7. operação ausente do profile começa desabilitada;
 8. política de leitura/escrita não pode contradizer o método HTTP.
 
-O primeiro corte do executor acrescenta validação JSON Schema para path, percent-encoding,
-allowlist da URL efetiva, timeout e envelope comum. Autenticação, query, body, retry, redaction e
-simulação de mutações continuam bloqueados até receberem testes específicos.
+Os dois primeiros cortes do executor acrescentam validação JSON Schema para path, query, headers e
+body, resolução local de `$ref`, autenticação `context_header`, percent-encoding, allowlist,
+timeout e envelope comum. API key, Bearer, retry, redaction e simulação de mutações continuam
+bloqueados até receberem testes específicos.
 
-## Fluxo do primeiro executor
+## Fluxo do executor atual
 
 ```mermaid
 flowchart TD
@@ -87,14 +88,15 @@ flowchart TD
     C -- não --> B[blocked]
     C -- sim --> O{Operação existe e está habilitada?}
     O -- não --> B
-    O -- sim --> M{É GET e auth none?}
-    M -- não --> B
-    M -- sim --> J[Validar path com JSON Schema]
-    J --> U[Resolver URL pelo ambiente]
+    O -- sim --> J[Resolver refs e validar argumentos]
+    J --> H[Derivar auth do contexto]
+    H --> U[Resolver URL pelo ambiente]
     U --> A{URL pertence à allowlist?}
     A -- não --> B
-    A -- sim --> H[GET com timeout]
-    H --> N[Envelope executed ou failed]
+    A -- sim --> M{É GET?}
+    M -- não --> B
+    M -- sim --> G[GET com timeout]
+    G --> N[Envelope executed ou failed]
 ```
 
 O request não contém URL. Ele contém somente `connector_id`, `operation_id`, argumentos e
@@ -127,8 +129,9 @@ instância cujo catálogo ainda não esteja pronto.
 | Tractian com 18 operações | Implementado |
 | Segundo conector sem código específico | Implementado |
 | Endpoints operacionais | Implementados |
-| Executor GET, path e allowlist | Implementado internamente |
-| Query, body e autenticação | Próxima etapa |
+| Executor GET, argumentos e allowlist | Implementado internamente |
+| `$ref` local e `context_header` | Implementados |
+| Escrita simulada, API key/Bearer e retry | Próxima etapa |
 | Policy engine em runtime | Planejado |
 | MCP e LangGraph | Planejado |
 | Persistência e OpenTelemetry | Planejado |

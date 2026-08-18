@@ -17,7 +17,7 @@ A ordem recomendada é:
 4. acompanhar o caminho executado pelo Python;
 5. rodar a aplicação e observar as respostas;
 6. ler os testes como regras do sistema;
-7. estudar o primeiro corte do executor HTTP junto com seus testes.
+7. estudar os dois primeiros cortes do executor HTTP junto com seus testes.
 
 Se alguma seção parecer abstrata, avance até o laboratório prático e volte depois. Ver o sistema
 funcionando costuma tornar os conceitos mais concretos.
@@ -82,8 +82,10 @@ O projeto está sendo construído por camadas.
 - conector sintético com 2 operações;
 - endpoints de saúde, versão, conectores e operações;
 - catálogo com visão pública e metadados internos de execução separados;
-- executor interno de operações GET sem autenticação;
-- validação JSON Schema dos argumentos de path;
+- executor interno de operações GET;
+- validação JSON Schema de path, query, headers e body;
+- resolução local de `$ref` para parâmetros e schemas;
+- autenticação `context_header` derivada do contexto;
 - URL-base por ambiente conferida contra allowlist;
 - envelope comum para execução, bloqueio e falha;
 - testes automatizados;
@@ -91,10 +93,9 @@ O projeto está sendo construído por camadas.
 
 ### Ainda não implementado
 
-- autenticação necessária para executar a Tractian;
-- parâmetros de query, header e body;
 - simulação e execução de escritas;
 - retry e redaction em runtime;
+- API key e Bearer aplicados em chamadas;
 - policy engine durante a execução;
 - servidor MCP;
 - LangGraph;
@@ -107,8 +108,8 @@ O projeto está sendo construído por camadas.
 - deployment público.
 
 Portanto, se você iniciar o projeto agora, ele ainda não responderá perguntas industriais nem
-chamará um LLM. O executor já consegue transformar `getWidget` em um GET seguro, mas ainda é uma
-interface interna exercitada pelos testes e não uma rota do FastAPI.
+chamará um LLM. O executor já transforma `getWidget` e GETs autenticados da Tractian em requests
+seguros, mas ainda é uma interface interna exercitada por transporte em memória, não uma rota.
 
 Isso é intencional. Estamos construindo primeiro a fundação previsível.
 
@@ -131,8 +132,9 @@ Pense em um restaurante:
 | Policy engine futura | O supervisor que aprova ou bloqueia o pedido. |
 | Agente futuro | O atendente que conversa e sugere o que pedir. |
 
-Hoje temos cardápio, regras, glossário, conferência, balcão e o primeiro percurso do garçom. Ainda
-não implementamos autenticação, ações de escrita nem o atendente inteligente.
+Hoje temos cardápio, regras, glossário, conferência, balcão e percursos GET do garçom, inclusive com
+identificação derivada do contexto. Ainda não implementamos ações de escrita nem o atendente
+inteligente.
 
 ---
 
@@ -314,7 +316,7 @@ flowchart LR
     M --> F[FastAPI]
     F --> R[Endpoints de inspeção]
 
-    M --> E[Executor GET interno]
+    M --> E[Executor GET + auth de contexto]
     E -. depois .-> MCP[Tools MCP]
     MCP -. depois .-> A[Agente LangGraph]
 ```
@@ -468,8 +470,8 @@ porque o endpoint apareceu. Alguém precisa revisar e habilitar a operação con
 | `bearer` | Bearer token no header Authorization. |
 | `context_header` | Header criado a partir do contexto, como `user_id`. |
 
-Os schemas já validam essas opções. O corte atual aceita somente `none`; os demais modos serão
-aplicados no próximo incremento do executor.
+Os schemas já validam essas opções. O executor atual aplica `none` e `context_header`; API key e
+Bearer permanecem bloqueados até receberem testes específicos.
 
 ### 8.3 `domain.yaml`: significado do domínio
 
@@ -875,11 +877,13 @@ compartilhado por todos os requests seguintes.
 
 ##### `resolve_operation()`
 
-Entrega ao executor uma cópia de três elementos:
+Entrega ao executor uma cópia dos metadados internos necessários:
 
 - profile do conector, incluindo nome da variável de URL e allowlist;
 - resumo consolidado da operação;
-- parâmetros OpenAPI combinados do path e da operação.
+- parâmetros OpenAPI combinados e com Reference Objects resolvidos;
+- request body da operação, quando existir;
+- documento OpenAPI raiz para resolver `$ref` dentro dos schemas.
 
 Separar `get()` de `resolve_operation()` evita que as rotas públicas recebam metadados internos de
 execução sem necessidade.
@@ -981,18 +985,20 @@ O Uvicorn procura `indusguard_api.main:app`. A factory continua disponível para
 
 ### 9.6 `executor.py`
 
-Responsabilidade: transformar uma operação conhecida em uma chamada GET validada.
+Responsabilidade: transformar uma operação conhecida em uma chamada GET validada e autenticada.
 
 Entrada:
 
 ```json
 {
-  "connector_id": "synthetic",
-  "operation_id": "getWidget",
+  "connector_id": "tractian",
+  "operation_id": "getAsset",
   "arguments": {
-    "path": {"widgetId": "widget-123"}
+    "path": {"assetId": "asset_M101"},
+    "query": {"seed": "case-01"},
+    "headers": {}
   },
-  "context": {}
+  "context": {"user_id": "usr_001"}
 }
 ```
 
@@ -1000,13 +1006,26 @@ Fluxo de `HttpExecutor.execute()`:
 
 1. verifica se conector e operação existem;
 2. exige que a operação esteja habilitada;
-3. exige método GET e autenticação `none` neste primeiro corte;
-4. valida nomes e tipos dos argumentos de path;
-5. aplica percent-encoding aos valores;
-6. lê a URL-base da variável indicada pelo profile;
-7. exige correspondência com `allowed_base_urls`;
-8. executa com o timeout da operação;
-9. normaliza o resultado.
+3. resolve referências locais de parâmetros;
+4. valida nomes, obrigatoriedade e schemas de path, query e headers;
+5. valida body JSON quando declarado;
+6. aplica percent-encoding e serialização OpenAPI previsível;
+7. deriva `context_header` sem aceitar sobrescrita pelos argumentos;
+8. lê a URL-base da variável indicada pelo profile;
+9. exige correspondência com `allowed_base_urls`;
+10. mantém métodos diferentes de GET fora da rede;
+11. executa GET com o timeout da operação;
+12. normaliza o resultado.
+
+`context_header` liga três configurações:
+
+```text
+profile.auth.context_field = user_id
+        -> request.context.user_id = usr_001
+        -> header x-user-id: usr_001
+```
+
+O valor não vem de `arguments.headers`; isso impediria confiar na identidade escolhida pelo agente.
 
 Os outcomes são:
 
@@ -1090,26 +1109,30 @@ Protege:
 5. permissão e confirmação da escrita de configuração;
 6. 404 para conector desconhecido;
 7. operações sem profile desabilitadas;
-8. rejeição de YAML duplicado.
+8. rejeição de YAML duplicado;
+9. `context_header` apontando somente para campo declarado no domínio.
 
 ### 11.4 `test_executor.py`
 
-Seus 16 casos comprovam:
+Seus 29 casos comprovam:
 
 - GET sintético e envelope comum;
+- GET Tractian com path, query por `$ref` e autenticação de contexto;
+- arrays em query e headers declarados no OpenAPI;
 - percent-encoding de valores do path;
-- ausência, excesso e tipo incorreto de argumentos;
+- ausência, excesso, enum e tipo incorreto de argumentos;
 - conector, operação e configuração ausentes;
 - operação desabilitada e escrita bloqueadas antes da rede;
 - URL fora da allowlist;
-- timeout, HTTP 503 e resposta não JSON;
-- bloqueio explícito da autenticação Tractian ainda não implementada.
+- body ausente/inválido e referências aninhadas;
+- identidade ausente, forjada ou contendo quebra de linha;
+- timeout, erro de conexão, HTTP 503 e resposta não JSON.
 
 Todos usam `httpx.MockTransport`; nenhum teste acessa a internet.
 
 ### 11.5 Estado atual da suíte
 
-- 24 testes;
+- 39 testes;
 - 90% de cobertura total;
 - Ruff aprovado;
 - formatação aprovada;
@@ -1518,7 +1541,7 @@ as regras em uma máquina limpa.
 
 ---
 
-## 18. Executor HTTP genérico: primeiro corte implementado
+## 18. Executor HTTP genérico: segundo corte implementado
 
 O catálogo responde “esta operação existe e possui esta política”. O executor começou a responder
 “como chamar essa operação com segurança”.
@@ -1530,11 +1553,12 @@ flowchart LR
     I[operationId + argumentos + contexto] --> C[Consulta catálogo]
     C --> P{Operação habilitada?}
     P -- não --> B[blocked]
-    P -- sim --> G{GET e auth none?}
+    P -- sim --> J[Resolver refs e validar argumentos]
+    J --> A[Auth none ou context_header]
+    A --> U[URL do ambiente + allowlist]
+    U --> G{Método GET?}
     G -- não --> B
-    G -- sim --> J[Validação JSON Schema do path]
-    J --> U[URL do ambiente + allowlist]
-    U --> H[GET com timeout]
+    G -- sim --> H[GET com timeout]
     H --> R[Envelope executed ou failed]
 ```
 
@@ -1542,19 +1566,21 @@ flowchart LR
 
 1. localizar a operação por `connector_id` e `operation_id`;
 2. recusar operação desabilitada;
-3. aceitar somente GET e autenticação `none`;
-4. validar argumentos de path pelo OpenAPI;
-5. codificar valores para impedir criação de segmentos extras;
-6. conferir a URL-base contra a allowlist;
-7. aplicar timeout;
-8. normalizar status, dados, erro e latência;
-9. não revelar URL rejeitada nem detalhes internos de transporte.
+3. resolver Reference Objects locais de parâmetros;
+4. validar path, query, headers e body pelo OpenAPI;
+5. codificar path e serializar query/header sem concatenação manual;
+6. aplicar autenticação `none` ou `context_header`;
+7. impedir que argumentos sobrescrevam o header de identidade;
+8. conferir a URL-base contra a allowlist;
+9. manter métodos diferentes de GET fora da rede;
+10. aplicar timeout;
+11. normalizar status, dados, erro e latência;
+12. não revelar valores inválidos ou detalhes internos de transporte.
 
 ### Limites que permanecem explícitos
 
-- query, headers e body ainda não entram em `ExecutionArguments`;
-- `$ref` em parâmetro de path é bloqueado até existir resolvedor local;
-- autenticação diferente de `none` retorna `AUTH_NOT_SUPPORTED`;
+- objetos em query/header e estilos de serialização avançados ainda são bloqueados;
+- API key e Bearer retornam `AUTH_NOT_SUPPORTED`;
 - métodos diferentes de GET retornam `METHOD_NOT_SUPPORTED`;
 - `max_retries` ainda não dispara repetição;
 - `redact_fields` ainda não é aplicado ao resultado;
@@ -1563,24 +1589,25 @@ flowchart LR
 ### Critérios comprovados pelos testes
 
 - GET sintético executado com URL correta;
+- GET Tractian recebe `assetId`, `seed` por `$ref` e `x-user-id` pelo contexto;
+- query array e header declarado são serializados;
 - valor com barra permanece dado por causa do percent-encoding;
-- argumento ausente, extra ou com tipo errado é bloqueado antes da rede;
+- argumento ausente, extra, com enum ou tipo errado é bloqueado antes da rede;
 - operação desconhecida ou desabilitada é bloqueada;
 - URL arbitrária é impossível;
-- timeout, HTTP 503 e resposta não JSON são normalizados;
+- body inline e body com referências aninhadas são validados;
+- identidade ausente, forjada ou contendo newline é bloqueada;
+- timeout, conexão, HTTP 503 e resposta não JSON são normalizados;
 - PATCH sintético não chega à rede;
-- Tractian não é chamada anonimamente;
 - testes anteriores continuam verdes.
 
 ### Próximo incremento do executor
 
-1. resolver `$ref` local;
-2. adicionar query e headers;
-3. adicionar body JSON;
-4. implementar `context_header`, API key e Bearer;
-5. simular escritas em `EXECUTION_MODE=simulate`;
-6. aplicar retry somente quando seguro;
-7. aplicar redaction.
+1. implementar API key e Bearer;
+2. simular escritas em `EXECUTION_MODE=simulate`;
+3. aplicar retry somente quando seguro;
+4. aplicar redaction;
+5. conectar o executor a uma policy engine antes de criar rota pública.
 
 Somente depois o executor será exposto como tools MCP ao agente.
 
@@ -1590,8 +1617,8 @@ Somente depois o executor será exposto como tools MCP ao agente.
 
 ### Etapa 2: executor
 
-Em andamento. O corte GET + path + allowlist está pronto; faltam autenticação, demais argumentos,
-escrita simulada, retry e redaction.
+Em andamento. GET com argumentos, `$ref`, allowlist e `context_header` está pronto; faltam outras
+autenticações, escrita simulada, retry e redaction.
 
 ### Etapa 3: policy engine
 
@@ -1723,7 +1750,7 @@ Objetivo: interpretar testes como requisitos.
 Você concluiu quando conseguir explicar por que o teste de operação desabilitada é segurança, não
 apenas cobertura.
 
-### Dia 7: estudar o primeiro executor
+### Dia 7: estudar o executor autenticado
 
 Objetivo: acompanhar uma execução do contrato até o envelope.
 
@@ -1732,7 +1759,8 @@ Objetivo: acompanhar uma execução do contrato até o envelope.
 3. Desenhe a entrada e a saída do executor.
 4. Liste quais erros são `blocked` e quais são `failed`.
 5. Explique por que `MockTransport` prova a URL sem acessar a internet.
-6. Identifique os pontos em que autenticação e escrita serão acrescentadas.
+6. Acompanhe `user_id` do contexto até o header `x-user-id`.
+7. Identifique onde API key, escrita simulada e retry serão acrescentados.
 
 ---
 
@@ -1747,7 +1775,7 @@ Tente responder sem olhar o código.
 5. Por que o catálogo falha no startup?
 6. Por que `ConnectorCatalog.get()` devolve uma cópia?
 7. Qual a diferença entre health e ready?
-8. Por que o executor atual não chama a Tractian?
+8. De onde vem o `x-user-id` enviado à Tractian?
 9. Onde uma API key real deve ficar?
 10. Por que POST não pode declarar `access: read`?
 11. Por que o conector synthetic é importante?
@@ -1765,13 +1793,13 @@ Tente responder sem olhar o código.
 5. Para não anunciar catálogo parcial como saudável.
 6. Para consumidores não alterarem estado compartilhado.
 7. Health verifica processo; ready depende do startup concluído.
-8. Porque `context_header` ainda não foi implementado e chamadas anônimas são bloqueadas.
+8. Do campo `user_id` do contexto validado, nunca de um header escolhido nos argumentos.
 9. Em variável de ambiente ou secret manager.
 10. Porque o método implica mutação.
 11. Prova que o núcleo não depende da Tractian.
 12. Porque contaminaria a avaliação.
 13. Execução acidental de mutações reais.
-14. Validar path, URL e timeout, executar GET permitido e devolver envelope comum.
+14. Validar argumentos/autenticação/URL, executar GET permitido e devolver envelope comum.
 15. Depois que catálogo, executor e política estiverem confiáveis.
 
 ---
@@ -1826,16 +1854,19 @@ O núcleo atual:
 8. expõe esse catálogo pelo FastAPI;
 9. falha cedo quando encontra inconsistência;
 10. resolve operações internas sem expor o profile pelas rotas;
-11. valida e executa GET sintético por allowlist;
-12. normaliza execução, bloqueio e falha;
-13. protege decisões importantes com testes.
+11. resolve `$ref` local de parâmetros e schemas;
+12. valida path, query, headers e body;
+13. deriva autenticação do contexto;
+14. executa GET sintético e Tractian por allowlist;
+15. normaliza execução, bloqueio e falha;
+16. protege decisões importantes com testes.
 
-O sistema ainda não possui agente, mas já possui catálogo e o primeiro executor. Ele impede que o
-futuro agente opere sobre uma lista ambígua e também prova o caminho seguro de uma operação GET até
-uma API sem autenticação.
+O sistema ainda não possui agente, mas já possui catálogo e um executor GET autenticado. Ele impede
+que o futuro agente opere sobre uma lista ambígua e prova o caminho seguro até uma API que deriva
+identidade do contexto.
 
-O próximo passo é completar argumentos e autenticação e então simular escritas. Depois disso, MCP e
-LangGraph poderão consumir uma interface mais confiável.
+O próximo passo é implementar as autenticações restantes e simular escritas com política. Depois
+disso, MCP e LangGraph poderão consumir uma interface mais confiável.
 
 Se você guardar apenas três ideias, guarde estas:
 

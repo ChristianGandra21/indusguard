@@ -13,7 +13,7 @@ controladas que, nas próximas etapas, serão disponibilizadas para MCP, LangGra
 
 ## Estado do projeto
 
-O repositório está no primeiro corte vertical da segunda etapa executável.
+O repositório está no segundo corte vertical da etapa de execução HTTP.
 
 | Capacidade | Situação |
 |---|---|
@@ -23,16 +23,17 @@ O repositório está no primeiro corte vertical da segunda etapa executável.
 | Conector Tractian com 18 operações | Pronto |
 | Conector sintético de extensibilidade | Pronto |
 | Testes do núcleo | Pronto |
-| Executor GET com path, allowlist e envelope | Pronto |
-| Query, body, autenticação, retry e escrita simulada | Próxima etapa |
+| Executor GET com path, query, headers e allowlist | Pronto |
+| `$ref` local e autenticação `context_header` | Pronto |
+| Body validado, retry, outras autenticações e escrita simulada | Parcial/próxima etapa |
 | MCP e agente LangGraph/Groq | Planejado |
 | Banco e OpenTelemetry | Planejado |
 | Frontend Next.js | Planejado |
 | Benchmark e dashboard | Planejado |
 
-Importante: o executor já consegue chamar uma operação GET sem autenticação, como `getWidget`, mas
-ainda não está exposto por uma rota. A API Tractian permanece bloqueada porque sua autenticação
-será implementada no próximo incremento. A aplicação ainda não chama um LLM.
+Importante: o executor já consegue preparar e chamar GETs autenticados da Tractian, mas ainda não
+está exposto por uma rota. Os testes usam transporte em memória e não acessam a API real. Escritas
+continuam bloqueadas e a aplicação ainda não chama um LLM.
 
 ## Por que começar pelo catálogo?
 
@@ -237,6 +238,9 @@ startup bem-sucedido do catálogo.
 - valores de path são percent-encoded para não criarem segmentos extras;
 - URL-base precisa vir do ambiente e coincidir com a allowlist;
 - operação desabilitada, escrita e autenticação ainda não suportada falham antes da rede;
+- `context_header` só pode ser derivado do contexto declarado pelo domínio;
+- argumento não consegue sobrescrever o header reservado de autenticação;
+- path, query, headers e body são validados por seus schemas OpenAPI;
 - timeout, resposta HTTP de erro e JSON inválido viram envelopes estruturados.
 
 ## Integração contínua
@@ -285,15 +289,17 @@ avaliação existirem.
 
 ## Executor HTTP implementado
 
-O primeiro corte do executor está em `apps/api/src/indusguard_api/executor.py`. Ele:
+Os dois primeiros cortes do executor estão em `apps/api/src/indusguard_api/executor.py`. Ele:
 
 1. recebe `connector_id`, `operation_id`, argumentos e contexto;
 2. localiza apenas operações validadas pelo catálogo;
-3. bloqueia operações desabilitadas e métodos diferentes de GET;
-4. valida os argumentos de path pelo JSON Schema da operação;
-5. resolve a URL-base por variável de ambiente e confere a allowlist;
-6. respeita o timeout declarado no profile;
-7. normaliza sucesso, bloqueio e falha em um envelope comum.
+3. bloqueia operações desabilitadas e mantém métodos diferentes de GET fora da rede;
+4. resolve `$ref` local de parâmetros e schemas;
+5. valida path, query, headers e body pelo OpenAPI;
+6. deriva `context_header` do contexto sem permitir sobrescrita;
+7. resolve a URL-base por variável de ambiente e confere a allowlist;
+8. respeita o timeout declarado no profile;
+9. normaliza sucesso, bloqueio e falha em um envelope comum.
 
 Os testes usam `httpx.MockTransport`, portanto provam a montagem da chamada sem acessar a internet:
 
@@ -305,12 +311,11 @@ Os testes usam `httpx.MockTransport`, portanto provam a montagem da chamada sem 
 
 Completar o transporte genérico nesta ordem:
 
-1. parâmetros de query e headers;
-2. body JSON;
-3. autenticação `context_header`, API key e Bearer;
-4. simulação de POST/PATCH quando `EXECUTION_MODE=simulate`;
-5. retry somente quando política e idempotência permitirem;
-6. redaction dos campos sensíveis.
+1. autenticação por API key e Bearer;
+2. simulação de POST/PATCH quando `EXECUTION_MODE=simulate`;
+3. retry somente quando política e idempotência permitirem;
+4. redaction dos campos sensíveis;
+5. endpoint interno de execução depois que a policy engine existir.
 
 Somente depois essa camada será apresentada como tools MCP ao LangGraph.
 
@@ -368,6 +373,7 @@ mudança no contrato externo.
 
 ### A API Tractian não respondeu
 
-O executor bloqueia a Tractian com `AUTH_NOT_SUPPORTED` neste incremento. Isso é intencional: ele
-nunca deve fazer uma chamada anônima por falta de implementação parcial. Primeiro teste o fluxo
-`getWidget` com `test_executor.py`; `context_header` será o próximo modo de autenticação.
+Ainda não existe rota pública nem dependência da fixture real em testes. O caso
+`test_executes_tractian_get_with_ref_query_and_context_auth` comprova em memória que o executor
+monta path, `seed` e `x-user-id` corretamente. A conexão real só deve ser feita em ambiente local
+controlado, configurando `TRACTIAN_API_URL` com um destino presente na allowlist.

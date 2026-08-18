@@ -1,17 +1,17 @@
 """Executor HTTP genérico construído sobre o catálogo validado de conectores.
 
-Este primeiro corte vertical executa somente operações GET com parâmetros de path e autenticação
-``none``. A limitação é explícita e segura: operações de escrita, query, body e autenticação são
-bloqueadas até ganharem implementação e testes próprios.
+O segundo corte vertical executa operações GET com parâmetros de path, query e header, além de
+autenticação ``none`` ou ``context_header``. Request bodies também são validados para preparar a
+futura simulação de escritas, mas métodos mutáveis continuam bloqueados antes da rede.
 
-Mesmo pequeno, o módulo já estabelece as fronteiras que permanecerão nas próximas etapas:
+As fronteiras de segurança são deliberadamente determinísticas:
 
-* recebe ``connector_id`` e ``operation_id``, nunca uma URL arbitrária;
-* usa apenas operações habilitadas pelo profile;
-* valida argumentos contra o schema OpenAPI antes da rede;
-* resolve a URL-base pelo ambiente e confere a allowlist do profile;
-* respeita o timeout da operação;
-* devolve um envelope comum para sucesso, bloqueio ou falha.
+* o request recebe ``connector_id`` e ``operation_id``, nunca uma URL arbitrária;
+* somente operações habilitadas pelo profile chegam à preparação HTTP;
+* argumentos são comparados e validados contra o OpenAPI;
+* autenticação derivada do contexto não pode ser sobrescrita pelos argumentos;
+* a URL-base vem do ambiente e precisa coincidir com a allowlist;
+* sucesso, bloqueio e falha usam o mesmo envelope, independentemente da API.
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping
+from copy import deepcopy
+from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Final
 from urllib.parse import quote
@@ -29,6 +31,7 @@ from jsonschema.validators import validator_for
 
 from indusguard_api.connectors import ConnectorCatalog, ResolvedOperation
 from indusguard_api.schemas import (
+    ExecutionArguments,
     ExecutionErrorDetails,
     ExecutionOutcome,
     OperationExecutionRequest,
@@ -36,6 +39,18 @@ from indusguard_api.schemas import (
 )
 
 PATH_PLACEHOLDER: Final = re.compile(r"\{([^{}]+)\}")
+HEADER_NAME: Final = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+NO_BODY: Final = object()
+
+
+@dataclass(frozen=True)
+class PreparedRequest:
+    """Partes HTTP validadas, ainda sem abrir conexão com o upstream."""
+
+    path: str
+    query: tuple[tuple[str, str], ...]
+    headers: dict[str, str]
+    body: Any
 
 
 class ExecutionValidationError(ValueError):
@@ -72,17 +87,110 @@ def _normalize_base_url(value: str) -> str:
             "a URL-base não pode conter credenciais, query ou fragmento",
         )
 
-    # A barra final não muda o destino e é removida para que a comparação da allowlist seja
-    # previsível. O httpx também normaliza caixa do host e portas padrão.
     return str(url).rstrip("/")
 
 
-def _serialize_path_value(value: Any) -> str:
-    """Converte um valor JSON primitivo para a representação usada em um path HTTP."""
+def _serialize_primitive(value: Any, *, location: str) -> str:
+    """Serializa um valor JSON primitivo sem aceitar estruturas ambíguas."""
 
+    if value is None or isinstance(value, (dict, list)):
+        raise ExecutionValidationError(
+            f"UNSUPPORTED_{location.upper()}_SERIALIZATION",
+            f"{location} aceita somente valores primitivos neste incremento",
+        )
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
+
+
+def _validate_schema(
+    value: Any,
+    schema: Mapping[str, Any],
+    reference_document: Mapping[str, Any],
+    *,
+    invalid_code: str,
+    label: str,
+) -> None:
+    """Valida um valor usando o schema e a raiz OpenAPI para resolver referências locais.
+
+    O schema fica em ``allOf`` e o documento OpenAPI permanece como raiz. Dessa forma, uma
+    referência como ``#/components/schemas/ActionRequest`` continua apontando para o local
+    correto sem buscar arquivo ou host externo.
+    """
+
+    validation_document = deepcopy(dict(reference_document))
+    validation_document["$schema"] = "https://json-schema.org/draft/2020-12/schema"
+    validation_document["allOf"] = [deepcopy(dict(schema))]
+    try:
+        validator_class = validator_for(validation_document)
+        validator_class.check_schema(validation_document)
+        errors = sorted(
+            validator_class(validation_document).iter_errors(value),
+            key=lambda error: tuple(str(part) for part in error.path),
+        )
+    except SchemaError as exc:
+        raise ExecutionValidationError(
+            "INVALID_OPERATION_CONTRACT",
+            f"o schema de {label} é inválido",
+        ) from exc
+    if errors:
+        # A mensagem do jsonschema pode reproduzir o valor rejeitado. Não a devolvemos porque um
+        # argumento inválido ainda pode ser segredo ou dado pessoal.
+        raise ExecutionValidationError(
+            invalid_code,
+            f"{label} não corresponde ao schema OpenAPI",
+        )
+
+
+def _parameter_definitions(
+    resolved: ResolvedOperation,
+    location: str,
+    *,
+    case_insensitive: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Indexa parâmetros já resolvidos e detecta colisões no contrato."""
+
+    definitions: dict[str, dict[str, Any]] = {}
+    for parameter in resolved.parameters:
+        if parameter.get("in") != location:
+            continue
+        name = str(parameter["name"])
+        key = name.lower() if case_insensitive else name
+        if key in definitions:
+            raise ExecutionValidationError(
+                "INVALID_OPERATION_CONTRACT",
+                f"parâmetro duplicado em {location}: {name}",
+            )
+        definitions[key] = parameter
+    return definitions
+
+
+def _check_argument_names(
+    definitions: Mapping[str, Mapping[str, Any]],
+    arguments: Mapping[str, Any],
+    *,
+    location: str,
+) -> None:
+    """Rejeita argumentos ausentes ou desconhecidos antes de validar seus valores."""
+
+    provided = set(arguments)
+    required = {
+        name for name, parameter in definitions.items() if bool(parameter.get("required", False))
+    }
+    missing = required - provided
+    unexpected = provided - set(definitions)
+    if missing:
+        names = ", ".join(sorted(missing))
+        raise ExecutionValidationError(
+            f"MISSING_{location.upper()}_ARGUMENT",
+            f"faltam argumentos obrigatórios de {location}: {names}",
+        )
+    if unexpected:
+        names = ", ".join(sorted(unexpected))
+        raise ExecutionValidationError(
+            f"UNEXPECTED_{location.upper()}_ARGUMENT",
+            f"foram enviados argumentos desconhecidos de {location}: {names}",
+        )
 
 
 def _render_path(resolved: ResolvedOperation, arguments: Mapping[str, Any]) -> str:
@@ -90,77 +198,239 @@ def _render_path(resolved: ResolvedOperation, arguments: Mapping[str, Any]) -> s
 
     template = resolved.operation.path
     placeholders = set(PATH_PLACEHOLDER.findall(template))
-    definitions: dict[str, dict[str, Any]] = {}
-
-    for parameter in resolved.parameters:
-        if parameter.get("in") != "path":
-            continue
-        if "$ref" in parameter:
-            raise ExecutionValidationError(
-                "UNSUPPORTED_PARAMETER_REFERENCE",
-                "parâmetros de path por $ref ainda não são suportados neste incremento",
-            )
-        definitions[str(parameter["name"])] = parameter
+    definitions = _parameter_definitions(resolved, "path")
 
     if placeholders != set(definitions):
         raise ExecutionValidationError(
             "INVALID_OPERATION_CONTRACT",
             "os placeholders do path não correspondem aos parâmetros declarados no OpenAPI",
         )
-
-    provided = set(arguments)
-    missing = placeholders - provided
-    unexpected = provided - placeholders
-    if missing:
-        names = ", ".join(sorted(missing))
-        raise ExecutionValidationError(
-            "MISSING_PATH_ARGUMENT",
-            f"faltam argumentos obrigatórios de path: {names}",
-        )
-    if unexpected:
-        names = ", ".join(sorted(unexpected))
-        raise ExecutionValidationError(
-            "UNEXPECTED_PATH_ARGUMENT",
-            f"foram enviados argumentos de path desconhecidos: {names}",
-        )
+    _check_argument_names(definitions, arguments, location="path")
 
     rendered = template
     for name in sorted(placeholders):
         value = arguments[name]
-        schema = definitions[name].get("schema", {})
-        try:
-            validator_class = validator_for(schema)
-            validator_class.check_schema(schema)
-            errors = sorted(
-                validator_class(schema).iter_errors(value),
-                key=lambda error: error.path,
-            )
-        except SchemaError as exc:
-            raise ExecutionValidationError(
-                "INVALID_OPERATION_CONTRACT",
-                f"o schema do argumento de path '{name}' é inválido",
-            ) from exc
-        if errors:
-            raise ExecutionValidationError(
-                "INVALID_PATH_ARGUMENT",
-                f"argumento de path '{name}' inválido: {errors[0].message}",
-            )
-
-        # ``safe=''`` codifica inclusive barras. Assim, um valor não consegue criar segmentos de
-        # path adicionais ou escapar do endpoint descrito pelo OpenAPI.
-        encoded = quote(_serialize_path_value(value), safe="")
+        _validate_schema(
+            value,
+            definitions[name].get("schema", {}),
+            resolved.reference_document,
+            invalid_code="INVALID_PATH_ARGUMENT",
+            label=f"argumento de path '{name}'",
+        )
+        encoded = quote(_serialize_primitive(value, location="path"), safe="")
         rendered = rendered.replace(f"{{{name}}}", encoded)
 
     return rendered
 
 
-class HttpExecutor:
-    """Executa operações conhecidas usando dependências injetáveis e defaults seguros.
+def _serialize_query_parameter(
+    name: str,
+    value: Any,
+    parameter: Mapping[str, Any],
+) -> list[tuple[str, str]]:
+    """Implementa o subconjunto previsível do estilo OpenAPI ``form``."""
 
-    O cliente HTTP pode ser injetado nos testes com ``httpx.MockTransport``. Em produção, quando
-    nenhum cliente é fornecido, o executor cria e fecha um cliente para a chamada. Um pool
-    compartilhado será conectado ao lifespan do FastAPI quando houver endpoint de execução.
-    """
+    style = parameter.get("style", "form")
+    explode = parameter.get("explode", True)
+    if style != "form":
+        raise ExecutionValidationError(
+            "UNSUPPORTED_QUERY_STYLE",
+            f"parâmetro de query '{name}' usa um estilo ainda não suportado",
+        )
+    if isinstance(value, dict):
+        raise ExecutionValidationError(
+            "UNSUPPORTED_QUERY_SERIALIZATION",
+            f"parâmetro de query '{name}' não aceita objeto neste incremento",
+        )
+    if isinstance(value, list):
+        serialized = [_serialize_primitive(item, location="query") for item in value]
+        if explode:
+            return [(name, item) for item in serialized]
+        return [(name, ",".join(serialized))]
+    return [(name, _serialize_primitive(value, location="query"))]
+
+
+def _build_query(
+    resolved: ResolvedOperation,
+    arguments: Mapping[str, Any],
+) -> tuple[tuple[str, str], ...]:
+    """Valida e serializa parâmetros de query sem concatenar strings manualmente."""
+
+    definitions = _parameter_definitions(resolved, "query")
+    _check_argument_names(definitions, arguments, location="query")
+    serialized: list[tuple[str, str]] = []
+    for name, value in arguments.items():
+        parameter = definitions[name]
+        _validate_schema(
+            value,
+            parameter.get("schema", {}),
+            resolved.reference_document,
+            invalid_code="INVALID_QUERY_ARGUMENT",
+            label=f"argumento de query '{name}'",
+        )
+        serialized.extend(_serialize_query_parameter(name, value, parameter))
+    return tuple(serialized)
+
+
+def _normalize_header_arguments(arguments: Mapping[str, Any]) -> dict[str, Any]:
+    """Normaliza nomes de header e impede duas grafias para a mesma chave."""
+
+    normalized: dict[str, Any] = {}
+    for name, value in arguments.items():
+        key = name.lower()
+        if key in normalized:
+            raise ExecutionValidationError(
+                "DUPLICATE_HEADER_ARGUMENT",
+                f"header '{name}' foi enviado mais de uma vez",
+            )
+        normalized[key] = value
+    return normalized
+
+
+def _serialize_header_parameter(
+    name: str,
+    value: Any,
+    parameter: Mapping[str, Any],
+) -> str:
+    """Serializa primitive/array no estilo ``simple`` usado por headers OpenAPI."""
+
+    if parameter.get("style", "simple") != "simple":
+        raise ExecutionValidationError(
+            "UNSUPPORTED_HEADER_STYLE",
+            f"header '{name}' usa um estilo ainda não suportado",
+        )
+    if isinstance(value, dict):
+        raise ExecutionValidationError(
+            "UNSUPPORTED_HEADER_SERIALIZATION",
+            f"header '{name}' não aceita objeto neste incremento",
+        )
+    if isinstance(value, list):
+        serialized = ",".join(_serialize_primitive(item, location="header") for item in value)
+    else:
+        serialized = _serialize_primitive(value, location="header")
+    if "\r" in serialized or "\n" in serialized:
+        raise ExecutionValidationError(
+            "INVALID_HEADER_ARGUMENT",
+            f"header '{name}' contém quebra de linha",
+        )
+    return serialized
+
+
+def _build_headers(
+    resolved: ResolvedOperation,
+    arguments: Mapping[str, Any],
+) -> dict[str, str]:
+    """Valida headers declarados na operação e preserva seus nomes canônicos."""
+
+    definitions = _parameter_definitions(resolved, "header", case_insensitive=True)
+    normalized = _normalize_header_arguments(arguments)
+    _check_argument_names(definitions, normalized, location="header")
+    headers: dict[str, str] = {}
+    for key, value in normalized.items():
+        parameter = definitions[key]
+        canonical_name = str(parameter["name"])
+        if not HEADER_NAME.fullmatch(canonical_name):
+            raise ExecutionValidationError(
+                "INVALID_OPERATION_CONTRACT",
+                f"nome de header inválido no OpenAPI: {canonical_name}",
+            )
+        _validate_schema(
+            value,
+            parameter.get("schema", {}),
+            resolved.reference_document,
+            invalid_code="INVALID_HEADER_ARGUMENT",
+            label=f"header '{canonical_name}'",
+        )
+        headers[canonical_name] = _serialize_header_parameter(canonical_name, value, parameter)
+    return headers
+
+
+def _build_auth_headers(
+    resolved: ResolvedOperation,
+    context: Mapping[str, Any],
+    provided_headers: Mapping[str, Any],
+) -> dict[str, str]:
+    """Deriva autenticação do contexto sem aceitar credencial enviada como argumento."""
+
+    auth = resolved.profile.auth
+    if auth.type == "none":
+        return {}
+    if auth.type != "context_header":
+        raise ExecutionValidationError(
+            "AUTH_NOT_SUPPORTED",
+            f"autenticação '{auth.type}' ainda não é suportada",
+        )
+
+    header_name = auth.name or ""
+    context_field = auth.context_field or ""
+    if not HEADER_NAME.fullmatch(header_name):
+        raise ExecutionValidationError(
+            "INVALID_OPERATION_CONTRACT",
+            "o profile contém um nome inválido para o header de autenticação",
+        )
+    if header_name.lower() in {name.lower() for name in provided_headers}:
+        raise ExecutionValidationError(
+            "RESERVED_AUTH_HEADER",
+            f"o header de autenticação '{header_name}' só pode vir do contexto",
+        )
+    if context_field not in context:
+        raise ExecutionValidationError(
+            "AUTH_CONTEXT_MISSING",
+            f"o contexto não contém o campo obrigatório '{context_field}'",
+        )
+
+    serialized = _serialize_primitive(context[context_field], location="auth_header")
+    if "\r" in serialized or "\n" in serialized:
+        raise ExecutionValidationError(
+            "INVALID_AUTH_CONTEXT",
+            f"o campo de contexto '{context_field}' contém um valor inválido",
+        )
+    return {header_name: serialized}
+
+
+def _build_body(resolved: ResolvedOperation, arguments: ExecutionArguments) -> Any:
+    """Valida request body JSON e diferencia ausência de ``null`` explícito."""
+
+    supplied = "body" in arguments.model_fields_set
+    request_body = resolved.request_body
+    if request_body is None:
+        if supplied:
+            raise ExecutionValidationError(
+                "UNEXPECTED_REQUEST_BODY",
+                "a operação não declara request body no OpenAPI",
+            )
+        return NO_BODY
+    if not supplied:
+        if bool(request_body.get("required", False)):
+            raise ExecutionValidationError(
+                "MISSING_REQUEST_BODY",
+                "a operação exige um request body",
+            )
+        return NO_BODY
+
+    content = request_body.get("content", {})
+    media_type = next(
+        (name for name in content if name == "application/json" or str(name).endswith("+json")),
+        None,
+    )
+    if media_type is None:
+        raise ExecutionValidationError(
+            "INVALID_OPERATION_CONTRACT",
+            "a operação não declara um request body JSON",
+        )
+    schema = content[media_type].get("schema", {})
+    _validate_schema(
+        arguments.body,
+        schema,
+        resolved.reference_document,
+        invalid_code="INVALID_REQUEST_BODY",
+        label="request body",
+    )
+    return arguments.body
+
+
+class HttpExecutor:
+    """Executa operações conhecidas usando dependências injetáveis e defaults seguros."""
 
     def __init__(
         self,
@@ -174,10 +444,9 @@ class HttpExecutor:
         self._client = client
 
     async def execute(self, request: OperationExecutionRequest) -> OperationExecutionResult:
-        """Valida, executa e normaliza uma única operação GET."""
+        """Valida, prepara, executa e normaliza uma operação do catálogo."""
 
         started_at = perf_counter()
-
         connector = self._catalog.get(request.connector_id)
         if connector is None:
             return self._blocked(
@@ -202,30 +471,33 @@ class HttpExecutor:
                 "OPERATION_DISABLED",
                 f"operação '{request.operation_id}' está desabilitada pelo profile",
             )
+
+        try:
+            prepared = self._prepare_request(resolved, request)
+            base_url = self._resolve_base_url(resolved)
+        except ExecutionValidationError as exc:
+            return self._blocked(request, started_at, exc.code, str(exc))
+
+        # Preparar e validar o body de uma escrita já é útil para o próximo incremento, mas apenas
+        # GET possui autorização de transporte nesta etapa.
         if resolved.operation.method != "GET":
             return self._blocked(
                 request,
                 started_at,
                 "METHOD_NOT_SUPPORTED",
-                "este incremento executa somente operações GET; escritas continuam bloqueadas",
-            )
-        if resolved.profile.auth.type != "none":
-            return self._blocked(
-                request,
-                started_at,
-                "AUTH_NOT_SUPPORTED",
-                "este incremento executa somente conectores sem autenticação",
+                "este incremento executa somente GET; escritas continuam bloqueadas",
             )
 
+        url = f"{base_url}{prepared.path}"
         try:
-            rendered_path = _render_path(resolved, request.arguments.path)
-            base_url = self._resolve_base_url(resolved)
-        except ExecutionValidationError as exc:
-            return self._blocked(request, started_at, exc.code, str(exc))
-
-        url = f"{base_url}{rendered_path}"
-        try:
-            response = await self._send_get(url, resolved.operation.timeout_seconds)
+            response = await self._send_request(
+                method=resolved.operation.method,
+                url=url,
+                query=prepared.query,
+                headers=prepared.headers,
+                body=prepared.body,
+                timeout_seconds=resolved.operation.timeout_seconds,
+            )
         except httpx.TimeoutException:
             return self._failed(
                 request,
@@ -278,6 +550,25 @@ class HttpExecutor:
             latency_ms=self._elapsed_ms(started_at),
         )
 
+    def _prepare_request(
+        self,
+        resolved: ResolvedOperation,
+        request: OperationExecutionRequest,
+    ) -> PreparedRequest:
+        """Compila os argumentos somente depois de todas as validações locais."""
+
+        path = _render_path(resolved, request.arguments.path)
+        query = _build_query(resolved, request.arguments.query)
+        auth_headers = _build_auth_headers(
+            resolved,
+            request.context,
+            request.arguments.headers,
+        )
+        headers = _build_headers(resolved, request.arguments.headers)
+        headers.update(auth_headers)
+        body = _build_body(resolved, request.arguments)
+        return PreparedRequest(path=path, query=query, headers=headers, body=body)
+
     def _resolve_base_url(self, resolved: ResolvedOperation) -> str:
         """Obtém a URL do ambiente e exige correspondência exata com a allowlist."""
 
@@ -303,21 +594,35 @@ class HttpExecutor:
                 "o profile contém uma URL inválida na allowlist",
             ) from exc
         if base_url not in allowed:
-            # A URL recebida não é incluída na mensagem: ela pode conter informação que não deve
-            # aparecer em trace ou resposta ao agente.
             raise ExecutionValidationError(
                 "BASE_URL_NOT_ALLOWED",
                 "a URL-base configurada não pertence à allowlist do conector",
             )
         return base_url
 
-    async def _send_get(self, url: str, timeout_seconds: float) -> httpx.Response:
-        """Executa o GET usando o cliente injetado ou um cliente de curta duração."""
+    async def _send_request(
+        self,
+        *,
+        method: str,
+        url: str,
+        query: tuple[tuple[str, str], ...],
+        headers: Mapping[str, str],
+        body: Any,
+        timeout_seconds: float,
+    ) -> httpx.Response:
+        """Envia partes já validadas usando o cliente injetado ou um cliente temporário."""
 
+        request_arguments: dict[str, Any] = {
+            "params": query,
+            "headers": headers,
+            "timeout": timeout_seconds,
+        }
+        if body is not NO_BODY:
+            request_arguments["json"] = body
         if self._client is not None:
-            return await self._client.get(url, timeout=timeout_seconds)
+            return await self._client.request(method, url, **request_arguments)
         async with httpx.AsyncClient() as client:
-            return await client.get(url, timeout=timeout_seconds)
+            return await client.request(method, url, **request_arguments)
 
     @staticmethod
     def _elapsed_ms(started_at: float) -> float:

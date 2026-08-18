@@ -104,3 +104,45 @@ operations: {}
 
     with pytest.raises(ConnectorValidationError, match="chave YAML duplicada 'id'"):
         ConnectorCatalog(tmp_path).load()
+
+
+def test_context_auth_requires_field_declared_by_domain(tmp_path: Path) -> None:
+    """Evita um conector cuja autenticação nunca poderia ser preenchida pela UI/contexto."""
+
+    connector_dir = tmp_path / "contextual"
+    connector_dir.mkdir()
+    (connector_dir / "profile.yaml").write_text(
+        """
+id: contextual
+name: Contextual
+description: Connector fixture
+openapi: ./openapi.yaml
+auth:
+  type: context_header
+  name: x-user-id
+  context_field: user_id
+operations:
+  getThing: {enabled: true, access: read}
+""".strip(),
+        encoding="utf-8",
+    )
+    (connector_dir / "domain.yaml").write_text(
+        "context_fields: [company_id]",
+        encoding="utf-8",
+    )
+    (connector_dir / "openapi.yaml").write_text(
+        """
+openapi: 3.1.0
+info: {title: Contextual, version: 1.0.0}
+paths:
+  /thing:
+    get:
+      operationId: getThing
+      responses:
+        '200': {description: OK}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConnectorValidationError, match="autenticação exige.*user_id"):
+        ConnectorCatalog(tmp_path).load()

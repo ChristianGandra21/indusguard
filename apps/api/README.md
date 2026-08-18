@@ -10,8 +10,10 @@ Pydantic, validação de conectores, endpoints de inspeção e o corte inicial d
 3. combina operações e políticas em um catálogo;
 4. falha no startup se qualquer conector estiver inconsistente;
 5. expõe liveness, readiness, versão, conectores e operações;
-6. executa internamente GET sem autenticação, com parâmetros de path validados;
-7. normaliza execução, bloqueio e falha em um envelope comum.
+6. executa internamente GET com path, query e headers validados;
+7. resolve `$ref` local e autenticação `context_header`;
+8. valida body JSON antes de manter uma escrita fora da rede;
+9. normaliza execução, bloqueio e falha em um envelope comum.
 
 O executor ainda não possui rota pública. Os testes exercitam uma API simulada em memória. A
 aplicação não usa LLM.
@@ -78,10 +80,11 @@ O fluxo implementado aceita:
 
 - operação habilitada;
 - método GET;
-- autenticação `none`;
-- parâmetros de path declarados diretamente na operação;
+- autenticação `none` e `context_header`;
+- parâmetros de path, query e header;
+- `$ref` local em parâmetros e schemas;
+- body JSON validado para preparar a próxima escrita simulada;
 - resposta JSON ou resposta vazia.
 
-Qualquer escrita, autenticação, `$ref` em parâmetro de path ou argumento ainda não suportado é
-bloqueado antes da rede. O próximo incremento adicionará query, headers, body e autenticação;
-depois entrarão escrita simulada, retry e redaction.
+Qualquer escrita e autenticação por API key/Bearer continuam bloqueadas antes da rede. O próximo
+incremento adicionará escrita simulada, retry condicionado por idempotência e redaction.

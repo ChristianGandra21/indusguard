@@ -45,7 +45,7 @@ name: Inventory API
 description: Consulta e atualiza itens de estoque.
 openapi: ./openapi.yaml
 
-# O valor será lido de INVENTORY_API_URL pelo futuro executor.
+# O valor é lido de INVENTORY_API_URL pelo executor.
 base_url_env: INVENTORY_API_URL
 allowed_base_urls:
   - https://inventory.example.com
@@ -78,13 +78,13 @@ operations:
 
 #### Autenticação
 
-| `type` | Campos adicionais | Origem do valor |
-|---|---|---|
-| `none` | nenhum | Não há autenticação. |
-| `api_key_header` | `name`, `env` | Variável indicada em `env`, enviada no header. |
-| `api_key_query` | `name`, `env` | Variável indicada em `env`, enviada na query. |
-| `bearer` | `env` | Variável indicada em `env`, enviada como Bearer token. |
-| `context_header` | `name`, `context_field` | Campo do contexto validado da execução. |
+| `type` | Campos adicionais | Origem do valor | Runtime atual |
+|---|---|---|---|
+| `none` | nenhum | Não há autenticação. | Implementado. |
+| `api_key_header` | `name`, `env` | Variável indicada em `env`, enviada no header. | Bloqueado. |
+| `api_key_query` | `name`, `env` | Variável indicada em `env`, enviada na query. | Bloqueado. |
+| `bearer` | `env` | Variável indicada em `env`, enviada como Bearer token. | Bloqueado. |
+| `context_header` | `name`, `context_field` | Campo do contexto validado da execução. | Implementado. |
 
 O profile guarda somente nomes de variáveis, nunca os segredos. O catálogo público também não
 resolve nem devolve esses valores.
@@ -105,8 +105,8 @@ resolve nem devolve esses valores.
 | `idempotent` | `false` | Informa se repetir a chamada preserva o efeito. |
 | `redact_fields` | `[]` | Define campos que não devem aparecer em traces. |
 
-O executor ainda será implementado. Hoje esses campos são validados e consolidados no catálogo;
-eles já definem o contrato que o executor deverá obedecer.
+O executor já aplica `enabled`, timeout e allowlist em operações GET. Política de permissão,
+confirmação, retry, idempotência e redaction será conectada nos próximos incrementos.
 
 ### `domain.yaml`
 
@@ -129,8 +129,9 @@ intents:
     action_operations: [updateItem]
 ```
 
-No estágio atual, o loader valida `context_fields`; terminologia e intenções serão consumidas pelo
-classificador e pelo agente em etapas futuras.
+No estágio atual, o loader valida `context_fields` e exige que um `context_header` aponte para um
+campo declarado nessa lista. Terminologia e intenções serão consumidas pelo classificador e pelo
+agente em etapas futuras.
 
 ## Adicionar uma API passo a passo
 
@@ -160,7 +161,8 @@ métodos sob uma única chave e há um teste impedindo regressão.
 ### `synthetic`
 
 API mínima com `getWidget` e `updateWidget`. Seu objetivo é provar que adicionar outro domínio não
-exige editar FastAPI, Pydantic ou a futura UI.
+exige editar FastAPI, Pydantic ou a futura UI. `getWidget` também possui query array `labels` e o
+header opcional `x-request-id`, usados para testar serialização genérica.
 
 ## Erros frequentes
 
