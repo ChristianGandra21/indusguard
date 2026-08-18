@@ -8,12 +8,12 @@ porém, não conhece regras Tractian no núcleo: uma API entra por contrato e co
 
 ## Em uma frase
 
-O IndusGuard transforma **OpenAPI + política + domínio** em um catálogo confiável de operações que,
-nas próximas etapas, será consumido por executor HTTP, MCP, LangGraph e frontend.
+O IndusGuard transforma **OpenAPI + política + domínio** em operações HTTP validadas e
+controladas que, nas próximas etapas, serão disponibilizadas para MCP, LangGraph e frontend.
 
 ## Estado do projeto
 
-O repositório está na primeira etapa executável.
+O repositório está no primeiro corte vertical da segunda etapa executável.
 
 | Capacidade | Situação |
 |---|---|
@@ -23,14 +23,16 @@ O repositório está na primeira etapa executável.
 | Conector Tractian com 18 operações | Pronto |
 | Conector sintético de extensibilidade | Pronto |
 | Testes do núcleo | Pronto |
-| Executor HTTP protegido | Próxima etapa |
+| Executor GET com path, allowlist e envelope | Pronto |
+| Query, body, autenticação, retry e escrita simulada | Próxima etapa |
 | MCP e agente LangGraph/Groq | Planejado |
 | Banco e OpenTelemetry | Planejado |
 | Frontend Next.js | Planejado |
 | Benchmark e dashboard | Planejado |
 
-Importante: a aplicação atual **não chama a API Tractian e não chama um LLM**. Ela valida e expõe
-o catálogo que tornará essas chamadas seguras.
+Importante: o executor já consegue chamar uma operação GET sem autenticação, como `getWidget`, mas
+ainda não está exposto por uma rota. A API Tractian permanece bloqueada porque sua autenticação
+será implementada no próximo incremento. A aplicação ainda não chama um LLM.
 
 ## Por que começar pelo catálogo?
 
@@ -46,7 +48,7 @@ flowchart LR
     P[Políticas locais] --> C
     D[Domínio] --> C
     C --> F[FastAPI: catálogo validado]
-    F -. próxima etapa .-> E[Executor HTTP protegido]
+    C --> E[Executor GET protegido]
     E -. depois .-> A[Agente]
 ```
 
@@ -229,7 +231,13 @@ startup bem-sucedido do catálogo.
 - política `read|write` não pode contradizer o método HTTP;
 - config desconhecida no profile é erro, não warning;
 - modo default é `simulate`;
-- endpoints do catálogo não revelam credenciais resolvidas.
+- endpoints do catálogo não revelam credenciais resolvidas;
+- executor recebe `operationId`, nunca URL arbitrária;
+- argumentos de path são validados pelo JSON Schema do OpenAPI;
+- valores de path são percent-encoded para não criarem segmentos extras;
+- URL-base precisa vir do ambiente e coincidir com a allowlist;
+- operação desabilitada, escrita e autenticação ainda não suportada falham antes da rede;
+- timeout, resposta HTTP de erro e JSON inválido viram envelopes estruturados.
 
 ## Integração contínua
 
@@ -275,18 +283,34 @@ avaliação existirem.
 
 “Planejada” significa que parte dessa stack ainda não está no código.
 
-## Próxima etapa
+## Executor HTTP implementado
 
-O próximo incremento é o executor HTTP genérico. Ele deverá:
+O primeiro corte do executor está em `apps/api/src/indusguard_api/executor.py`. Ele:
 
-1. receber uma operação já validada pelo catálogo;
-2. validar path, query, headers e body pelo OpenAPI;
-3. resolver autenticação sem enviar segredos ao modelo;
-4. aplicar allowlist da URL-base;
-5. respeitar timeout, retry e idempotência;
-6. simular POST/PATCH quando `EXECUTION_MODE=simulate`;
-7. redigir dados sensíveis;
-8. devolver um envelope comum de status, dados, erro e latência.
+1. recebe `connector_id`, `operation_id`, argumentos e contexto;
+2. localiza apenas operações validadas pelo catálogo;
+3. bloqueia operações desabilitadas e métodos diferentes de GET;
+4. valida os argumentos de path pelo JSON Schema da operação;
+5. resolve a URL-base por variável de ambiente e confere a allowlist;
+6. respeita o timeout declarado no profile;
+7. normaliza sucesso, bloqueio e falha em um envelope comum.
+
+Os testes usam `httpx.MockTransport`, portanto provam a montagem da chamada sem acessar a internet:
+
+```bash
+.venv/bin/pytest apps/api/tests/test_executor.py -q
+```
+
+### Próximo incremento
+
+Completar o transporte genérico nesta ordem:
+
+1. parâmetros de query e headers;
+2. body JSON;
+3. autenticação `context_header`, API key e Bearer;
+4. simulação de POST/PATCH quando `EXECUTION_MODE=simulate`;
+5. retry somente quando política e idempotência permitirem;
+6. redaction dos campos sensíveis.
 
 Somente depois essa camada será apresentada como tools MCP ao LangGraph.
 
@@ -296,8 +320,9 @@ Somente depois essa camada será apresentada como tools MCP ao LangGraph.
 2. Abra [docs/code-guide.md](docs/code-guide.md).
 3. Compare `connectors/synthetic/openapi.yaml` com seu `profile.yaml`.
 4. Leia `Settings`, depois os schemas, depois `ConnectorCatalog`.
-5. Rode `make test` e leia cada teste como uma regra do sistema.
-6. Altere temporariamente uma cópia de profile para provocar um erro e observar o fail-fast.
+5. Leia `executor.py` acompanhando `test_executor.py`.
+6. Rode `make test` e leia cada teste como uma regra do sistema.
+7. Altere temporariamente uma cópia de profile para provocar um erro e observar o fail-fast.
 
 ## Glossário rápido
 
@@ -343,5 +368,6 @@ mudança no contrato externo.
 
 ### A API Tractian não respondeu
 
-O backend atual ainda não chama a API Tractian. Se o catálogo e Swagger do IndusGuard funcionam, a
-primeira etapa está correta; integração HTTP pertence ao próximo incremento.
+O executor bloqueia a Tractian com `AUTH_NOT_SUPPORTED` neste incremento. Isso é intencional: ele
+nunca deve fazer uma chamada anônima por falta de implementação parcial. Primeiro teste o fluxo
+`getWidget` com `test_executor.py`; `context_header` será o próximo modo de autenticação.

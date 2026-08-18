@@ -15,13 +15,14 @@ flowchart LR
     V --> C[Catálogo em memória]
     C --> API[FastAPI]
     API --> UI[UI futura]
-    C -. próxima etapa .-> E[Executor HTTP]
+    C --> E[Executor GET]
     E -. etapas futuras .-> MCP[MCP tools]
     MCP --> A[Agente LangGraph]
 ```
 
-As linhas contínuas representam o que já está implementado. As linhas tracejadas mostram o
-próximo caminho de desenvolvimento.
+As linhas contínuas representam o que já está implementado. O executor ainda é uma interface
+interna: nenhuma rota do FastAPI o chama. As linhas tracejadas mostram o próximo caminho de
+desenvolvimento.
 
 ## Responsabilidade de cada arquivo do conector
 
@@ -74,8 +75,38 @@ As principais barreiras atuais são:
 7. operação ausente do profile começa desabilitada;
 8. política de leitura/escrita não pode contradizer o método HTTP.
 
-O executor futuro adicionará validação de argumentos, allowlist da URL efetiva, autenticação,
-timeout, retry, redaction e simulação de mutações.
+O primeiro corte do executor acrescenta validação JSON Schema para path, percent-encoding,
+allowlist da URL efetiva, timeout e envelope comum. Autenticação, query, body, retry, redaction e
+simulação de mutações continuam bloqueados até receberem testes específicos.
+
+## Fluxo do primeiro executor
+
+```mermaid
+flowchart TD
+    R[ExecutionRequest] --> C{Conector existe?}
+    C -- não --> B[blocked]
+    C -- sim --> O{Operação existe e está habilitada?}
+    O -- não --> B
+    O -- sim --> M{É GET e auth none?}
+    M -- não --> B
+    M -- sim --> J[Validar path com JSON Schema]
+    J --> U[Resolver URL pelo ambiente]
+    U --> A{URL pertence à allowlist?}
+    A -- não --> B
+    A -- sim --> H[GET com timeout]
+    H --> N[Envelope executed ou failed]
+```
+
+O request não contém URL. Ele contém somente `connector_id`, `operation_id`, argumentos e
+contexto. Essa decisão impede que agente ou usuário convertam o executor em um proxy para destinos
+arbitrários.
+
+O catálogo mantém agora duas visões:
+
+- `ConnectorDetails`: cópia pública usada pelas rotas atuais;
+- `LoadedConnector`: profile e parâmetros OpenAPI internos usados por `resolve_operation()`.
+
+Essa separação fornece ao executor os metadados necessários sem aumentar a superfície pública.
 
 ## Liveness e readiness
 
@@ -96,7 +127,8 @@ instância cujo catálogo ainda não esteja pronto.
 | Tractian com 18 operações | Implementado |
 | Segundo conector sem código específico | Implementado |
 | Endpoints operacionais | Implementados |
-| Executor HTTP | Próxima etapa |
+| Executor GET, path e allowlist | Implementado internamente |
+| Query, body e autenticação | Próxima etapa |
 | Policy engine em runtime | Planejado |
 | MCP e LangGraph | Planejado |
 | Persistência e OpenTelemetry | Planejado |

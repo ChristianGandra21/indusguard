@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
@@ -40,6 +41,37 @@ HTTP_METHODS: Final = {"get", "post", "put", "patch", "delete", "head", "options
 # O método HTTP fornece um primeiro limite determinístico entre consulta e mutação. A política
 # declarada no profile não pode contradizer esse limite.
 READ_METHODS: Final = {"get", "head", "options"}
+
+
+@dataclass(frozen=True)
+class RuntimeOperation:
+    """Operação consolidada acrescida dos metadados necessários para executá-la.
+
+    ``OperationSummary`` continua sendo a visão pública. Os parâmetros OpenAPI permanecem
+    internos porque o executor precisa deles para validar argumentos, mas as rotas de catálogo
+    não precisam expor toda a especificação original.
+    """
+
+    summary: OperationSummary
+    parameters: tuple[dict[str, Any], ...]
+
+
+@dataclass(frozen=True)
+class LoadedConnector:
+    """Representação interna completa de um conector validado."""
+
+    profile: ConnectorProfile
+    details: ConnectorDetails
+    operations: dict[str, RuntimeOperation]
+
+
+@dataclass(frozen=True)
+class ResolvedOperation:
+    """Cópia segura entregue pelo catálogo a um consumidor interno como o executor."""
+
+    profile: ConnectorProfile
+    operation: OperationSummary
+    parameters: tuple[dict[str, Any], ...]
 
 
 class ConnectorValidationError(ValueError):
@@ -209,10 +241,34 @@ def _build_operation(
     )
 
 
+def _merge_parameters(
+    path_item: Mapping[str, Any],
+    raw_operation: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    """Combina parâmetros do path e da operação conforme a regra de override do OpenAPI.
+
+    Um parâmetro declarado diretamente na operação substitui outro com o mesmo par ``(in,
+    name)`` declarado no path. Referências locais são preservadas para o resolvedor que será
+    acrescentado quando query e headers entrarem no executor.
+    """
+
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    parameter_groups = (path_item.get("parameters", []), raw_operation.get("parameters", []))
+    for parameters in parameter_groups:
+        for parameter in parameters:
+            copied = deepcopy(parameter)
+            if "$ref" in copied:
+                key = ("$ref", str(copied["$ref"]))
+            else:
+                key = (str(copied.get("in", "")), str(copied.get("name", "")))
+            merged[key] = copied
+    return tuple(merged.values())
+
+
 def _parse_operations(
     spec: dict[str, Any],
     policies: dict[str, OperationPolicy],
-) -> list[OperationSummary]:
+) -> list[RuntimeOperation]:
     """Extrai operações do OpenAPI e garante correspondência exata com o profile.
 
     Uma operação existente apenas no OpenAPI é conhecida, mas nasce desabilitada. Já uma política
@@ -220,7 +276,7 @@ def _parse_operations(
     de contrato e invalida o conector inteiro.
     """
 
-    operations: list[OperationSummary] = []
+    operations: list[RuntimeOperation] = []
     seen_ids: set[str] = set()
 
     for path, path_item in spec.get("paths", {}).items():
@@ -242,7 +298,13 @@ def _parse_operations(
             # Segurança por default: descobrir um endpoint novo não o torna automaticamente
             # disponível ao agente, nem mesmo quando ele é somente leitura.
             policy = policies.get(operation_id, OperationPolicy())
-            operations.append(_build_operation(path, normalized_method, raw_operation, policy))
+            summary = _build_operation(path, normalized_method, raw_operation, policy)
+            operations.append(
+                RuntimeOperation(
+                    summary=summary,
+                    parameters=_merge_parameters(path_item, raw_operation),
+                )
+            )
 
     unknown_policies = set(policies) - seen_ids
     if unknown_policies:
@@ -251,7 +313,10 @@ def _parse_operations(
             f"políticas apontam para operationIds inexistentes: {unknown}"
         )
 
-    return sorted(operations, key=lambda operation: (operation.path, operation.method))
+    return sorted(
+        operations,
+        key=lambda operation: (operation.summary.path, operation.summary.method),
+    )
 
 
 class ConnectorCatalog:
@@ -264,7 +329,7 @@ class ConnectorCatalog:
 
     def __init__(self, connectors_dir: Path) -> None:
         self.connectors_dir = connectors_dir.resolve()
-        self._connectors: dict[str, ConnectorDetails] = {}
+        self._connectors: dict[str, LoadedConnector] = {}
 
     def load(self) -> None:
         """Descobre ``*/profile.yaml`` e carrega todos os conectores de forma fail-fast."""
@@ -274,19 +339,20 @@ class ConnectorCatalog:
                 f"diretório de conectores não encontrado: {self.connectors_dir}"
             )
 
-        loaded: dict[str, ConnectorDetails] = {}
+        loaded: dict[str, LoadedConnector] = {}
         # Ordenar torna respostas e testes reprodutíveis entre sistemas de arquivos diferentes.
         for profile_path in sorted(self.connectors_dir.glob("*/profile.yaml")):
             connector = self._load_connector(profile_path)
-            if connector.id in loaded:
-                raise ConnectorValidationError(f"id de conector duplicado: '{connector.id}'")
-            loaded[connector.id] = connector
+            connector_id = connector.details.id
+            if connector_id in loaded:
+                raise ConnectorValidationError(f"id de conector duplicado: '{connector_id}'")
+            loaded[connector_id] = connector
 
         if not loaded:
             raise ConnectorValidationError("nenhum conector foi encontrado")
         self._connectors = loaded
 
-    def _load_connector(self, profile_path: Path) -> ConnectorDetails:
+    def _load_connector(self, profile_path: Path) -> LoadedConnector:
         """Valida os três arquivos de um conector e produz sua visão pública consolidada."""
 
         connector_dir = profile_path.parent.resolve()
@@ -319,23 +385,28 @@ class ConnectorCatalog:
         ):
             raise ConnectorValidationError(f"{domain_path}: context_fields deve ser uma lista")
 
-        return ConnectorDetails(
+        details = ConnectorDetails(
             id=profile.id,
             name=profile.name,
             description=profile.description,
             openapi_version=str(spec["openapi"]),
             auth_type=profile.auth.type,
             operation_count=len(operations),
-            enabled_operation_count=sum(operation.enabled for operation in operations),
+            enabled_operation_count=sum(operation.summary.enabled for operation in operations),
             context_fields=context_fields,
-            operations=operations,
+            operations=[operation.summary for operation in operations],
+        )
+        return LoadedConnector(
+            profile=profile,
+            details=details,
+            operations={operation.summary.operation_id: operation for operation in operations},
         )
 
     def list(self) -> list[ConnectorSummary]:
         """Retorna a visão resumida, adequada para a listagem da API e da futura interface."""
 
         return [
-            ConnectorSummary.model_validate(connector.model_dump(exclude={"operations"}))
+            ConnectorSummary.model_validate(connector.details.model_dump(exclude={"operations"}))
             for connector in self._connectors.values()
         ]
 
@@ -343,4 +414,28 @@ class ConnectorCatalog:
         """Retorna uma cópia para impedir que consumidores alterem o catálogo compartilhado."""
 
         connector = self._connectors.get(connector_id)
-        return deepcopy(connector) if connector else None
+        return deepcopy(connector.details) if connector else None
+
+    def resolve_operation(
+        self,
+        connector_id: str,
+        operation_id: str,
+    ) -> ResolvedOperation | None:
+        """Resolve metadados internos sem permitir mutação do catálogo compartilhado.
+
+        Este método é deliberadamente separado de ``get()``. Assim, as rotas públicas continuam
+        recebendo somente ``ConnectorDetails``, enquanto o executor obtém profile, allowlist e
+        parâmetros OpenAPI por uma interface explícita.
+        """
+
+        connector = self._connectors.get(connector_id)
+        if connector is None:
+            return None
+        operation = connector.operations.get(operation_id)
+        if operation is None:
+            return None
+        return ResolvedOperation(
+            profile=deepcopy(connector.profile),
+            operation=deepcopy(operation.summary),
+            parameters=deepcopy(operation.parameters),
+        )

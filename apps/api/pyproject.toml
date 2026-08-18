@@ -14,6 +14,8 @@ dependencies = [
   "fastapi>=0.115,<1.0",
   # httpx será usado pelo executor e já fornece transporte ASGI para os testes.
   "httpx>=0.27,<1.0",
+  # O primeiro corte do executor valida argumentos com o JSON Schema declarado no OpenAPI.
+  "jsonschema>=4.23,<5.0",
   # Validação estrutural complementa as restrições locais implementadas em connectors.py.
   "openapi-spec-validator>=0.7,<1.0",
   "pydantic-settings>=2.6,<3.0",

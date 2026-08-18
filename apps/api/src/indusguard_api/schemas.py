@@ -9,7 +9,7 @@ Usar os mesmos tipos no loader e na API evita dicionários sem contrato circulan
 """
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -28,6 +28,20 @@ class RiskLevel(StrEnum):
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
+
+
+class ExecutionOutcome(StrEnum):
+    """Resultado de alto nível produzido pelo executor HTTP.
+
+    Separar ``blocked`` de ``failed`` é importante para observabilidade: um bloqueio significa
+    que uma regra de segurança funcionou antes da rede; uma falha significa que uma chamada
+    permitida não conseguiu produzir uma resposta utilizável.
+    """
+
+    EXECUTED = "executed"
+    SIMULATED = "simulated"
+    BLOCKED = "blocked"
+    FAILED = "failed"
 
 
 class AuthProfile(BaseModel):
@@ -141,6 +155,52 @@ class ConnectorDetails(ConnectorSummary):
     """Resumo acrescido das operações consolidadas do conector."""
 
     operations: list[OperationSummary]
+
+
+class ExecutionArguments(BaseModel):
+    """Argumentos separados por sua posição no request HTTP.
+
+    Este primeiro corte vertical aceita somente parâmetros de path. Manter um objeto próprio,
+    com campos extras proibidos, faz usos prematuros de query ou body falharem explicitamente em
+    vez de serem ignorados. Esses campos serão adicionados nos próximos incrementos.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: dict[str, Any] = Field(default_factory=dict)
+
+
+class OperationExecutionRequest(BaseModel):
+    """Pedido interno, independente de FastAPI, para executar uma operação do catálogo."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    connector_id: str = Field(pattern=r"^[a-z][a-z0-9_-]*$")
+    operation_id: str = Field(min_length=1)
+    arguments: ExecutionArguments = Field(default_factory=ExecutionArguments)
+    # O contexto será usado por autenticação derivada da pessoa e pela policy engine. Ele já faz
+    # parte do contrato para que o executor não precise mudar de assinatura depois.
+    context: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutionErrorDetails(BaseModel):
+    """Erro estruturado que pode ser consumido igualmente por API, agente, trace e testes."""
+
+    code: str
+    message: str
+    retryable: bool = False
+
+
+class OperationExecutionResult(BaseModel):
+    """Envelope comum devolvido independentemente da API conectada."""
+
+    connector_id: str
+    operation_id: str
+    outcome: ExecutionOutcome
+    status_code: Annotated[int, Field(ge=100, le=599)] | None = None
+    data: Any = None
+    error: ExecutionErrorDetails | None = None
+    latency_ms: Annotated[float, Field(ge=0)]
 
 
 class HealthResponse(BaseModel):
