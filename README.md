@@ -13,7 +13,7 @@ controladas que, nas próximas etapas, serão disponibilizadas para MCP, LangGra
 
 ## Estado do projeto
 
-O repositório concluiu o terceiro corte vertical da etapa de execução HTTP.
+O repositório concluiu o quarto corte vertical: a policy engine determinística interna.
 
 | Capacidade | Situação |
 |---|---|
@@ -26,15 +26,16 @@ O repositório concluiu o terceiro corte vertical da etapa de execução HTTP.
 | Executor GET com path, query, headers e allowlist | Pronto |
 | `$ref` local e autenticação `context_header` | Pronto |
 | API key/Bearer, retry, redaction e escrita simulada | Pronto internamente |
-| Policy engine para autorizar escrita real | Próxima etapa |
+| Policy engine determinística e `GuardedExecutor` | Pronto internamente |
+| Escrita real | Bloqueada intencionalmente |
 | MCP e agente LangGraph/Groq | Planejado |
 | Banco e OpenTelemetry | Planejado |
 | Frontend Next.js | Planejado |
 | Benchmark e dashboard | Planejado |
 
-Importante: o executor chama GETs autenticados e simula escritas validadas, mas ainda não está
-exposto por uma rota. Os testes usam transporte em memória e não acessam a API real. Escritas reais
-continuam bloqueadas até a policy engine existir, e a aplicação ainda não chama um LLM.
+Importante: o fluxo protegido permite GETs autenticados e simula escritas validadas, mas ainda não
+está exposto por uma rota. Os testes usam transporte em memória e não acessam a API real. Mesmo uma
+confirmação válida recebe `REAL_WRITE_DISABLED`; a aplicação ainda não chama um LLM.
 
 ## Por que começar pelo catálogo?
 
@@ -50,7 +51,9 @@ flowchart LR
     P[Políticas locais] --> C
     D[Domínio] --> C
     C --> F[FastAPI: catálogo validado]
-    C --> E[Executor GET protegido]
+    C --> P[PolicyEngine]
+    P --> G[GuardedExecutor]
+    G --> E[Executor HTTP protegido]
     E -. depois .-> A[Agente]
 ```
 
@@ -238,7 +241,7 @@ startup bem-sucedido do catálogo.
 - argumentos de path são validados pelo JSON Schema do OpenAPI;
 - valores de path são percent-encoded para não criarem segmentos extras;
 - URL-base precisa vir do ambiente e coincidir com a allowlist;
-- operações desabilitadas e escritas reais sem policy engine falham antes da rede;
+- operações desabilitadas, decisões políticas negativas e toda escrita real falham antes da rede;
 - `context_header` só pode ser derivado do contexto declarado pelo domínio;
 - API key e Bearer vêm somente do ambiente;
 - argumentos não conseguem sobrescrever header ou query reservados de autenticação;
@@ -304,7 +307,7 @@ Os três primeiros cortes do executor estão em `apps/api/src/indusguard_api/exe
 6. aplica `context_header`, API key em header/query ou Bearer sem permitir sobrescrita;
 7. resolve a URL-base por variável de ambiente e confere a allowlist;
 8. respeita timeout e retry condicionado por `idempotent` e `max_retries`;
-9. simula mutações sem rede no modo default e bloqueia escrita real sem policy engine;
+9. simula mutações sem rede no modo default e bloqueia escrita real no executor direto;
 10. remove campos sensíveis e normaliza execução, simulação, bloqueio e falha.
 
 Os testes usam `httpx.MockTransport`, portanto provam a montagem da chamada sem acessar a internet:
@@ -313,12 +316,29 @@ Os testes usam `httpx.MockTransport`, portanto provam a montagem da chamada sem 
 .venv/bin/pytest apps/api/tests/test_executor.py -q
 ```
 
+## Policy engine determinística implementada
+
+[`policy.py`](apps/api/src/indusguard_api/policy.py) avalia a proposta antes do HTTP. Ela confere
+identidade, permissão, pedido direto, justificativa e escopos usando somente sinais confiáveis do
+runtime. Nenhum desses valores será escolhido pelo LLM.
+
+| Outcome político | Consequência |
+|---|---|
+| `allow` | Uma leitura pode seguir para o `HttpExecutor`. |
+| `simulate` | Uma escrita pode ser validada e virar prévia, sempre com zero rede. |
+| `require_confirmation` | O fluxo para e devolve o digest da ação a confirmar. |
+| `block` | O fluxo para com códigos estáveis e zero tentativas HTTP. |
+
+O digest é um SHA-256 canônico sobre operação, argumentos, contexto, principal e escopos do
+recurso. Uma confirmação de outra pessoa ou vinculada a outro digest não vale. No modo `execute`,
+uma confirmação correta ainda termina em `REAL_WRITE_DISABLED`: habilitar efeito externo não faz
+parte deste incremento.
+
 ### Próximo incremento
 
-Implementar a policy engine determinística para avaliar permissão, pedido direto, justificativa e
-confirmação. Somente depois de uma decisão aprovada ela poderá liberar uma escrita real em ambiente
-controlado e o executor poderá ganhar uma rota interna. Na sequência, as operações aprovadas serão
-apresentadas como tools MCP ao LangGraph.
+Apresentar as operações protegidas como tools MCP internas, preservando `GuardedExecutor` como a
+única passagem até o HTTP. FastAPI público, LangGraph, Groq e escrita real continuam fora deste
+corte.
 
 ## Roteiro de estudo recomendado
 
@@ -327,8 +347,9 @@ apresentadas como tools MCP ao LangGraph.
 3. Compare `connectors/synthetic/openapi.yaml` com seu `profile.yaml`.
 4. Leia `Settings`, depois os schemas, depois `ConnectorCatalog`.
 5. Leia `executor.py` acompanhando `test_executor.py`.
-6. Rode `make test` e leia cada teste como uma regra do sistema.
-7. Altere temporariamente uma cópia de profile para provocar um erro e observar o fail-fast.
+6. Leia `policy.py` junto de `test_policy.py` e compare os quatro outcomes.
+7. Rode `make test` e leia cada teste como uma regra do sistema.
+8. Altere temporariamente uma cópia de profile para provocar um erro e observar o fail-fast.
 
 ## Glossário rápido
 

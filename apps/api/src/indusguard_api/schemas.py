@@ -14,6 +14,8 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 AuthType = Literal["none", "api_key_header", "api_key_query", "bearer", "context_header"]
+ExecutionMode = Literal["simulate", "execute"]
+ScopeValue = str | int | float | bool
 
 
 class AccessMode(StrEnum):
@@ -24,7 +26,7 @@ class AccessMode(StrEnum):
 
 
 class RiskLevel(StrEnum):
-    """Graduação usada pela futura policy engine para decidir confirmação e bloqueio."""
+    """Graduação exposta pela policy engine para decisão, explicação e release gates."""
 
     LOW = "low"
     MEDIUM = "medium"
@@ -44,6 +46,37 @@ class ExecutionOutcome(StrEnum):
     SIMULATED = "simulated"
     BLOCKED = "blocked"
     FAILED = "failed"
+
+
+class PolicyOutcome(StrEnum):
+    """Decisões que a policy engine pode tomar antes do executor HTTP."""
+
+    ALLOW = "allow"
+    SIMULATE = "simulate"
+    REQUIRE_CONFIRMATION = "require_confirmation"
+    BLOCK = "block"
+
+
+class PolicyReasonCode(StrEnum):
+    """Códigos estáveis para testes, métricas e explicações na futura interface."""
+
+    CONNECTOR_NOT_FOUND = "CONNECTOR_NOT_FOUND"
+    OPERATION_NOT_FOUND = "OPERATION_NOT_FOUND"
+    OPERATION_DISABLED = "OPERATION_DISABLED"
+    PRINCIPAL_REQUIRED = "PRINCIPAL_REQUIRED"
+    PRINCIPAL_CONTEXT_MISMATCH = "PRINCIPAL_CONTEXT_MISMATCH"
+    REQUIRED_SCOPE_MISSING = "REQUIRED_SCOPE_MISSING"
+    SCOPE_MISMATCH = "SCOPE_MISMATCH"
+    PERMISSION_DENIED = "PERMISSION_DENIED"
+    DIRECT_REQUEST_REQUIRED = "DIRECT_REQUEST_REQUIRED"
+    JUSTIFICATION_REQUIRED = "JUSTIFICATION_REQUIRED"
+    JUSTIFICATION_TOO_SHORT = "JUSTIFICATION_TOO_SHORT"
+    INVALID_ACTION_ARGUMENTS = "INVALID_ACTION_ARGUMENTS"
+    CONFIRMATION_REQUIRED = "CONFIRMATION_REQUIRED"
+    CONFIRMATION_MISMATCH = "CONFIRMATION_MISMATCH"
+    READ_APPROVED = "READ_APPROVED"
+    WRITE_SIMULATION_APPROVED = "WRITE_SIMULATION_APPROVED"
+    REAL_WRITE_DISABLED = "REAL_WRITE_DISABLED"
 
 
 class AuthProfile(BaseModel):
@@ -94,6 +127,11 @@ class OperationPolicy(BaseModel):
     requires_direct_request: bool = False
     requires_confirmation: bool = False
     justification_min_length: Annotated[int, Field(ge=0, le=1000)] = 0
+    # Escopos ligam identidade, contexto e recurso. A igualdade entre as três fontes impede que
+    # um agente troque, por exemplo, o ``company_id`` apenas alterando os argumentos da tool.
+    required_scopes: list[str] = Field(default_factory=list)
+    # JSON Pointer permite localizar a justificativa sem codificar o formato de uma API no Python.
+    justification_pointer: str = "/justification"
 
     # Os limites impedem profiles acidentais com espera ou retries ilimitados.
     timeout_seconds: Annotated[float, Field(gt=0, le=60)] = 10
@@ -102,6 +140,31 @@ class OperationPolicy(BaseModel):
 
     # Campos listados aqui são removidos recursivamente de respostas e prévias de simulação.
     redact_fields: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_policy_fields(self) -> "OperationPolicy":
+        """Rejeita escopos ambíguos e pointers inválidos ao carregar o conector."""
+
+        if len(self.required_scopes) != len(set(self.required_scopes)):
+            raise ValueError("required_scopes não pode conter valores duplicados")
+        if any(not scope or scope.strip() != scope for scope in self.required_scopes):
+            raise ValueError("required_scopes deve conter nomes não vazios e sem espaços externos")
+        if self.justification_pointer and not self.justification_pointer.startswith("/"):
+            raise ValueError("justification_pointer deve ser um JSON Pointer iniciado por '/'")
+        # RFC 6901 define somente ``~0`` e ``~1``. Rejeitar outros escapes no startup evita que
+        # uma justificativa válida fique invisível por um typo de configuração.
+        for token in self.justification_pointer.split("/")[1:]:
+            index = 0
+            while index < len(token):
+                if token[index] == "~":
+                    if index + 1 >= len(token) or token[index + 1] not in {"0", "1"}:
+                        raise ValueError(
+                            "justification_pointer contém escape JSON Pointer inválido"
+                        )
+                    index += 2
+                    continue
+                index += 1
+        return self
 
 
 class ConnectorProfile(BaseModel):
@@ -135,6 +198,8 @@ class OperationSummary(BaseModel):
     requires_direct_request: bool
     requires_confirmation: bool
     justification_min_length: int
+    required_scopes: list[str] = Field(default_factory=list)
+    justification_pointer: str
     timeout_seconds: float
     max_retries: int
     idempotent: bool
@@ -190,6 +255,67 @@ class OperationExecutionRequest(BaseModel):
     context: dict[str, Any] = Field(default_factory=dict)
 
 
+class PolicyPrincipal(BaseModel):
+    """Identidade e autorizações obtidas de uma fonte confiável, nunca escolhidas pelo LLM."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    permissions: list[str] = Field(default_factory=list)
+    scopes: dict[str, ScopeValue] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_authorization_claims(self) -> "PolicyPrincipal":
+        """Evita claims duplicadas ou vazias que dificultariam auditoria."""
+
+        if len(self.permissions) != len(set(self.permissions)):
+            raise ValueError("permissions não pode conter valores duplicados")
+        if any(
+            not permission or permission.strip() != permission for permission in self.permissions
+        ):
+            raise ValueError("permissions deve conter nomes não vazios e sem espaços externos")
+        if any(not scope or scope.strip() != scope for scope in self.scopes):
+            raise ValueError("scopes deve conter nomes não vazios e sem espaços externos")
+        return self
+
+
+class PolicyConfirmation(BaseModel):
+    """Confirmação explícita vinculada à pessoa e ao digest exato da ação."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    confirmed_by: str = Field(min_length=1)
+    action_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class PolicyEvaluationRequest(BaseModel):
+    """Todos os sinais confiáveis necessários para avaliar uma execução."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    execution: OperationExecutionRequest
+    principal: PolicyPrincipal | None = None
+    resource_scopes: dict[str, ScopeValue] = Field(default_factory=dict)
+    direct_request: bool = False
+    confirmation: PolicyConfirmation | None = None
+
+
+class PolicyDecision(BaseModel):
+    """Decisão explicável sem expor argumentos, credenciais ou claims em texto puro."""
+
+    connector_id: str
+    operation_id: str
+    outcome: PolicyOutcome
+    reason_codes: Annotated[list[PolicyReasonCode], Field(min_length=1)]
+    access: AccessMode | None = None
+    risk: RiskLevel | None = None
+    required_permission: str | None = None
+    required_scopes: list[str] = Field(default_factory=list)
+    confirmation_required_for_execute: bool = False
+    action_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    message: str
+
+
 class ExecutionErrorDetails(BaseModel):
     """Erro estruturado que pode ser consumido igualmente por API, agente, trace e testes."""
 
@@ -211,7 +337,7 @@ class SimulatedAction(BaseModel):
     header_names: list[str] = Field(default_factory=list)
     body_present: bool = False
     body: Any = None
-    auth_type: str
+    auth_type: AuthType
 
 
 class OperationExecutionResult(BaseModel):
@@ -227,6 +353,13 @@ class OperationExecutionResult(BaseModel):
     attempts: Annotated[int, Field(ge=0)] = 0
     simulation: SimulatedAction | None = None
     latency_ms: Annotated[float, Field(ge=0)]
+
+
+class GuardedExecutionResult(BaseModel):
+    """Une a decisão política ao resultado HTTP, que só existe quando ela autoriza o fluxo."""
+
+    policy: PolicyDecision
+    execution: OperationExecutionResult | None = None
 
 
 class HealthResponse(BaseModel):
@@ -247,4 +380,4 @@ class VersionResponse(BaseModel):
 
     version: str
     environment: str
-    execution_mode: Literal["simulate", "execute"]
+    execution_mode: ExecutionMode

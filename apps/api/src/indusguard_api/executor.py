@@ -1,8 +1,8 @@
 """Executor HTTP genérico construído sobre o catálogo validado de conectores.
 
 O terceiro corte vertical executa operações GET com parâmetros validados, cinco modos de
-autenticação, retry idempotente e redaction. Operações mutáveis são simuladas por default e
-continuam bloqueadas no modo de execução real até existir uma decisão da policy engine.
+autenticação, retry idempotente e redaction. Operações mutáveis são simuladas por default; uma
+chamada direta ao executor nunca realiza escrita real, mesmo com a policy engine implementada.
 
 As fronteiras de segurança são deliberadamente determinísticas:
 
@@ -23,7 +23,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Any, Final, Literal
+from typing import Any, Final
 from urllib.parse import quote
 
 import httpx
@@ -35,6 +35,7 @@ from indusguard_api.schemas import (
     AccessMode,
     ExecutionArguments,
     ExecutionErrorDetails,
+    ExecutionMode,
     ExecutionOutcome,
     OperationExecutionRequest,
     OperationExecutionResult,
@@ -555,7 +556,7 @@ class HttpExecutor:
         *,
         environment: Mapping[str, str] | None = None,
         client: httpx.AsyncClient | None = None,
-        execution_mode: Literal["simulate", "execute"] = "simulate",
+        execution_mode: ExecutionMode = "simulate",
         retry_base_delay_seconds: float = 0.1,
         sleeper: Callable[[float], Awaitable[None]] = async_sleep,
     ) -> None:
@@ -569,6 +570,12 @@ class HttpExecutor:
         self._execution_mode = execution_mode
         self._retry_base_delay_seconds = retry_base_delay_seconds
         self._sleeper = sleeper
+
+    @property
+    def execution_mode(self) -> ExecutionMode:
+        """Expõe somente leitura do modo para impedir divergência com a policy engine."""
+
+        return self._execution_mode
 
     async def execute(self, request: OperationExecutionRequest) -> OperationExecutionResult:
         """Valida, prepara, executa e normaliza uma operação do catálogo."""
@@ -617,7 +624,7 @@ class HttpExecutor:
                 request,
                 started_at,
                 "WRITE_POLICY_REQUIRED",
-                "a execução real de escrita exige uma decisão da policy engine",
+                "escrita real não pode ser chamada diretamente no HttpExecutor",
             )
 
         try:

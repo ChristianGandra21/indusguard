@@ -100,14 +100,17 @@ resolve nem devolve esses valores.
 | `requires_direct_request` | `false` | Impede o agente de inferir uma ação não solicitada. |
 | `requires_confirmation` | `false` | Adiciona confirmação antes de operações sensíveis. |
 | `justification_min_length` | `0` | Exige justificativa minimamente informativa. |
+| `justification_pointer` | `/justification` | Localiza a justificativa no body por JSON Pointer. |
+| `required_scopes` | `[]` | Liga principal, recurso e contexto ao mesmo tenant/recurso. |
 | `timeout_seconds` | `10` | Limita quanto uma tool pode bloquear a execução. |
 | `max_retries` | `0` | Limita repetição automática; o máximo aceito é 2. |
 | `idempotent` | `false` | Informa se repetir a chamada preserva o efeito. |
 | `redact_fields` | `[]` | Define campos que não devem aparecer em traces. |
 
-O executor aplica `enabled`, timeout, allowlist, autenticação, retry condicionado por idempotência e
-redaction. Escritas são apenas simuladas por default; permissão, pedido direto, justificativa e
-confirmação serão decisões da próxima policy engine antes de qualquer execução real.
+O executor aplica timeout, allowlist, autenticação, retry condicionado por idempotência e
+redaction. A policy engine já aplica `enabled`, permissão, pedido direto, justificativa, escopos e
+confirmação antes de chamar o executor. Escritas são apenas simuladas por default; execução real
+permanece desabilitada neste release.
 
 ### `domain.yaml`
 

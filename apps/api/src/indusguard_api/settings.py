@@ -6,10 +6,11 @@ devolvida nos endpoints de catálogo.
 """
 
 from pathlib import Path
-from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from indusguard_api.schemas import ExecutionMode
 
 
 def default_connectors_dir() -> Path:
@@ -30,7 +31,7 @@ class Settings(BaseSettings):
     # Simulação é o default porque uma instalação nova nunca deve executar mutações apenas por
     # ter recebido uma solicitação do agente.
     environment: str = "development"
-    execution_mode: Literal["simulate", "execute"] = "simulate"
+    execution_mode: ExecutionMode = "simulate"
 
     # O caminho pode ser trocado em testes e deployments sem alterar o pacote Python.
     connectors_dir: Path = Field(default_factory=default_connectors_dir)

@@ -31,6 +31,18 @@ def test_tractian_keeps_get_and_patch_on_same_path(client: ASGITestClient) -> No
     assert operations["updateAssetConfig"]["method"] == "PATCH"
     assert operations["updateAssetConfig"]["permission"] == "action_high"
     assert operations["updateAssetConfig"]["requires_confirmation"] is True
+    assert operations["updateAssetConfig"]["required_scopes"] == ["company_id"]
+    assert operations["updateAssetConfig"]["justification_pointer"] == "/justification"
+    scoped_writes = {
+        "updateAssetConfig",
+        "reprocessAnalysis",
+        "requestSpecialistAnalysis",
+        "escalateCase",
+    }
+    assert all(
+        operations[operation]["required_scopes"] == ["company_id"] for operation in scoped_writes
+    )
+    assert operations["requestRetraining"]["required_scopes"] == []
 
 
 def test_unknown_connector_returns_404(client: ASGITestClient) -> None:

@@ -433,8 +433,8 @@ def test_simulates_valid_write_without_network(catalog: ConnectorCatalog) -> Non
     assert network_calls == 0
 
 
-def test_blocks_real_write_until_policy_engine_exists(catalog: ConnectorCatalog) -> None:
-    """Selecionar execute não contorna a etapa determinística que ainda será implementada."""
+def test_blocks_real_write_when_http_executor_is_used_directly(catalog: ConnectorCatalog) -> None:
+    """Selecionar execute não permite contornar o GuardedExecutor e sua decisão política."""
 
     network_calls = 0
 

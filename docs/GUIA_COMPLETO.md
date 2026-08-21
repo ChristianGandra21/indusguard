@@ -90,13 +90,16 @@ O projeto está sendo construído por camadas.
 - retry de falhas transitórias condicionado por idempotência;
 - redaction recursiva de campos e credenciais refletidas;
 - envelope comum para execução, simulação, bloqueio e falha;
+- policy engine determinística, genérica e configurada pelo profile;
+- verificação de identidade, permissões, escopos, pedido direto e justificativa;
+- digest SHA-256 para vincular confirmação à pessoa e à ação exata;
+- `GuardedExecutor` que impede rede em bloqueios e confirmações pendentes;
 - testes automatizados;
 - CI com Ruff, pytest e cobertura.
 
 ### Ainda não implementado
 
 - execução real de escritas;
-- policy engine durante a execução;
 - servidor MCP;
 - LangGraph;
 - chamadas à Groq;
@@ -109,8 +112,8 @@ O projeto está sendo construído por camadas.
 
 Portanto, se você iniciar o projeto agora, ele ainda não responderá perguntas industriais nem
 chamará um LLM. O executor já transforma `getWidget` e GETs autenticados da Tractian em requests
-seguros, além de simular mutações, mas ainda é uma interface interna exercitada por transporte em
-memória, não uma rota.
+seguros, além de simular mutações após uma decisão política, mas ainda é uma interface interna
+exercitada por transporte em memória, não uma rota.
 
 Isso é intencional. Estamos construindo primeiro a fundação previsível.
 
@@ -130,12 +133,12 @@ Pense em um restaurante:
 | `ConnectorCatalog` | A pessoa que confere cardápio e regras antes de abrir o restaurante. |
 | FastAPI | O balcão que expõe as informações já conferidas. |
 | Executor atual | O garçom que leva GETs à cozinha e ensaia escritas sem entregá-las. |
-| Policy engine futura | O supervisor que aprova ou bloqueia o pedido. |
+| Policy engine atual | O supervisor que permite, simula, pede confirmação ou bloqueia. |
 | Agente futuro | O atendente que conversa e sugere o que pedir. |
 
-Hoje temos cardápio, regras, glossário, conferência, balcão, percursos GET e simulação de escrita,
-inclusive com quatro estratégias de autenticação. Ainda não implementamos autorização de escrita
-real nem o atendente inteligente.
+Hoje temos cardápio, regras, glossário, conferência, supervisor, percursos GET e simulação de
+escrita, inclusive com quatro estratégias de autenticação. Ainda não implementamos escrita real
+nem o atendente inteligente.
 
 ---
 
@@ -266,11 +269,13 @@ indusguard/
 │   │   │       ├── schemas.py
 │   │   │       ├── connectors.py
 │   │   │       ├── executor.py
+│   │   │       ├── policy.py
 │   │   │       └── main.py
 │   │   ├── tests/
 │   │   │   ├── conftest.py
 │   │   │   ├── test_connectors.py
 │   │   │   ├── test_executor.py
+│   │   │   ├── test_policy.py
 │   │   │   └── test_system.py
 │   │   └── pyproject.toml
 │   └── web/
@@ -317,7 +322,9 @@ flowchart LR
     M --> F[FastAPI]
     F --> R[Endpoints de inspeção]
 
-    M --> E[Executor GET + auth de contexto]
+    M --> P[PolicyEngine]
+    P --> G[GuardedExecutor]
+    G --> E[Executor HTTP protegido]
     E -. depois .-> MCP[Tools MCP]
     MCP -. depois .-> A[Agente LangGraph]
 ```
@@ -602,7 +609,7 @@ class RiskLevel(StrEnum):
     CRITICAL = "critical"
 ```
 
-Será usado pela policy engine para decidir confirmação, bloqueio e release gates.
+É exposto pela policy engine para decisão, explicação e futuros release gates.
 
 #### `AuthProfile`
 
@@ -625,6 +632,8 @@ enabled = False
 timeout_seconds = 10
 max_retries = 0
 idempotent = False
+required_scopes = []
+justification_pointer = "/justification"
 ```
 
 Os limites Pydantic também impedem:
@@ -676,6 +685,11 @@ o startup falha. Isso evita ignorar um erro de digitação que poderia alterar s
 - `HealthResponse`: resposta de liveness;
 - `ReadyResponse`: resposta de readiness;
 - `VersionResponse`: versão e modo.
+- `PolicyPrincipal`: identidade, permissões e escopos confiáveis;
+- `PolicyConfirmation`: pessoa confirmadora e digest da ação;
+- `PolicyEvaluationRequest`: proposta de execução mais sinais do runtime;
+- `PolicyDecision`: outcome e códigos estáveis sem dados brutos;
+- `GuardedExecutionResult`: decisão e resultado HTTP opcional.
 
 ### 9.4 `connectors.py`
 
@@ -1013,7 +1027,7 @@ Fluxo de `HttpExecutor.execute()`:
 5. valida body JSON quando declarado;
 6. aplica percent-encoding e serialização OpenAPI previsível;
 7. separa leitura de escrita;
-8. simula escrita no modo seguro ou exige policy engine no modo `execute`;
+8. simula escrita no modo seguro ou exige a composição protegida no modo `execute`;
 9. aplica `context_header`, API key ou Bearer sem aceitar sobrescrita;
 10. lê a URL-base da variável indicada pelo profile e confere a allowlist;
 11. executa GET com timeout e retry apenas quando a operação é idempotente;
@@ -1047,6 +1061,65 @@ do ambiente e precisa coincidir com a allowlist versionada.
 
 O `httpx.AsyncClient` e o mapa de variáveis de ambiente podem ser injetados. Nos testes, isso
 substitui a internet por `httpx.MockTransport` sem criar caminhos especiais no código de produção.
+
+---
+
+### 9.7 `policy.py`
+
+Responsabilidade: decidir se uma proposta pode chegar ao executor HTTP. A policy engine não usa
+LLM, banco nem rede; por isso, a mesma entrada sempre produz a mesma decisão.
+
+Entrada conceitual:
+
+```text
+PolicyEvaluationRequest
+├── execution              # conector, operação, argumentos e contexto
+├── principal              # identidade, permissões e escopos autenticados
+├── resource_scopes        # vínculo comprovado do recurso
+├── direct_request         # a pessoa pediu explicitamente esta ação?
+└── confirmation           # pessoa + digest, somente quando houver
+```
+
+`principal` e `resource_scopes` são sinais confiáveis do runtime. Futuramente, poderão ser
+preenchidos por autenticação, `getCurrentUser` e consultas ao recurso. O modelo de linguagem nunca
+escolherá permissões, empresa ou confirmação.
+
+Fluxo de `PolicyEngine.evaluate()`:
+
+1. resolve conector e operação no catálogo;
+2. bloqueia operação ausente ou desabilitada;
+3. confere a identidade contra o `context_field` da autenticação;
+4. para cada `required_scope`, exige o mesmo valor e o mesmo tipo no principal, recurso e contexto;
+5. confere a permissão declarada no profile;
+6. valida pedido direto quando obrigatório;
+7. localiza a justificativa pelo `justification_pointer` e conta caracteres após `strip()`;
+8. calcula o digest para escritas;
+9. devolve `allow`, `simulate`, `require_confirmation` ou `block`.
+
+O JSON Pointer desacopla o núcleo do body de cada API. O default é `/justification`, enquanto uma
+API diferente poderia declarar `/metadata/reasons/0/text` apenas no YAML.
+
+O digest usa JSON canônico e SHA-256 sobre conector, operação, argumentos, contexto, principal e
+escopos do recurso. A decisão expõe somente os 64 caracteres do hash. Se qualquer parte mudar, a
+confirmação anterior deixa de corresponder à ação.
+
+#### Diferença entre simular, confirmar e executar
+
+| Situação | Resultado atual | Rede |
+|---|---|---:|
+| Leitura aprovada | `allow`, depois GET no `HttpExecutor` | 1 ou mais tentativas por retry |
+| Escrita em `simulate` | `simulate`, depois prévia validada | 0 |
+| Escrita em `execute` sem a confirmação exigida | `require_confirmation` | 0 |
+| Confirmação de outra pessoa ou digest | `require_confirmation` | 0 |
+| Confirmação válida | `block/REAL_WRITE_DISABLED` | 0 |
+
+Simulação não exige confirmação porque não produz efeito externo. O campo
+`confirmation_required_for_execute=true` informa que a mesma ação precisaria de aceite para uma
+execução futura. Confirmação válida também não é autorização suficiente neste incremento: o
+bloqueio final evita ativar escrita real acidentalmente.
+
+`GuardedExecutor` combina a engine com o HTTP. Sua construção falha se os dois componentes usam
+modos diferentes, e seu método só chama `HttpExecutor` para leitura `allow` ou escrita `simulate`.
 
 ---
 
@@ -1128,7 +1201,7 @@ Seus 46 casos comprovam:
 - percent-encoding de valores do path;
 - ausência, excesso, enum e tipo incorreto de argumentos;
 - conector, operação e configuração ausentes;
-- operação desabilitada, escrita simulada e escrita real sem policy engine bloqueada;
+- operação desabilitada, escrita simulada e escrita real bloqueada no executor direto;
 - URL fora da allowlist;
 - body ausente/inválido e referências aninhadas;
 - identidade ausente, forjada ou contendo quebra de linha;
@@ -1139,10 +1212,27 @@ Seus 46 casos comprovam:
 
 Todos usam `httpx.MockTransport`; nenhum teste acessa a internet.
 
-### 11.5 Estado atual da suíte
+### 11.5 `test_policy.py`
 
-- 55 testes;
-- 90% de cobertura total;
+Seus 23 casos comprovam:
+
+- leitura permitida e identidade divergente bloqueada;
+- operação ausente ou desabilitada;
+- permissão, pedido direto e justificativa;
+- JSON Pointer aninhado;
+- escopo ausente, divergente e válido;
+- digest estável e sensível a mudanças relevantes;
+- simulação sem confirmação;
+- confirmação ausente, de outra pessoa ou de outro digest;
+- escrita real bloqueada mesmo após confirmação válida;
+- zero chamadas HTTP em `block` e `require_confirmation`;
+- leitura executada e escrita simulada pelo `GuardedExecutor`;
+- modos divergentes rejeitados na construção.
+
+### 11.6 Estado atual da suíte
+
+- 78 testes;
+- 91% de cobertura total;
 - Ruff aprovado;
 - formatação aprovada;
 - 2 conectores válidos.
@@ -1273,7 +1363,7 @@ Consequência: o executor deve validar argumentos pelo OpenAPI antes da chamada.
 
 Uma pessoa com a permissão certa pode atuar sobre recurso de outra empresa na fixture.
 
-Consequência: a policy engine precisa verificar usuário, empresa e recurso.
+Consequência: a policy engine verifica usuário, empresa e recurso antes de aprovar a simulação.
 
 #### Gabarito espalhado
 
@@ -1585,7 +1675,7 @@ flowchart LR
 7. impedir que argumentos sobrescrevam autenticação reservada;
 8. conferir a URL-base contra a allowlist;
 9. simular escritas sem URL externa, credencial ou rede;
-10. bloquear escrita real até existir uma decisão da policy engine;
+10. bloquear escrita real quando o `HttpExecutor` é usado isoladamente;
 11. aplicar timeout e retry somente quando `idempotent=true`;
 12. redigir campos configurados e credenciais refletidas;
 13. normalizar status, dados, erro, tentativas e latência;
@@ -1595,7 +1685,7 @@ flowchart LR
 
 - objetos em query/header e estilos de serialização avançados ainda são bloqueados;
 - métodos de leitura diferentes de GET retornam `METHOD_NOT_SUPPORTED`;
-- o modo `execute` retorna `WRITE_POLICY_REQUIRED` para escrita real;
+- o `HttpExecutor` isolado retorna `WRITE_POLICY_REQUIRED` para escrita real;
 - OAuth interativo continua fora do escopo;
 - não existe rota FastAPI de execução.
 
@@ -1616,18 +1706,20 @@ flowchart LR
 - erro 400 e operação não idempotente não são repetidos;
 - `redact_fields` funciona em objetos e listas aninhadas;
 - PATCH sintético gera `simulated` e não chega à rede;
-- `execute` não libera PATCH sem policy engine;
+- `execute` não libera PATCH pelo executor isolado;
 - testes anteriores continuam verdes.
+
+### Integração com o quarto corte
+
+A policy engine agora existe em `policy.py`. Ela avalia identidade, escopos, permissão, pedido
+direto, justificativa e confirmação, produz uma decisão auditável e usa `GuardedExecutor` para
+controlar a entrada no executor HTTP. Escrita real permanece bloqueada por
+`REAL_WRITE_DISABLED`.
 
 ### Próximo incremento do projeto
 
-1. implementar a policy engine;
-2. avaliar permissão, pedido direto, justificativa e confirmação;
-3. produzir uma decisão estruturada e auditável;
-4. permitir escrita real somente quando modo e decisão autorizarem;
-5. criar rota interna apenas depois dessa fronteira.
-
-Somente depois o executor será exposto como tools MCP ao agente.
+Expor a composição protegida como tools MCP internas, sem criar rota pública nem permitir escrita
+real. Depois disso, LangGraph e Groq poderão consumir as tools sem contornar a policy engine.
 
 ---
 
@@ -1640,7 +1732,8 @@ o executor ainda não possui rota pública nem autorização para escrita real.
 
 ### Etapa 3: policy engine
 
-Avaliar permissão, pedido direto, justificativa, confirmação e contexto.
+Concluída internamente. Avalia identidade, permissão, pedido direto, justificativa, confirmação e
+escopos de contexto/recurso. Escrita real continua fora do escopo.
 
 ### Etapa 4: MCP
 
@@ -1839,8 +1932,9 @@ Não. Também precisa estar habilitado no profile.
 ### “`simulate` já está simulando PATCH”
 
 Sim. Um PATCH válido retorna `simulated`, uma prévia tipada e `attempts=0`. Isso não significa que
-a ação ocorreu: não há status HTTP externo nem chamada de rede. No modo `execute`, a mesma escrita
-continua bloqueada com `WRITE_POLICY_REQUIRED` até a policy engine existir.
+a ação ocorreu: não há status HTTP externo nem chamada de rede. O executor direto usa
+`WRITE_POLICY_REQUIRED` no modo `execute`; o fluxo protegido avalia confirmação e termina em
+`REAL_WRITE_DISABLED`.
 
 ### “O conector synthetic é um mock da Tractian”
 
@@ -1881,17 +1975,22 @@ O núcleo atual:
 13. aplica autenticação do contexto, API key ou Bearer;
 14. executa GET sintético e Tractian por allowlist;
 15. repete somente falhas transitórias de operações idempotentes;
-16. simula escritas sem rede e bloqueia escrita real sem policy engine;
+16. simula escritas sem rede e bloqueia uso direto para escrita real;
 17. redige campos sensíveis e credenciais refletidas;
 18. normaliza execução, simulação, bloqueio e falha;
-19. protege decisões importantes com testes.
+19. avalia propostas com uma policy engine determinística;
+20. vincula confirmação a pessoa e ação por SHA-256;
+21. exige igualdade de escopos entre principal, recurso e contexto;
+22. impede rede em bloqueios e confirmações pendentes;
+23. protege decisões importantes com testes.
 
-O sistema ainda não possui agente, mas já possui catálogo e um executor autenticado. Ele impede
-que o futuro agente opere sobre uma lista ambígua, prova o caminho seguro até APIs com diferentes
-autenticações e permite visualizar uma mutação sem executá-la.
+O sistema ainda não possui agente, mas já possui catálogo, policy engine e executor autenticado.
+Ele impede que o futuro agente opere sobre uma lista ambígua, prova o caminho seguro até APIs com
+diferentes autenticações e permite visualizar uma mutação sem executá-la.
 
-O próximo passo é a policy engine determinística. Depois dela, MCP e LangGraph poderão consumir uma
-interface que não apenas sabe chamar APIs, mas também decide quando uma ação pode avançar.
+O próximo passo é MCP: transformar operações em tools que obrigatoriamente atravessem o
+`GuardedExecutor`. Depois, LangGraph poderá planejar chamadas sem receber autoridade para fabricar
+permissões, escopos ou confirmações.
 
 Se você guardar apenas três ideias, guarde estas:
 

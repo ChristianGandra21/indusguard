@@ -1,7 +1,7 @@
 # Backend FastAPI
 
 Este pacote contém as primeiras camadas executáveis do IndusGuard: configuração, modelos
-Pydantic, validação de conectores, endpoints de inspeção e o executor HTTP protegido.
+Pydantic, validação de conectores, endpoints de inspeção, policy engine e executor HTTP protegido.
 
 ## O que ele faz hoje
 
@@ -13,8 +13,10 @@ Pydantic, validação de conectores, endpoints de inspeção e o executor HTTP p
 6. executa internamente GET com path, query, headers e body validados;
 7. resolve `$ref` local e autenticação `none`, `context_header`, API key ou Bearer;
 8. repete falhas transitórias somente quando a operação é idempotente;
-9. simula escrita por default e mantém escrita real bloqueada sem policy engine;
-10. redige campos sensíveis e normaliza execução, simulação, bloqueio e falha.
+9. avalia identidade, escopos, permissão, pedido direto, justificativa e confirmação;
+10. encaminha somente leituras permitidas e escritas simuladas ao executor;
+11. mantém escrita real bloqueada mesmo depois de confirmação válida;
+12. redige campos sensíveis e normaliza execução, simulação, bloqueio e falha.
 
 O executor ainda não possui rota pública. Os testes exercitam uma API simulada em memória. A
 aplicação não usa LLM.
@@ -27,6 +29,7 @@ aplicação não usa LLM.
 | `schemas.py` | Define profiles e respostas usando Pydantic. |
 | `connectors.py` | Descobre, valida e consolida conectores. |
 | `executor.py` | Valida, autentica, simula ou executa chamadas HTTP protegidas. |
+| `policy.py` | Decide deterministicamente se uma proposta pode avançar. |
 | `main.py` | Cria a aplicação FastAPI e suas rotas. |
 | `tests/` | Protege os contratos e as decisões de segurança. |
 
@@ -72,6 +75,12 @@ Swagger UI: `http://127.0.0.1:8000/docs`.
 .venv/bin/pytest apps/api/tests/test_executor.py -q
 ```
 
+Para testar somente a fronteira política:
+
+```bash
+.venv/bin/pytest apps/api/tests/test_policy.py -q
+```
+
 Os testes injetam `httpx.MockTransport`. Isso permite conferir método, URL, percent-encoding,
 timeout e envelopes sem abrir porta ou acessar a internet.
 
@@ -90,5 +99,16 @@ O fluxo implementado aceita:
 - redaction recursiva de campos do profile e de credenciais refletidas;
 - resposta JSON ou vazia, com `attempts` e prévia tipada da simulação.
 
-O modo `execute` ainda bloqueia qualquer escrita com `WRITE_POLICY_REQUIRED`. O próximo incremento
-é a policy engine; nenhuma rota de execução será criada antes dessa fronteira determinística.
+O `HttpExecutor` isolado continua devolvendo `WRITE_POLICY_REQUIRED` no modo `execute`. No caminho
+correto, `PolicyEngine` e `HttpExecutor` são combinados pelo `GuardedExecutor` com o mesmo modo:
+
+```text
+PolicyEvaluationRequest
+    -> PolicyEngine
+        -> allow | simulate | require_confirmation | block
+            -> HttpExecutor somente em allow/simulate
+```
+
+Permissões e escopos são claims confiáveis do runtime. Em uma futura integração com agente, o LLM
+poderá propor argumentos, mas não fabricar `principal`, `resource_scopes` ou confirmação. Escritas
+reais ainda terminam em `REAL_WRITE_DISABLED`, e nenhuma rota pública foi adicionada.

@@ -59,8 +59,8 @@ flowchart LR
     E --> T[API externa]
 ```
 
-Hoje, o catálogo, o executor GET e a simulação de escritas existem. O agente, MCP, policy engine e
-frontend ainda não existem.
+Hoje, catálogo, executor GET, simulação de escritas e policy engine interna existem. Agente, MCP e
+frontend ainda não existem. Este guia continua concentrado na camada HTTP.
 
 ## 2. O que é uma API?
 
@@ -620,8 +620,8 @@ As rotas atuais aparecem em [`main.py`](../apps/api/src/indusguard_api/main.py#L
 - `/connectors`;
 - `/connectors/{id}/operations`.
 
-Não existe `/execute`. Hoje, `HttpExecutor` é chamado diretamente pelos testes e pelo laboratório
-didático. Isso impede expor execução antes da futura policy engine.
+Não existe `/execute`. Hoje, `HttpExecutor` e `GuardedExecutor` são chamados diretamente por testes
+e laboratórios. A policy engine existe, mas a execução ainda não foi exposta como rota pública.
 
 ---
 
@@ -1465,7 +1465,7 @@ Exemplos:
 | `AUTH_ENV_MISSING` | variável de credencial não configurada |
 | `BASE_URL_NOT_ALLOWED` | destino não pertence à allowlist |
 | `METHOD_NOT_SUPPORTED` | método de leitura diferente de GET |
-| `WRITE_POLICY_REQUIRED` | modo execute tentou escrita sem policy engine |
+| `WRITE_POLICY_REQUIRED` | modo execute tentou escrita pelo executor direto |
 
 Um teste comum usa um contador:
 
@@ -1570,9 +1570,9 @@ Erros não reproduzem:
 
 ## 57. Escritas simuladas permanecem fora da rede
 
-No modo default, uma escrita habilitada e válida retorna uma prévia redigida. No modo `execute`, ela
-é bloqueada por `WRITE_POLICY_REQUIRED`. Habilitar no profile é necessário, mas não substitui a
-futura decisão da policy engine.
+No modo default, uma escrita habilitada e válida retorna uma prévia redigida. No modo `execute`, o
+executor direto bloqueia com `WRITE_POLICY_REQUIRED`. No fluxo composto, a policy engine avalia os
+sinais e ainda bloqueia escrita real com `REAL_WRITE_DISABLED`.
 
 ---
 
@@ -1603,7 +1603,7 @@ futura decisão da policy engine.
 - rota FastAPI que chama o executor;
 - agente ou LLM;
 - MCP;
-- policy engine completa;
+- rota pública para a policy engine;
 - escrita real;
 - validação do JSON de resposta contra o schema OpenAPI da response;
 - interpretação semântica de `complete`, `partial`, `inconclusive`, `conflict` e `unavailable`;
@@ -1621,9 +1621,10 @@ O profile contém:
 - `idempotent`;
 - `redact_fields`.
 
-O executor atual aplica `enabled`, timeout, `max_retries`, `idempotent`, `redact_fields`, auth e
-allowlist. `risk`, `permission`, `requires_direct_request` e `requires_confirmation` permanecem
-reservados para a policy engine. Não interprete presença no schema como execução completa da regra.
+O executor atual aplica timeout, `max_retries`, `idempotent`, `redact_fields`, auth e allowlist. O
+`PolicyEngine` aplica `enabled`, `permission`, `required_scopes`, `requires_direct_request`,
+justificativa e `requires_confirmation` antes dele. Escrita real segue desabilitada mesmo quando
+todas essas regras passam.
 
 ---
 
@@ -1871,7 +1872,7 @@ Você entendeu o executor atual quando consegue explicar, sem consultar o códig
 - qual é a primeira função capaz de acessar a rede;
 - a diferença entre `blocked`, `failed`, `executed` e `simulated`;
 - por que o executor ainda não está ligado a uma rota FastAPI;
-- quais campos do profile ainda não são aplicados em runtime;
+- quais campos pertencem ao executor e quais pertencem à policy engine;
 - quais capacidades ainda precisam ser construídas.
 
 Se algum item ainda estiver nebuloso, volte à execução concreta de `getAsset`, não ao arquivo

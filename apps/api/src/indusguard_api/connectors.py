@@ -239,6 +239,8 @@ def _build_operation(
         requires_direct_request=policy.requires_direct_request,
         requires_confirmation=policy.requires_confirmation,
         justification_min_length=policy.justification_min_length,
+        required_scopes=policy.required_scopes,
+        justification_pointer=policy.justification_pointer,
         timeout_seconds=policy.timeout_seconds,
         max_retries=policy.max_retries,
         idempotent=policy.idempotent,

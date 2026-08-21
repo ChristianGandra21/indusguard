@@ -39,7 +39,8 @@ fazer a chamada; um teste de body protege esse comportamento.
 ### Sem isolamento por empresa
 
 A autorização da fixture é baseada em permissões do usuário, não na relação usuário–empresa–ativo.
-A policy engine do IndusGuard deverá verificar o contexto antes de permitir uma mutação.
+A policy engine do IndusGuard agora verifica identidade, empresa e escopo do recurso antes de
+aprovar uma simulação. Escrita real continua desabilitada.
 
 ### Gabarito distribuído em vários arquivos
 

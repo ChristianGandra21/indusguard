@@ -15,14 +15,16 @@ flowchart LR
     V --> C[Catálogo em memória]
     C --> API[FastAPI]
     API --> UI[UI futura]
-    C --> E[Executor HTTP protegido]
+    C --> P[PolicyEngine]
+    P --> G[GuardedExecutor]
+    G --> E[Executor HTTP protegido]
     E -. etapas futuras .-> MCP[MCP tools]
     MCP --> A[Agente LangGraph]
 ```
 
-As linhas contínuas representam o que já está implementado. O executor ainda é uma interface
-interna: nenhuma rota do FastAPI o chama. As linhas tracejadas mostram o próximo caminho de
-desenvolvimento.
+As linhas contínuas representam o que já está implementado. Policy engine e executor ainda são
+interfaces internas: nenhuma rota do FastAPI os chama. As linhas tracejadas mostram o próximo
+caminho de desenvolvimento.
 
 ## Responsabilidade de cada arquivo do conector
 
@@ -79,31 +81,41 @@ Os três cortes do executor acrescentam validação JSON Schema para path, query
 resolução local de `$ref`, quatro estratégias de autenticação, percent-encoding, allowlist,
 timeout, retry idempotente, redaction e simulação segura de mutações.
 
-## Fluxo do executor atual
+## Fluxo protegido atual
 
 ```mermaid
 flowchart TD
-    R[ExecutionRequest] --> C{Conector existe?}
-    C -- não --> B[blocked]
-    C -- sim --> O{Operação existe e está habilitada?}
-    O -- não --> B
-    O -- sim --> J[Resolver refs e validar argumentos]
-    J --> M{É escrita?}
-    M -- sim --> S{Modo simulate?}
-    S -- sim --> P[Prévia redigida sem rede]
-    S -- não --> B
-    M -- não --> H[Auth por contexto ou ambiente]
-    H --> U[Resolver URL pelo ambiente]
-    U --> A{URL pertence à allowlist?}
-    A -- não --> B
-    A -- sim --> G[GET com timeout e retry idempotente]
-    G --> D[Redaction]
-    D --> N[Envelope executed ou failed]
+    R[PolicyEvaluationRequest] --> P[PolicyEngine]
+    P --> I[Identidade e escopos]
+    I --> A[Permissão, pedido direto e justificativa]
+    A --> O{Decisão}
+    O -- block --> Z[Zero rede]
+    O -- require_confirmation --> Z
+    O -- allow leitura --> E[HttpExecutor]
+    O -- simulate escrita --> E
+    E --> J[Resolver refs e validar argumentos]
+    J --> S{Leitura ou simulação?}
+    S -- leitura --> H[Auth + allowlist + GET]
+    S -- simulação --> V[Prévia redigida, zero rede]
+    H --> D[Retry idempotente + redaction]
+    D --> N[Envelope comum]
 ```
 
 O request não contém URL. Ele contém somente `connector_id`, `operation_id`, argumentos e
 contexto. Essa decisão impede que agente ou usuário convertam o executor em um proxy para destinos
 arbitrários.
+
+### Origem dos sinais confiáveis
+
+- `principal.id`, permissões e escopos vêm da camada autenticada do runtime;
+- `resource_scopes` virão de evidências consultadas, como o vínculo do ativo à empresa;
+- `execution.context` é o contexto validado da run;
+- `direct_request` registra se a pessoa pediu explicitamente a ação;
+- `confirmation` liga a mesma pessoa ao SHA-256 da ação exata.
+
+O LLM não preenche permissões nem escopos. Para cada `required_scope`, a policy engine exige
+presença e igualdade exata nas três fontes: principal, recurso e contexto. No conector Tractian,
+ações empresariais declaram `required_scopes: [company_id]` no YAML; o Python permanece genérico.
 
 O catálogo mantém agora duas visões:
 
@@ -134,7 +146,8 @@ instância cujo catálogo ainda não esteja pronto.
 | Executor GET, argumentos e allowlist | Implementado internamente |
 | `$ref` local e quatro estratégias de autenticação | Implementados |
 | Escrita simulada, retry idempotente e redaction | Implementados internamente |
-| Policy engine em runtime | Próxima etapa |
+| Policy engine e `GuardedExecutor` | Implementados internamente |
+| Escrita real | Bloqueada por `REAL_WRITE_DISABLED` |
 | MCP e LangGraph | Planejado |
 | Persistência e OpenTelemetry | Planejado |
 | Frontend Next.js | Planejado |

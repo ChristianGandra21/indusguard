@@ -8,9 +8,9 @@ Comece em [`settings.py`](../apps/api/src/indusguard_api/settings.py). A classe 
 prefixo `INDUSGUARD_`, portanto o campo `execution_mode` é configurado por
 `INDUSGUARD_EXECUTION_MODE`.
 
-O default é `simulate`: uma mutação válida gera uma prévia redigida, sem resolver a URL externa,
-ler credenciais do ambiente ou abrir conexão. O modo `execute` também bloqueia a escrita enquanto
-a policy engine não existir.
+O default é `simulate`: uma mutação aprovada pela policy engine gera uma prévia redigida, sem
+resolver a URL externa, ler credenciais do ambiente ou abrir conexão. O modo `execute` continua
+bloqueado por `REAL_WRITE_DISABLED`, mesmo depois de confirmação válida.
 
 ## 2. `schemas.py`: qual é o formato aceito
 
@@ -25,6 +25,10 @@ Os mais importantes para começar são:
 - `ConnectorSummary`: visão pública sem segredos.
 - `OperationExecutionResult`: envelope com resultado, tentativas e simulação opcional;
 - `SimulatedAction`: prévia tipada de uma escrita que não chegou à rede.
+- `PolicyPrincipal`: identidade, permissões e escopos confiáveis;
+- `PolicyEvaluationRequest`: proposta técnica e sinais usados na avaliação;
+- `PolicyDecision`: outcome, códigos, digest e metadados sem dados brutos;
+- `GuardedExecutionResult`: decisão e resultado opcional do executor.
 
 Todos os profiles usam `extra="forbid"`. Se alguém escrever `max_retry` em vez de `max_retries`, o
 startup falha mostrando o erro. Aceitar silenciosamente esse typo seria perigoso.
@@ -86,7 +90,7 @@ OperationExecutionRequest
     -> conferir enabled
     -> resolver $ref e validar path/query/header/body
     -> separar leitura de escrita
-    -> simular escrita sem rede, ou exigir policy engine no modo execute
+    -> simular escrita sem rede, ou exigir a composição protegida no modo execute
     -> obter autenticação do contexto/ambiente em leituras
     -> resolver e conferir URL-base
     -> executar GET com timeout e retry idempotente
@@ -117,7 +121,31 @@ Os outcomes têm significados diferentes:
 `attempts` vale zero para bloqueio/simulação e informa quantas chamadas ocorreram em execução ou
 falha. Retry só usa `max_retries` quando `idempotent=true` e a falha é timeout, conexão, 429 ou 5xx.
 
-## 6. Testes: qual comportamento não pode regredir
+## 6. `policy.py`: por que proposta não é autorização
+
+[`policy.py`](../apps/api/src/indusguard_api/policy.py) possui duas classes:
+
+- `PolicyEngine`: avalia somente dados tipados, sem rede e sem LLM;
+- `GuardedExecutor`: encaminha ao HTTP apenas `allow` para leitura ou `simulate` para escrita.
+
+Ordem mental da avaliação:
+
+```text
+operação conhecida e habilitada
+    -> identidade autenticada coincide com o contexto
+    -> escopos exigidos existem e são idênticos nas três fontes
+    -> principal possui a permissão do profile
+    -> ação foi pedida diretamente quando exigido
+    -> justificativa existe no JSON Pointer e passa no tamanho mínimo
+    -> simular, pedir confirmação ou bloquear execução real
+```
+
+O digest de confirmação é calculado com JSON canônico e SHA-256. Ele muda quando operação,
+argumentos, contexto, principal ou escopos mudam. A decisão só expõe o hash, nunca esses valores em
+texto puro. Confirmação não é exigida para simulação; no modo `execute`, ela é verificada e depois a
+escrita ainda é bloqueada pelo limite explícito deste release.
+
+## 7. Testes: qual comportamento não pode regredir
 
 Leia [`test_connectors.py`](../apps/api/tests/test_connectors.py) depois do núcleo. Os testes provam
 cinco propriedades arquiteturais:
@@ -131,9 +159,11 @@ cinco propriedades arquiteturais:
 [`test_system.py`](../apps/api/tests/test_system.py) cobre liveness, readiness e o default seguro de
 simulação. [`test_executor.py`](../apps/api/tests/test_executor.py) usa `httpx.MockTransport` e
 conectores temporários para provar URLs, autenticação, retry, redaction e envelopes sem internet.
+[`test_policy.py`](../apps/api/tests/test_policy.py) prova identidade, escopos, justificativa,
+digest, confirmação e ausência de rede em decisões que interrompem o fluxo.
 
-## 7. O que ainda não procurar no código
+## 8. O que ainda não procurar no código
 
 Ainda não existem chamada de LLM, MCP, LangGraph, banco ou frontend. Também não há rota pública do
-executor nem escrita real: primeiro a policy engine deverá avaliar permissão, pedido direto,
-justificativa e confirmação sem colocar lógica Tractian no núcleo.
+executor nem escrita real. A policy engine já avalia a proposta internamente; o próximo consumidor
+planejado é a camada de tools MCP.
