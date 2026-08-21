@@ -74,6 +74,9 @@ uma interface interna e ainda não foi conectado ao FastAPI.
 
 [`executor.py`](../apps/api/src/indusguard_api/executor.py) implementa um corte pequeno e completo:
 
+Para uma aula passo a passo, exemplo completo de `getAsset`, exercícios e materiais externos,
+consulte também o [guia de estudo do executor](executor-study-guide.md).
+
 ```text
 OperationExecutionRequest
     -> localizar conector e operação

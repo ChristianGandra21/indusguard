@@ -1114,7 +1114,7 @@ Protege:
 
 ### 11.4 `test_executor.py`
 
-Seus 29 casos comprovam:
+Seus 30 casos comprovam:
 
 - GET sintético e envelope comum;
 - GET Tractian com path, query por `$ref` e autenticação de contexto;
@@ -1184,7 +1184,7 @@ auth:
   context_field: user_id
 ```
 
-No futuro, o executor obterá `user_id` do contexto validado e criará o header `x-user-id`.
+O executor atual obtém `user_id` do contexto validado e cria o header `x-user-id`.
 
 O valor não será escolhido livremente pelo modelo.
 
