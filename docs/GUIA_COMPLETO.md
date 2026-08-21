@@ -2,7 +2,7 @@
 
 > Documento único para entender o projeto desde o problema até o código atual.
 >
-> Última atualização: 17 de agosto de 2026.
+> Última atualização: 20 de agosto de 2026.
 
 ## 1. Como usar este guia
 
@@ -17,7 +17,7 @@ A ordem recomendada é:
 4. acompanhar o caminho executado pelo Python;
 5. rodar a aplicação e observar as respostas;
 6. ler os testes como regras do sistema;
-7. estudar os dois primeiros cortes do executor HTTP junto com seus testes.
+7. estudar os três cortes do executor HTTP junto com seus testes.
 
 Se alguma seção parecer abstrata, avance até o laboratório prático e volte depois. Ver o sistema
 funcionando costuma tornar os conceitos mais concretos.
@@ -82,20 +82,20 @@ O projeto está sendo construído por camadas.
 - conector sintético com 2 operações;
 - endpoints de saúde, versão, conectores e operações;
 - catálogo com visão pública e metadados internos de execução separados;
-- executor interno de operações GET;
+- executor interno de operações GET e simulação de escritas;
 - validação JSON Schema de path, query, headers e body;
 - resolução local de `$ref` para parâmetros e schemas;
-- autenticação `context_header` derivada do contexto;
+- autenticação `context_header`, API key em header/query e Bearer;
 - URL-base por ambiente conferida contra allowlist;
-- envelope comum para execução, bloqueio e falha;
+- retry de falhas transitórias condicionado por idempotência;
+- redaction recursiva de campos e credenciais refletidas;
+- envelope comum para execução, simulação, bloqueio e falha;
 - testes automatizados;
 - CI com Ruff, pytest e cobertura.
 
 ### Ainda não implementado
 
-- simulação e execução de escritas;
-- retry e redaction em runtime;
-- API key e Bearer aplicados em chamadas;
+- execução real de escritas;
 - policy engine durante a execução;
 - servidor MCP;
 - LangGraph;
@@ -109,7 +109,8 @@ O projeto está sendo construído por camadas.
 
 Portanto, se você iniciar o projeto agora, ele ainda não responderá perguntas industriais nem
 chamará um LLM. O executor já transforma `getWidget` e GETs autenticados da Tractian em requests
-seguros, mas ainda é uma interface interna exercitada por transporte em memória, não uma rota.
+seguros, além de simular mutações, mas ainda é uma interface interna exercitada por transporte em
+memória, não uma rota.
 
 Isso é intencional. Estamos construindo primeiro a fundação previsível.
 
@@ -128,13 +129,13 @@ Pense em um restaurante:
 | Pydantic | O formulário que rejeita pedidos preenchidos incorretamente. |
 | `ConnectorCatalog` | A pessoa que confere cardápio e regras antes de abrir o restaurante. |
 | FastAPI | O balcão que expõe as informações já conferidas. |
-| Executor atual | O garçom em treinamento que já leva pedidos GET simples até a cozinha. |
+| Executor atual | O garçom que leva GETs à cozinha e ensaia escritas sem entregá-las. |
 | Policy engine futura | O supervisor que aprova ou bloqueia o pedido. |
 | Agente futuro | O atendente que conversa e sugere o que pedir. |
 
-Hoje temos cardápio, regras, glossário, conferência, balcão e percursos GET do garçom, inclusive com
-identificação derivada do contexto. Ainda não implementamos ações de escrita nem o atendente
-inteligente.
+Hoje temos cardápio, regras, glossário, conferência, balcão, percursos GET e simulação de escrita,
+inclusive com quatro estratégias de autenticação. Ainda não implementamos autorização de escrita
+real nem o atendente inteligente.
 
 ---
 
@@ -460,9 +461,9 @@ DELETE /users/{id}
 Se o OpenAPI for atualizado automaticamente, o agente não deve ganhar acesso ao DELETE apenas
 porque o endpoint apareceu. Alguém precisa revisar e habilitar a operação conscientemente.
 
-#### Tipos de autenticação suportados pelo schema
+#### Tipos de autenticação suportados pelo executor
 
-| Tipo | Uso futuro |
+| Tipo | Uso atual |
 |---|---|
 | `none` | API sem autenticação. |
 | `api_key_header` | API key em um header. |
@@ -470,8 +471,9 @@ porque o endpoint apareceu. Alguém precisa revisar e habilitar a operação con
 | `bearer` | Bearer token no header Authorization. |
 | `context_header` | Header criado a partir do contexto, como `user_id`. |
 
-Os schemas já validam essas opções. O executor atual aplica `none` e `context_header`; API key e
-Bearer permanecem bloqueados até receberem testes específicos.
+Os schemas validam todas essas opções e o executor as aplica. API keys e tokens são lidos apenas da
+variável indicada por `env`; argumentos não podem substituir autenticação reservada, e segredos não
+entram no envelope.
 
 ### 8.3 `domain.yaml`: significado do domínio
 
@@ -1010,12 +1012,12 @@ Fluxo de `HttpExecutor.execute()`:
 4. valida nomes, obrigatoriedade e schemas de path, query e headers;
 5. valida body JSON quando declarado;
 6. aplica percent-encoding e serialização OpenAPI previsível;
-7. deriva `context_header` sem aceitar sobrescrita pelos argumentos;
-8. lê a URL-base da variável indicada pelo profile;
-9. exige correspondência com `allowed_base_urls`;
-10. mantém métodos diferentes de GET fora da rede;
-11. executa GET com o timeout da operação;
-12. normaliza o resultado.
+7. separa leitura de escrita;
+8. simula escrita no modo seguro ou exige policy engine no modo `execute`;
+9. aplica `context_header`, API key ou Bearer sem aceitar sobrescrita;
+10. lê a URL-base da variável indicada pelo profile e confere a allowlist;
+11. executa GET com timeout e retry apenas quando a operação é idempotente;
+12. redige campos sensíveis e normaliza o resultado.
 
 `context_header` liga três configurações:
 
@@ -1034,7 +1036,11 @@ Os outcomes são:
 | `executed` | A API respondeu com HTTP 2xx. |
 | `blocked` | Uma regra determinística impediu acesso à rede. |
 | `failed` | A chamada permitida teve timeout, erro HTTP ou resposta inválida. |
-| `simulated` | Reservado para o próximo incremento de escritas. |
+| `simulated` | Uma escrita válida virou uma prévia redigida e realizou zero chamadas. |
+
+O envelope também possui `attempts`: bloqueio e simulação usam zero; chamadas HTTP informam quantas
+tentativas realmente ocorreram. `simulation` contém método, path relativo, query sem autenticação,
+nomes de headers e body redigido. URL-base e valores de autenticação nunca entram nessa prévia.
 
 O executor recebe `operationId`, não URL. Essa é uma defesa importante contra SSRF: o destino vem
 do ambiente e precisa coincidir com a allowlist versionada.
@@ -1114,7 +1120,7 @@ Protege:
 
 ### 11.4 `test_executor.py`
 
-Seus 30 casos comprovam:
+Seus 46 casos comprovam:
 
 - GET sintético e envelope comum;
 - GET Tractian com path, query por `$ref` e autenticação de contexto;
@@ -1122,17 +1128,20 @@ Seus 30 casos comprovam:
 - percent-encoding de valores do path;
 - ausência, excesso, enum e tipo incorreto de argumentos;
 - conector, operação e configuração ausentes;
-- operação desabilitada e escrita bloqueadas antes da rede;
+- operação desabilitada, escrita simulada e escrita real sem policy engine bloqueada;
 - URL fora da allowlist;
 - body ausente/inválido e referências aninhadas;
 - identidade ausente, forjada ou contendo quebra de linha;
+- API key em header/query e Bearer sem vazamento de credenciais;
+- retry de timeout, conexão, 429 e 5xx somente para operação idempotente;
+- redaction recursiva em resposta e prévia de simulação;
 - timeout, erro de conexão, HTTP 503 e resposta não JSON.
 
 Todos usam `httpx.MockTransport`; nenhum teste acessa a internet.
 
 ### 11.5 Estado atual da suíte
 
-- 39 testes;
+- 55 testes;
 - 90% de cobertura total;
 - Ruff aprovado;
 - formatação aprovada;
@@ -1541,7 +1550,7 @@ as regras em uma máquina limpa.
 
 ---
 
-## 18. Executor HTTP genérico: segundo corte implementado
+## 18. Executor HTTP genérico: terceiro corte implementado
 
 O catálogo responde “esta operação existe e possui esta política”. O executor começou a responder
 “como chamar essa operação com segurança”.
@@ -1554,12 +1563,15 @@ flowchart LR
     C --> P{Operação habilitada?}
     P -- não --> B[blocked]
     P -- sim --> J[Resolver refs e validar argumentos]
-    J --> A[Auth none ou context_header]
+    J --> W{É escrita?}
+    W -- sim --> S{Modo simulate?}
+    S -- sim --> V[Prévia redigida, zero rede]
+    S -- não --> B
+    W -- não --> A[Auth contexto, API key ou Bearer]
     A --> U[URL do ambiente + allowlist]
-    U --> G{Método GET?}
-    G -- não --> B
-    G -- sim --> H[GET com timeout]
-    H --> R[Envelope executed ou failed]
+    U --> H[GET com timeout e retry idempotente]
+    H --> D[Redaction]
+    D --> R[Envelope executed ou failed]
 ```
 
 ### Responsabilidades já implementadas
@@ -1569,21 +1581,22 @@ flowchart LR
 3. resolver Reference Objects locais de parâmetros;
 4. validar path, query, headers e body pelo OpenAPI;
 5. codificar path e serializar query/header sem concatenação manual;
-6. aplicar autenticação `none` ou `context_header`;
-7. impedir que argumentos sobrescrevam o header de identidade;
+6. aplicar autenticação `none`, `context_header`, API key em header/query ou Bearer;
+7. impedir que argumentos sobrescrevam autenticação reservada;
 8. conferir a URL-base contra a allowlist;
-9. manter métodos diferentes de GET fora da rede;
-10. aplicar timeout;
-11. normalizar status, dados, erro e latência;
-12. não revelar valores inválidos ou detalhes internos de transporte.
+9. simular escritas sem URL externa, credencial ou rede;
+10. bloquear escrita real até existir uma decisão da policy engine;
+11. aplicar timeout e retry somente quando `idempotent=true`;
+12. redigir campos configurados e credenciais refletidas;
+13. normalizar status, dados, erro, tentativas e latência;
+14. não revelar valores inválidos ou detalhes internos de transporte.
 
 ### Limites que permanecem explícitos
 
 - objetos em query/header e estilos de serialização avançados ainda são bloqueados;
-- API key e Bearer retornam `AUTH_NOT_SUPPORTED`;
-- métodos diferentes de GET retornam `METHOD_NOT_SUPPORTED`;
-- `max_retries` ainda não dispara repetição;
-- `redact_fields` ainda não é aplicado ao resultado;
+- métodos de leitura diferentes de GET retornam `METHOD_NOT_SUPPORTED`;
+- o modo `execute` retorna `WRITE_POLICY_REQUIRED` para escrita real;
+- OAuth interativo continua fora do escopo;
 - não existe rota FastAPI de execução.
 
 ### Critérios comprovados pelos testes
@@ -1597,17 +1610,22 @@ flowchart LR
 - URL arbitrária é impossível;
 - body inline e body com referências aninhadas são validados;
 - identidade ausente, forjada ou contendo newline é bloqueada;
-- timeout, conexão, HTTP 503 e resposta não JSON são normalizados;
-- PATCH sintético não chega à rede;
+- API key em header/query e Bearer vêm somente do ambiente;
+- segredo refletido pelo upstream não aparece no envelope;
+- timeout, conexão, 429 e 5xx respeitam retry idempotente;
+- erro 400 e operação não idempotente não são repetidos;
+- `redact_fields` funciona em objetos e listas aninhadas;
+- PATCH sintético gera `simulated` e não chega à rede;
+- `execute` não libera PATCH sem policy engine;
 - testes anteriores continuam verdes.
 
-### Próximo incremento do executor
+### Próximo incremento do projeto
 
-1. implementar API key e Bearer;
-2. simular escritas em `EXECUTION_MODE=simulate`;
-3. aplicar retry somente quando seguro;
-4. aplicar redaction;
-5. conectar o executor a uma policy engine antes de criar rota pública.
+1. implementar a policy engine;
+2. avaliar permissão, pedido direto, justificativa e confirmação;
+3. produzir uma decisão estruturada e auditável;
+4. permitir escrita real somente quando modo e decisão autorizarem;
+5. criar rota interna apenas depois dessa fronteira.
 
 Somente depois o executor será exposto como tools MCP ao agente.
 
@@ -1617,8 +1635,8 @@ Somente depois o executor será exposto como tools MCP ao agente.
 
 ### Etapa 2: executor
 
-Em andamento. GET com argumentos, `$ref`, allowlist e `context_header` está pronto; faltam outras
-autenticações, escrita simulada, retry e redaction.
+Concluída internamente. GET, autenticação, simulação, retry idempotente e redaction estão prontos;
+o executor ainda não possui rota pública nem autorização para escrita real.
 
 ### Etapa 3: policy engine
 
@@ -1760,7 +1778,10 @@ Objetivo: acompanhar uma execução do contrato até o envelope.
 4. Liste quais erros são `blocked` e quais são `failed`.
 5. Explique por que `MockTransport` prova a URL sem acessar a internet.
 6. Acompanhe `user_id` do contexto até o header `x-user-id`.
-7. Identifique onde API key, escrita simulada e retry serão acrescentados.
+7. Acompanhe uma API key do nome da variável até o request, verificando por que ela não aparece no
+   envelope.
+8. Compare retry de uma operação idempotente com uma não idempotente.
+9. Acompanhe um PATCH até `SimulatedAction` e confirme que `attempts` permanece zero.
 
 ---
 
@@ -1799,7 +1820,7 @@ Tente responder sem olhar o código.
 11. Prova que o núcleo não depende da Tractian.
 12. Porque contaminaria a avaliação.
 13. Execução acidental de mutações reais.
-14. Validar argumentos/autenticação/URL, executar GET permitido e devolver envelope comum.
+14. Validar argumentos/autenticação/URL, executar GET, simular escrita e devolver envelope redigido.
 15. Depois que catálogo, executor e política estiverem confiáveis.
 
 ---
@@ -1817,8 +1838,9 @@ Não. Também precisa estar habilitado no profile.
 
 ### “`simulate` já está simulando PATCH”
 
-O modo já existe na configuração, mas a ramificação de escrita ainda não foi implementada. O
-executor bloqueia PATCH com `METHOD_NOT_SUPPORTED`; ele não envia nem finge sucesso.
+Sim. Um PATCH válido retorna `simulated`, uma prévia tipada e `attempts=0`. Isso não significa que
+a ação ocorreu: não há status HTTP externo nem chamada de rede. No modo `execute`, a mesma escrita
+continua bloqueada com `WRITE_POLICY_REQUIRED` até a policy engine existir.
 
 ### “O conector synthetic é um mock da Tractian”
 
@@ -1856,17 +1878,20 @@ O núcleo atual:
 10. resolve operações internas sem expor o profile pelas rotas;
 11. resolve `$ref` local de parâmetros e schemas;
 12. valida path, query, headers e body;
-13. deriva autenticação do contexto;
+13. aplica autenticação do contexto, API key ou Bearer;
 14. executa GET sintético e Tractian por allowlist;
-15. normaliza execução, bloqueio e falha;
-16. protege decisões importantes com testes.
+15. repete somente falhas transitórias de operações idempotentes;
+16. simula escritas sem rede e bloqueia escrita real sem policy engine;
+17. redige campos sensíveis e credenciais refletidas;
+18. normaliza execução, simulação, bloqueio e falha;
+19. protege decisões importantes com testes.
 
-O sistema ainda não possui agente, mas já possui catálogo e um executor GET autenticado. Ele impede
-que o futuro agente opere sobre uma lista ambígua e prova o caminho seguro até uma API que deriva
-identidade do contexto.
+O sistema ainda não possui agente, mas já possui catálogo e um executor autenticado. Ele impede
+que o futuro agente opere sobre uma lista ambígua, prova o caminho seguro até APIs com diferentes
+autenticações e permite visualizar uma mutação sem executá-la.
 
-O próximo passo é implementar as autenticações restantes e simular escritas com política. Depois
-disso, MCP e LangGraph poderão consumir uma interface mais confiável.
+O próximo passo é a policy engine determinística. Depois dela, MCP e LangGraph poderão consumir uma
+interface que não apenas sabe chamar APIs, mas também decide quando uma ação pode avançar.
 
 Se você guardar apenas três ideias, guarde estas:
 

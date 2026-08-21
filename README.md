@@ -13,7 +13,7 @@ controladas que, nas próximas etapas, serão disponibilizadas para MCP, LangGra
 
 ## Estado do projeto
 
-O repositório está no segundo corte vertical da etapa de execução HTTP.
+O repositório concluiu o terceiro corte vertical da etapa de execução HTTP.
 
 | Capacidade | Situação |
 |---|---|
@@ -25,15 +25,16 @@ O repositório está no segundo corte vertical da etapa de execução HTTP.
 | Testes do núcleo | Pronto |
 | Executor GET com path, query, headers e allowlist | Pronto |
 | `$ref` local e autenticação `context_header` | Pronto |
-| Body validado, retry, outras autenticações e escrita simulada | Parcial/próxima etapa |
+| API key/Bearer, retry, redaction e escrita simulada | Pronto internamente |
+| Policy engine para autorizar escrita real | Próxima etapa |
 | MCP e agente LangGraph/Groq | Planejado |
 | Banco e OpenTelemetry | Planejado |
 | Frontend Next.js | Planejado |
 | Benchmark e dashboard | Planejado |
 
-Importante: o executor já consegue preparar e chamar GETs autenticados da Tractian, mas ainda não
-está exposto por uma rota. Os testes usam transporte em memória e não acessam a API real. Escritas
-continuam bloqueadas e a aplicação ainda não chama um LLM.
+Importante: o executor chama GETs autenticados e simula escritas validadas, mas ainda não está
+exposto por uma rota. Os testes usam transporte em memória e não acessam a API real. Escritas reais
+continuam bloqueadas até a policy engine existir, e a aplicação ainda não chama um LLM.
 
 ## Por que começar pelo catálogo?
 
@@ -237,10 +238,14 @@ startup bem-sucedido do catálogo.
 - argumentos de path são validados pelo JSON Schema do OpenAPI;
 - valores de path são percent-encoded para não criarem segmentos extras;
 - URL-base precisa vir do ambiente e coincidir com a allowlist;
-- operação desabilitada, escrita e autenticação ainda não suportada falham antes da rede;
+- operações desabilitadas e escritas reais sem policy engine falham antes da rede;
 - `context_header` só pode ser derivado do contexto declarado pelo domínio;
-- argumento não consegue sobrescrever o header reservado de autenticação;
+- API key e Bearer vêm somente do ambiente;
+- argumentos não conseguem sobrescrever header ou query reservados de autenticação;
 - path, query, headers e body são validados por seus schemas OpenAPI;
+- mutações são simuladas por default sem ler segredos ou resolver a URL externa;
+- retry só ocorre para operações idempotentes em timeout, conexão, HTTP 429 ou 5xx;
+- campos declarados em `redact_fields` e credenciais refletidas são removidos do envelope;
 - timeout, resposta HTTP de erro e JSON inválido viram envelopes estruturados.
 
 ## Integração contínua
@@ -289,17 +294,18 @@ avaliação existirem.
 
 ## Executor HTTP implementado
 
-Os dois primeiros cortes do executor estão em `apps/api/src/indusguard_api/executor.py`. Ele:
+Os três primeiros cortes do executor estão em `apps/api/src/indusguard_api/executor.py`. Ele:
 
 1. recebe `connector_id`, `operation_id`, argumentos e contexto;
 2. localiza apenas operações validadas pelo catálogo;
-3. bloqueia operações desabilitadas e mantém métodos diferentes de GET fora da rede;
+3. bloqueia operações desabilitadas e separa leitura, simulação e escrita real;
 4. resolve `$ref` local de parâmetros e schemas;
 5. valida path, query, headers e body pelo OpenAPI;
-6. deriva `context_header` do contexto sem permitir sobrescrita;
+6. aplica `context_header`, API key em header/query ou Bearer sem permitir sobrescrita;
 7. resolve a URL-base por variável de ambiente e confere a allowlist;
-8. respeita o timeout declarado no profile;
-9. normaliza sucesso, bloqueio e falha em um envelope comum.
+8. respeita timeout e retry condicionado por `idempotent` e `max_retries`;
+9. simula mutações sem rede no modo default e bloqueia escrita real sem policy engine;
+10. remove campos sensíveis e normaliza execução, simulação, bloqueio e falha.
 
 Os testes usam `httpx.MockTransport`, portanto provam a montagem da chamada sem acessar a internet:
 
@@ -309,15 +315,10 @@ Os testes usam `httpx.MockTransport`, portanto provam a montagem da chamada sem 
 
 ### Próximo incremento
 
-Completar o transporte genérico nesta ordem:
-
-1. autenticação por API key e Bearer;
-2. simulação de POST/PATCH quando `EXECUTION_MODE=simulate`;
-3. retry somente quando política e idempotência permitirem;
-4. redaction dos campos sensíveis;
-5. endpoint interno de execução depois que a policy engine existir.
-
-Somente depois essa camada será apresentada como tools MCP ao LangGraph.
+Implementar a policy engine determinística para avaliar permissão, pedido direto, justificativa e
+confirmação. Somente depois de uma decisão aprovada ela poderá liberar uma escrita real em ambiente
+controlado e o executor poderá ganhar uma rota interna. Na sequência, as operações aprovadas serão
+apresentadas como tools MCP ao LangGraph.
 
 ## Roteiro de estudo recomendado
 

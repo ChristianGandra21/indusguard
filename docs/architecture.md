@@ -15,7 +15,7 @@ flowchart LR
     V --> C[Catálogo em memória]
     C --> API[FastAPI]
     API --> UI[UI futura]
-    C --> E[Executor GET]
+    C --> E[Executor HTTP protegido]
     E -. etapas futuras .-> MCP[MCP tools]
     MCP --> A[Agente LangGraph]
 ```
@@ -75,10 +75,9 @@ As principais barreiras atuais são:
 7. operação ausente do profile começa desabilitada;
 8. política de leitura/escrita não pode contradizer o método HTTP.
 
-Os dois primeiros cortes do executor acrescentam validação JSON Schema para path, query, headers e
-body, resolução local de `$ref`, autenticação `context_header`, percent-encoding, allowlist,
-timeout e envelope comum. API key, Bearer, retry, redaction e simulação de mutações continuam
-bloqueados até receberem testes específicos.
+Os três cortes do executor acrescentam validação JSON Schema para path, query, headers e body,
+resolução local de `$ref`, quatro estratégias de autenticação, percent-encoding, allowlist,
+timeout, retry idempotente, redaction e simulação segura de mutações.
 
 ## Fluxo do executor atual
 
@@ -89,14 +88,17 @@ flowchart TD
     C -- sim --> O{Operação existe e está habilitada?}
     O -- não --> B
     O -- sim --> J[Resolver refs e validar argumentos]
-    J --> H[Derivar auth do contexto]
+    J --> M{É escrita?}
+    M -- sim --> S{Modo simulate?}
+    S -- sim --> P[Prévia redigida sem rede]
+    S -- não --> B
+    M -- não --> H[Auth por contexto ou ambiente]
     H --> U[Resolver URL pelo ambiente]
     U --> A{URL pertence à allowlist?}
     A -- não --> B
-    A -- sim --> M{É GET?}
-    M -- não --> B
-    M -- sim --> G[GET com timeout]
-    G --> N[Envelope executed ou failed]
+    A -- sim --> G[GET com timeout e retry idempotente]
+    G --> D[Redaction]
+    D --> N[Envelope executed ou failed]
 ```
 
 O request não contém URL. Ele contém somente `connector_id`, `operation_id`, argumentos e
@@ -130,9 +132,9 @@ instância cujo catálogo ainda não esteja pronto.
 | Segundo conector sem código específico | Implementado |
 | Endpoints operacionais | Implementados |
 | Executor GET, argumentos e allowlist | Implementado internamente |
-| `$ref` local e `context_header` | Implementados |
-| Escrita simulada, API key/Bearer e retry | Próxima etapa |
-| Policy engine em runtime | Planejado |
+| `$ref` local e quatro estratégias de autenticação | Implementados |
+| Escrita simulada, retry idempotente e redaction | Implementados internamente |
+| Policy engine em runtime | Próxima etapa |
 | MCP e LangGraph | Planejado |
 | Persistência e OpenTelemetry | Planejado |
 | Frontend Next.js | Planejado |

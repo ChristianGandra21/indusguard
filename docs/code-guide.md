@@ -8,8 +8,9 @@ Comece em [`settings.py`](../apps/api/src/indusguard_api/settings.py). A classe 
 prefixo `INDUSGUARD_`, portanto o campo `execution_mode` é configurado por
 `INDUSGUARD_EXECUTION_MODE`.
 
-O default é `simulate`. O executor atual ainda bloqueia toda escrita; manter esse default no
-contrato prepara a simulação de mutações sem permitir que uma etapa futura escreva por acidente.
+O default é `simulate`: uma mutação válida gera uma prévia redigida, sem resolver a URL externa,
+ler credenciais do ambiente ou abrir conexão. O modo `execute` também bloqueia a escrita enquanto
+a policy engine não existir.
 
 ## 2. `schemas.py`: qual é o formato aceito
 
@@ -22,6 +23,8 @@ Os mais importantes para começar são:
 - `ConnectorProfile`: formato completo de `profile.yaml`;
 - `OperationSummary`: resultado de OpenAPI + política;
 - `ConnectorSummary`: visão pública sem segredos.
+- `OperationExecutionResult`: envelope com resultado, tentativas e simulação opcional;
+- `SimulatedAction`: prévia tipada de uma escrita que não chegou à rede.
 
 Todos os profiles usam `extra="forbid"`. Se alguém escrever `max_retry` em vez de `max_retries`, o
 startup falha mostrando o erro. Aceitar silenciosamente esse typo seria perigoso.
@@ -70,7 +73,7 @@ O `lifespan` carrega o catálogo uma única vez no startup. As rotas recuperam a
 As rotas atuais não executam a API Tractian; apenas expõem metadados já validados. O executor é
 uma interface interna e ainda não foi conectado ao FastAPI.
 
-## 5. `executor.py`: como uma operação vira GET
+## 5. `executor.py`: como uma operação vira execução ou simulação
 
 [`executor.py`](../apps/api/src/indusguard_api/executor.py) implementa um corte pequeno e completo:
 
@@ -82,18 +85,19 @@ OperationExecutionRequest
     -> localizar conector e operação
     -> conferir enabled
     -> resolver $ref e validar path/query/header/body
-    -> derivar autenticação do contexto
+    -> separar leitura de escrita
+    -> simular escrita sem rede, ou exigir policy engine no modo execute
+    -> obter autenticação do contexto/ambiente em leituras
     -> resolver e conferir URL-base
-    -> manter escrita fora da rede
-    -> executar com timeout
+    -> executar GET com timeout e retry idempotente
+    -> aplicar redaction
     -> OperationExecutionResult
 ```
 
 Estude primeiro `HttpExecutor.execute()`. Cada retorno antecipado representa uma regra que impede a
 rede de ser acessada. Depois acompanhe `_render_path()`, `_build_query()`, `_build_headers()`,
-`_build_auth_headers()` e `_build_body()`. Uma barra no path é percent-encoded; o header de
-autenticação não pode vir dos argumentos; e um body de escrita é validado antes de o método ser
-bloqueado.
+`_build_auth_material()`, `_build_body()` e `_redact()`. Uma barra no path é percent-encoded;
+autenticação não pode vir dos argumentos; e um body de escrita é validado antes da simulação.
 
 O catálogo resolve Reference Objects de parâmetros e conserva a raiz OpenAPI no objeto interno.
 Durante a validação, essa raiz permite que schemas como
@@ -108,7 +112,10 @@ Os outcomes têm significados diferentes:
 - `executed`: upstream respondeu com HTTP 2xx;
 - `blocked`: uma regra determinística interrompeu antes da rede;
 - `failed`: uma chamada permitida teve timeout, erro HTTP ou resposta inválida;
-- `simulated`: reservado para o próximo incremento de escrita.
+- `simulated`: escrita validada e redigida que realizou zero tentativas de rede.
+
+`attempts` vale zero para bloqueio/simulação e informa quantas chamadas ocorreram em execução ou
+falha. Retry só usa `max_retries` quando `idempotent=true` e a falha é timeout, conexão, 429 ou 5xx.
 
 ## 6. Testes: qual comportamento não pode regredir
 
@@ -122,11 +129,11 @@ cinco propriedades arquiteturais:
 5. YAML duplicado é rejeitado.
 
 [`test_system.py`](../apps/api/tests/test_system.py) cobre liveness, readiness e o default seguro de
-simulação. [`test_executor.py`](../apps/api/tests/test_executor.py) usa `httpx.MockTransport` para
-provar que URLs e envelopes estão corretos sem acessar a internet.
+simulação. [`test_executor.py`](../apps/api/tests/test_executor.py) usa `httpx.MockTransport` e
+conectores temporários para provar URLs, autenticação, retry, redaction e envelopes sem internet.
 
 ## 7. O que ainda não procurar no código
 
-Ainda não existem chamada de LLM, MCP, LangGraph, banco ou frontend. O executor atual não possui
-API key, Bearer, retry, redaction ou escrita simulada. Esses limites são bloqueios explícitos, e
-cada capacidade será acrescentada sobre o catálogo validado sem colocar lógica Tractian no núcleo.
+Ainda não existem chamada de LLM, MCP, LangGraph, banco ou frontend. Também não há rota pública do
+executor nem escrita real: primeiro a policy engine deverá avaliar permissão, pedido direto,
+justificativa e confirmação sem colocar lógica Tractian no núcleo.

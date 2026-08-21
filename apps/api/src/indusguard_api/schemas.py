@@ -13,6 +13,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+AuthType = Literal["none", "api_key_header", "api_key_query", "bearer", "context_header"]
+
 
 class AccessMode(StrEnum):
     """Distingue consultas de operações que podem alterar estado externo."""
@@ -55,7 +57,7 @@ class AuthProfile(BaseModel):
     # ``contex_field``, que de outra forma poderia desativar autenticação silenciosamente.
     model_config = ConfigDict(extra="forbid")
 
-    type: Literal["none", "api_key_header", "api_key_query", "bearer", "context_header"]
+    type: AuthType
     name: str | None = None
     env: str | None = None
     context_field: str | None = None
@@ -98,7 +100,7 @@ class OperationPolicy(BaseModel):
     max_retries: Annotated[int, Field(ge=0, le=2)] = 0
     idempotent: bool = False
 
-    # Campos listados aqui serão removidos quando redaction entrar no próximo corte do executor.
+    # Campos listados aqui são removidos recursivamente de respostas e prévias de simulação.
     redact_fields: list[str] = Field(default_factory=list)
 
 
@@ -145,7 +147,7 @@ class ConnectorSummary(BaseModel):
     name: str
     description: str
     openapi_version: str
-    auth_type: str
+    auth_type: AuthType
     operation_count: int
     enabled_operation_count: int
     context_fields: list[str] = Field(default_factory=list)
@@ -196,6 +198,22 @@ class ExecutionErrorDetails(BaseModel):
     retryable: bool = False
 
 
+class SimulatedAction(BaseModel):
+    """Prévia segura de uma escrita que foi validada, mas não chegou à rede.
+
+    A prévia usa somente o path relativo e nunca inclui valores de autenticação. ``body_present``
+    diferencia uma operação sem body de outra que enviaria ``null`` explicitamente.
+    """
+
+    method: str
+    path: str
+    query: dict[str, Any] = Field(default_factory=dict)
+    header_names: list[str] = Field(default_factory=list)
+    body_present: bool = False
+    body: Any = None
+    auth_type: str
+
+
 class OperationExecutionResult(BaseModel):
     """Envelope comum devolvido independentemente da API conectada."""
 
@@ -205,6 +223,9 @@ class OperationExecutionResult(BaseModel):
     status_code: Annotated[int, Field(ge=100, le=599)] | None = None
     data: Any = None
     error: ExecutionErrorDetails | None = None
+    # Bloqueios e simulações não abrem conexão. Uma execução HTTP começa em uma tentativa.
+    attempts: Annotated[int, Field(ge=0)] = 0
+    simulation: SimulatedAction | None = None
     latency_ms: Annotated[float, Field(ge=0)]
 
 

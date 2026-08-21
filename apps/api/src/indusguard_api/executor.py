@@ -1,8 +1,8 @@
 """Executor HTTP genérico construído sobre o catálogo validado de conectores.
 
-O segundo corte vertical executa operações GET com parâmetros de path, query e header, além de
-autenticação ``none`` ou ``context_header``. Request bodies também são validados para preparar a
-futura simulação de escritas, mas métodos mutáveis continuam bloqueados antes da rede.
+O terceiro corte vertical executa operações GET com parâmetros validados, cinco modos de
+autenticação, retry idempotente e redaction. Operações mutáveis são simuladas por default e
+continuam bloqueadas no modo de execução real até existir uma decisão da policy engine.
 
 As fronteiras de segurança são deliberadamente determinísticas:
 
@@ -18,11 +18,12 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Mapping
+from asyncio import sleep as async_sleep
+from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Any, Final
+from typing import Any, Final, Literal
 from urllib.parse import quote
 
 import httpx
@@ -31,16 +32,19 @@ from jsonschema.validators import validator_for
 
 from indusguard_api.connectors import ConnectorCatalog, ResolvedOperation
 from indusguard_api.schemas import (
+    AccessMode,
     ExecutionArguments,
     ExecutionErrorDetails,
     ExecutionOutcome,
     OperationExecutionRequest,
     OperationExecutionResult,
+    SimulatedAction,
 )
 
 PATH_PLACEHOLDER: Final = re.compile(r"\{([^{}]+)\}")
 HEADER_NAME: Final = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 NO_BODY: Final = object()
+REDACTED_VALUE: Final = "[REDACTED]"
 
 
 @dataclass(frozen=True)
@@ -51,6 +55,16 @@ class PreparedRequest:
     query: tuple[tuple[str, str], ...]
     headers: dict[str, str]
     body: Any
+    sensitive_values: frozenset[str]
+
+
+@dataclass(frozen=True)
+class PreparedAuth:
+    """Credenciais já validadas e separadas das partes fornecidas pelo agente."""
+
+    headers: dict[str, str]
+    query: tuple[tuple[str, str], ...]
+    sensitive_values: frozenset[str] = frozenset()
 
 
 class ExecutionValidationError(ValueError):
@@ -345,47 +359,150 @@ def _build_headers(
     return headers
 
 
-def _build_auth_headers(
-    resolved: ResolvedOperation,
-    context: Mapping[str, Any],
-    provided_headers: Mapping[str, Any],
-) -> dict[str, str]:
-    """Deriva autenticação do contexto sem aceitar credencial enviada como argumento."""
+def _read_auth_secret(
+    environment: Mapping[str, str],
+    variable_name: str,
+) -> str:
+    """Lê uma credencial sem copiá-la para mensagens, modelos ou envelopes."""
 
-    auth = resolved.profile.auth
-    if auth.type == "none":
-        return {}
-    if auth.type != "context_header":
+    value = environment.get(variable_name)
+    if not value:
         raise ExecutionValidationError(
-            "AUTH_NOT_SUPPORTED",
-            f"autenticação '{auth.type}' ainda não é suportada",
+            "AUTH_ENV_MISSING",
+            f"a variável de autenticação '{variable_name}' não foi configurada",
         )
+    return value
 
-    header_name = auth.name or ""
-    context_field = auth.context_field or ""
-    if not HEADER_NAME.fullmatch(header_name):
+
+def _validate_auth_header(name: str, value: str) -> None:
+    """Impede nomes inválidos e injeção de headers em credenciais externas."""
+
+    if not HEADER_NAME.fullmatch(name):
         raise ExecutionValidationError(
             "INVALID_OPERATION_CONTRACT",
             "o profile contém um nome inválido para o header de autenticação",
         )
+    if "\r" in value or "\n" in value:
+        raise ExecutionValidationError(
+            "INVALID_AUTH_SECRET",
+            "a credencial configurada contém um valor inválido",
+        )
+
+
+def _ensure_auth_header_is_reserved(
+    header_name: str,
+    provided_headers: Mapping[str, Any],
+) -> None:
+    """Garante que um argumento nunca possa substituir autenticação controlada pelo runtime."""
+
     if header_name.lower() in {name.lower() for name in provided_headers}:
         raise ExecutionValidationError(
             "RESERVED_AUTH_HEADER",
-            f"o header de autenticação '{header_name}' só pode vir do contexto",
-        )
-    if context_field not in context:
-        raise ExecutionValidationError(
-            "AUTH_CONTEXT_MISSING",
-            f"o contexto não contém o campo obrigatório '{context_field}'",
+            f"o header de autenticação '{header_name}' não pode vir dos argumentos",
         )
 
-    serialized = _serialize_primitive(context[context_field], location="auth_header")
-    if "\r" in serialized or "\n" in serialized:
-        raise ExecutionValidationError(
-            "INVALID_AUTH_CONTEXT",
-            f"o campo de contexto '{context_field}' contém um valor inválido",
+
+def _build_auth_material(
+    resolved: ResolvedOperation,
+    context: Mapping[str, Any],
+    provided_headers: Mapping[str, Any],
+    provided_query: Mapping[str, Any],
+    environment: Mapping[str, str],
+    *,
+    include_secrets: bool,
+) -> PreparedAuth:
+    """Monta autenticação do contexto/ambiente sem aceitar valores vindos do agente.
+
+    Simulações usam ``include_secrets=False``: validam campos reservados e o contexto, porém nem
+    sequer leem API keys ou tokens do ambiente.
+    """
+
+    auth = resolved.profile.auth
+    if auth.type == "none":
+        return PreparedAuth(headers={}, query=())
+
+    if auth.type == "context_header":
+        header_name = auth.name or ""
+        context_field = auth.context_field or ""
+        _validate_auth_header(header_name, "")
+        _ensure_auth_header_is_reserved(header_name, provided_headers)
+        if context_field not in context:
+            raise ExecutionValidationError(
+                "AUTH_CONTEXT_MISSING",
+                f"o contexto não contém o campo obrigatório '{context_field}'",
+            )
+
+        serialized = _serialize_primitive(context[context_field], location="auth_header")
+        if "\r" in serialized or "\n" in serialized:
+            raise ExecutionValidationError(
+                "INVALID_AUTH_CONTEXT",
+                f"o campo de contexto '{context_field}' contém um valor inválido",
+            )
+        return PreparedAuth(headers={header_name: serialized}, query=())
+
+    if auth.type == "api_key_query":
+        query_name = auth.name or ""
+        if query_name in provided_query:
+            raise ExecutionValidationError(
+                "RESERVED_AUTH_QUERY",
+                f"o parâmetro de autenticação '{query_name}' não pode vir dos argumentos",
+            )
+        if not include_secrets:
+            return PreparedAuth(headers={}, query=())
+        secret = _read_auth_secret(environment, auth.env or "")
+        return PreparedAuth(
+            headers={},
+            query=((query_name, secret),),
+            sensitive_values=frozenset({secret}),
         )
-    return {header_name: serialized}
+
+    if auth.type in {"api_key_header", "bearer"}:
+        header_name = auth.name or "" if auth.type == "api_key_header" else "Authorization"
+        _validate_auth_header(header_name, "")
+        _ensure_auth_header_is_reserved(header_name, provided_headers)
+        if not include_secrets:
+            return PreparedAuth(headers={}, query=())
+
+        secret = _read_auth_secret(environment, auth.env or "")
+        value = secret if auth.type == "api_key_header" else f"Bearer {secret}"
+        _validate_auth_header(header_name, value)
+        return PreparedAuth(
+            headers={header_name: value},
+            query=(),
+            sensitive_values=frozenset({secret, value}),
+        )
+
+    raise ExecutionValidationError(
+        "AUTH_NOT_SUPPORTED",
+        f"autenticação '{auth.type}' não é suportada",
+    )
+
+
+def _redact(
+    value: Any,
+    fields: frozenset[str],
+    sensitive_values: frozenset[str] = frozenset(),
+) -> Any:
+    """Substitui recursivamente valores de chaves sensíveis sem alterar o objeto original."""
+
+    if isinstance(value, Mapping):
+        return {
+            key: (
+                REDACTED_VALUE if str(key) in fields else _redact(child, fields, sensitive_values)
+            )
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact(child, fields, sensitive_values) for child in value]
+    if isinstance(value, tuple):
+        return tuple(_redact(child, fields, sensitive_values) for child in value)
+    if isinstance(value, str):
+        redacted = value
+        for sensitive in sorted(sensitive_values, key=len, reverse=True):
+            if sensitive:
+                redacted = redacted.replace(sensitive, REDACTED_VALUE)
+        return redacted
+    return value
 
 
 def _build_body(resolved: ResolvedOperation, arguments: ExecutionArguments) -> Any:
@@ -438,10 +555,20 @@ class HttpExecutor:
         *,
         environment: Mapping[str, str] | None = None,
         client: httpx.AsyncClient | None = None,
+        execution_mode: Literal["simulate", "execute"] = "simulate",
+        retry_base_delay_seconds: float = 0.1,
+        sleeper: Callable[[float], Awaitable[None]] = async_sleep,
     ) -> None:
+        if execution_mode not in {"simulate", "execute"}:
+            raise ValueError("execution_mode precisa ser 'simulate' ou 'execute'")
+        if retry_base_delay_seconds < 0:
+            raise ValueError("retry_base_delay_seconds não pode ser negativo")
         self._catalog = catalog
         self._environment = os.environ if environment is None else environment
         self._client = client
+        self._execution_mode = execution_mode
+        self._retry_base_delay_seconds = retry_base_delay_seconds
+        self._sleeper = sleeper
 
     async def execute(self, request: OperationExecutionRequest) -> OperationExecutionResult:
         """Valida, prepara, executa e normaliza uma operação do catálogo."""
@@ -472,48 +599,94 @@ class HttpExecutor:
                 f"operação '{request.operation_id}' está desabilitada pelo profile",
             )
 
+        if resolved.operation.access is AccessMode.WRITE:
+            try:
+                # Uma simulação valida identidade e campos reservados, mas não lê credenciais do
+                # ambiente e não exige que a API externa esteja configurada.
+                prepared = self._prepare_request(
+                    resolved,
+                    request,
+                    include_auth_secrets=False,
+                )
+            except ExecutionValidationError as exc:
+                return self._blocked(request, started_at, exc.code, str(exc))
+
+            if self._execution_mode == "simulate":
+                return self._simulated(request, resolved, prepared, started_at)
+            return self._blocked(
+                request,
+                started_at,
+                "WRITE_POLICY_REQUIRED",
+                "a execução real de escrita exige uma decisão da policy engine",
+            )
+
         try:
-            prepared = self._prepare_request(resolved, request)
+            prepared = self._prepare_request(
+                resolved,
+                request,
+                include_auth_secrets=True,
+            )
             base_url = self._resolve_base_url(resolved)
         except ExecutionValidationError as exc:
             return self._blocked(request, started_at, exc.code, str(exc))
 
-        # Preparar e validar o body de uma escrita já é útil para o próximo incremento, mas apenas
-        # GET possui autorização de transporte nesta etapa.
+        # A primeira versão de leitura executa somente GET. HEAD/OPTIONS conhecidos continuam
+        # explícitos no catálogo, mas exigirão tratamento de resposta próprio antes da rede.
         if resolved.operation.method != "GET":
             return self._blocked(
                 request,
                 started_at,
                 "METHOD_NOT_SUPPORTED",
-                "este incremento executa somente GET; escritas continuam bloqueadas",
+                "o executor de leitura suporta somente GET neste incremento",
             )
 
         url = f"{base_url}{prepared.path}"
-        try:
-            response = await self._send_request(
-                method=resolved.operation.method,
-                url=url,
-                query=prepared.query,
-                headers=prepared.headers,
-                body=prepared.body,
-                timeout_seconds=resolved.operation.timeout_seconds,
-            )
-        except httpx.TimeoutException:
-            return self._failed(
-                request,
-                started_at,
-                "UPSTREAM_TIMEOUT",
-                "a API conectada excedeu o timeout configurado",
-                retryable=True,
-            )
-        except httpx.RequestError:
-            return self._failed(
-                request,
-                started_at,
-                "UPSTREAM_CONNECTION_ERROR",
-                "não foi possível conectar à API configurada",
-                retryable=True,
-            )
+        max_attempts = 1 + (resolved.operation.max_retries if resolved.operation.idempotent else 0)
+        response: httpx.Response | None = None
+        attempts = 0
+        for attempts in range(1, max_attempts + 1):
+            try:
+                response = await self._send_request(
+                    method=resolved.operation.method,
+                    url=url,
+                    query=prepared.query,
+                    headers=prepared.headers,
+                    body=prepared.body,
+                    timeout_seconds=resolved.operation.timeout_seconds,
+                )
+            except httpx.TimeoutException:
+                if attempts < max_attempts:
+                    await self._wait_before_retry(attempts)
+                    continue
+                return self._failed(
+                    request,
+                    started_at,
+                    "UPSTREAM_TIMEOUT",
+                    "a API conectada excedeu o timeout configurado",
+                    retryable=True,
+                    attempts=attempts,
+                )
+            except httpx.RequestError:
+                if attempts < max_attempts:
+                    await self._wait_before_retry(attempts)
+                    continue
+                return self._failed(
+                    request,
+                    started_at,
+                    "UPSTREAM_CONNECTION_ERROR",
+                    "não foi possível conectar à API configurada",
+                    retryable=True,
+                    attempts=attempts,
+                )
+
+            if self._is_retryable_status(response.status_code) and attempts < max_attempts:
+                await self._wait_before_retry(attempts)
+                continue
+            break
+
+        # O loop sempre realiza ao menos uma tentativa; a asserção documenta esse invariante para
+        # o type checker sem criar um fallback que esconderia um erro de programação.
+        assert response is not None
 
         try:
             data = response.json() if response.content else None
@@ -524,7 +697,14 @@ class HttpExecutor:
                 "INVALID_JSON_RESPONSE",
                 "a API conectada retornou um corpo que não é JSON válido",
                 status_code=response.status_code,
+                attempts=attempts,
             )
+
+        data = _redact(
+            data,
+            self._redaction_fields(resolved),
+            prepared.sensitive_values,
+        )
 
         if not 200 <= response.status_code < 300:
             return OperationExecutionResult(
@@ -538,6 +718,7 @@ class HttpExecutor:
                     message=f"a API conectada respondeu com HTTP {response.status_code}",
                     retryable=response.status_code == 429 or response.status_code >= 500,
                 ),
+                attempts=attempts,
                 latency_ms=self._elapsed_ms(started_at),
             )
 
@@ -547,6 +728,7 @@ class HttpExecutor:
             outcome=ExecutionOutcome.EXECUTED,
             status_code=response.status_code,
             data=data,
+            attempts=attempts,
             latency_ms=self._elapsed_ms(started_at),
         )
 
@@ -554,20 +736,87 @@ class HttpExecutor:
         self,
         resolved: ResolvedOperation,
         request: OperationExecutionRequest,
+        *,
+        include_auth_secrets: bool,
     ) -> PreparedRequest:
         """Compila os argumentos somente depois de todas as validações locais."""
 
         path = _render_path(resolved, request.arguments.path)
-        query = _build_query(resolved, request.arguments.query)
-        auth_headers = _build_auth_headers(
+        auth = _build_auth_material(
             resolved,
             request.context,
             request.arguments.headers,
+            request.arguments.query,
+            self._environment,
+            include_secrets=include_auth_secrets,
         )
+        query = _build_query(resolved, request.arguments.query) + auth.query
         headers = _build_headers(resolved, request.arguments.headers)
-        headers.update(auth_headers)
+        headers.update(auth.headers)
         body = _build_body(resolved, request.arguments)
-        return PreparedRequest(path=path, query=query, headers=headers, body=body)
+        return PreparedRequest(
+            path=path,
+            query=query,
+            headers=headers,
+            body=body,
+            sensitive_values=auth.sensitive_values,
+        )
+
+    @staticmethod
+    def _redaction_fields(resolved: ResolvedOperation) -> frozenset[str]:
+        """Obtém a política interna sem expô-la no catálogo público."""
+
+        policy = resolved.profile.operations.get(resolved.operation.operation_id)
+        return frozenset(policy.redact_fields if policy is not None else ())
+
+    def _simulated(
+        self,
+        request: OperationExecutionRequest,
+        resolved: ResolvedOperation,
+        prepared: PreparedRequest,
+        started_at: float,
+    ) -> OperationExecutionResult:
+        """Produz uma prévia redigida sem resolver URL externa ou abrir conexão."""
+
+        auth = resolved.profile.auth
+        header_names = set(prepared.headers)
+        if auth.type in {"api_key_header", "context_header"} and auth.name:
+            header_names.add(auth.name)
+        elif auth.type == "bearer":
+            header_names.add("Authorization")
+
+        redaction_fields = self._redaction_fields(resolved)
+        body_present = prepared.body is not NO_BODY
+        simulation = SimulatedAction(
+            method=resolved.operation.method,
+            path=prepared.path,
+            # A query de autenticação nunca faz parte da entrada aceita do agente e é omitida.
+            query=_redact(request.arguments.query, redaction_fields),
+            header_names=sorted(header_names, key=str.lower),
+            body_present=body_present,
+            body=_redact(prepared.body, redaction_fields) if body_present else None,
+            auth_type=auth.type,
+        )
+        return OperationExecutionResult(
+            connector_id=request.connector_id,
+            operation_id=request.operation_id,
+            outcome=ExecutionOutcome.SIMULATED,
+            simulation=simulation,
+            latency_ms=self._elapsed_ms(started_at),
+        )
+
+    @staticmethod
+    def _is_retryable_status(status_code: int) -> bool:
+        """Repete apenas throttling e falhas do servidor, nunca erros 4xx comuns."""
+
+        return status_code == 429 or status_code >= 500
+
+    async def _wait_before_retry(self, failed_attempt: int) -> None:
+        """Aplica backoff exponencial pequeno e limitado entre tentativas."""
+
+        delay = min(self._retry_base_delay_seconds * (2 ** (failed_attempt - 1)), 2.0)
+        if delay > 0:
+            await self._sleeper(delay)
 
     def _resolve_base_url(self, resolved: ResolvedOperation) -> str:
         """Obtém a URL do ambiente e exige correspondência exata com a allowlist."""
@@ -656,6 +905,7 @@ class HttpExecutor:
         *,
         status_code: int | None = None,
         retryable: bool = False,
+        attempts: int = 0,
     ) -> OperationExecutionResult:
         """Cria um envelope para falhas ocorridas ao contatar ou interpretar o upstream."""
 
@@ -665,5 +915,6 @@ class HttpExecutor:
             outcome=ExecutionOutcome.FAILED,
             status_code=status_code,
             error=ExecutionErrorDetails(code=code, message=message, retryable=retryable),
+            attempts=attempts,
             latency_ms=self._elapsed_ms(started_at),
         )

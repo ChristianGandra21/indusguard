@@ -1,7 +1,7 @@
 # Backend FastAPI
 
 Este pacote contém as primeiras camadas executáveis do IndusGuard: configuração, modelos
-Pydantic, validação de conectores, endpoints de inspeção e o corte inicial do executor HTTP.
+Pydantic, validação de conectores, endpoints de inspeção e o executor HTTP protegido.
 
 ## O que ele faz hoje
 
@@ -10,10 +10,11 @@ Pydantic, validação de conectores, endpoints de inspeção e o corte inicial d
 3. combina operações e políticas em um catálogo;
 4. falha no startup se qualquer conector estiver inconsistente;
 5. expõe liveness, readiness, versão, conectores e operações;
-6. executa internamente GET com path, query e headers validados;
-7. resolve `$ref` local e autenticação `context_header`;
-8. valida body JSON antes de manter uma escrita fora da rede;
-9. normaliza execução, bloqueio e falha em um envelope comum.
+6. executa internamente GET com path, query, headers e body validados;
+7. resolve `$ref` local e autenticação `none`, `context_header`, API key ou Bearer;
+8. repete falhas transitórias somente quando a operação é idempotente;
+9. simula escrita por default e mantém escrita real bloqueada sem policy engine;
+10. redige campos sensíveis e normaliza execução, simulação, bloqueio e falha.
 
 O executor ainda não possui rota pública. Os testes exercitam uma API simulada em memória. A
 aplicação não usa LLM.
@@ -25,7 +26,7 @@ aplicação não usa LLM.
 | `settings.py` | Lê variáveis `INDUSGUARD_*` com defaults seguros. |
 | `schemas.py` | Define profiles e respostas usando Pydantic. |
 | `connectors.py` | Descobre, valida e consolida conectores. |
-| `executor.py` | Valida e executa o primeiro fluxo HTTP GET protegido. |
+| `executor.py` | Valida, autentica, simula ou executa chamadas HTTP protegidas. |
 | `main.py` | Cria a aplicação FastAPI e suas rotas. |
 | `tests/` | Protege os contratos e as decisões de segurança. |
 
@@ -79,12 +80,15 @@ timeout e envelopes sem abrir porta ou acessar a internet.
 O fluxo implementado aceita:
 
 - operação habilitada;
-- método GET;
-- autenticação `none` e `context_header`;
+- GET executado contra o upstream;
+- POST/PATCH e demais escritas simulados quando o modo é `simulate`;
+- autenticação `none`, `context_header`, API key em header/query e Bearer;
 - parâmetros de path, query e header;
 - `$ref` local em parâmetros e schemas;
-- body JSON validado para preparar a próxima escrita simulada;
-- resposta JSON ou resposta vazia.
+- body JSON validado;
+- retry de timeout, conexão, 429 e 5xx somente quando `idempotent=true`;
+- redaction recursiva de campos do profile e de credenciais refletidas;
+- resposta JSON ou vazia, com `attempts` e prévia tipada da simulação.
 
-Qualquer escrita e autenticação por API key/Bearer continuam bloqueadas antes da rede. O próximo
-incremento adicionará escrita simulada, retry condicionado por idempotência e redaction.
+O modo `execute` ainda bloqueia qualquer escrita com `WRITE_POLICY_REQUIRED`. O próximo incremento
+é a policy engine; nenhuma rota de execução será criada antes dessa fronteira determinística.

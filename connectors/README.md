@@ -81,9 +81,9 @@ operations:
 | `type` | Campos adicionais | Origem do valor | Runtime atual |
 |---|---|---|---|
 | `none` | nenhum | Não há autenticação. | Implementado. |
-| `api_key_header` | `name`, `env` | Variável indicada em `env`, enviada no header. | Bloqueado. |
-| `api_key_query` | `name`, `env` | Variável indicada em `env`, enviada na query. | Bloqueado. |
-| `bearer` | `env` | Variável indicada em `env`, enviada como Bearer token. | Bloqueado. |
+| `api_key_header` | `name`, `env` | Variável indicada em `env`, enviada no header. | Implementado. |
+| `api_key_query` | `name`, `env` | Variável indicada em `env`, enviada na query. | Implementado. |
+| `bearer` | `env` | Variável indicada em `env`, enviada como Bearer token. | Implementado. |
 | `context_header` | `name`, `context_field` | Campo do contexto validado da execução. | Implementado. |
 
 O profile guarda somente nomes de variáveis, nunca os segredos. O catálogo público também não
@@ -105,8 +105,9 @@ resolve nem devolve esses valores.
 | `idempotent` | `false` | Informa se repetir a chamada preserva o efeito. |
 | `redact_fields` | `[]` | Define campos que não devem aparecer em traces. |
 
-O executor já aplica `enabled`, timeout e allowlist em operações GET. Política de permissão,
-confirmação, retry, idempotência e redaction será conectada nos próximos incrementos.
+O executor aplica `enabled`, timeout, allowlist, autenticação, retry condicionado por idempotência e
+redaction. Escritas são apenas simuladas por default; permissão, pedido direto, justificativa e
+confirmação serão decisões da próxima policy engine antes de qualquer execução real.
 
 ### `domain.yaml`
 

@@ -2,7 +2,7 @@
 
 > Aula progressiva, do zero ao código atual.
 >
-> Última atualização: 18 de agosto de 2026.
+> Última atualização: 20 de agosto de 2026.
 
 Este guia foi escrito para quem abriu
 [`executor.py`](../apps/api/src/indusguard_api/executor.py) e encontrou muitos conceitos ao mesmo
@@ -59,7 +59,8 @@ flowchart LR
     E --> T[API externa]
 ```
 
-Hoje, o catálogo e o executor GET existem. O agente, MCP e frontend ainda não existem.
+Hoje, o catálogo, o executor GET e a simulação de escritas existem. O agente, MCP, policy engine e
+frontend ainda não existem.
 
 ## 2. O que é uma API?
 
@@ -126,10 +127,10 @@ Indica a ação desejada:
 | Método | Uso comum | Tratamento atual |
 |---|---|---|
 | `GET` | consultar | pode chegar à rede |
-| `POST` | criar ou iniciar ação | bloqueado |
-| `PUT` | substituir | bloqueado |
-| `PATCH` | alterar parcialmente | validado, mas bloqueado |
-| `DELETE` | remover | bloqueado |
+| `POST` | criar ou iniciar ação | simulado; execução real bloqueada |
+| `PUT` | substituir | simulado; execução real bloqueada |
+| `PATCH` | alterar parcialmente | simulado; execução real bloqueada |
+| `DELETE` | remover | simulado; execução real bloqueada |
 
 O método não é escolhido pelo request interno. Ele vem do OpenAPI da operação.
 
@@ -423,8 +424,8 @@ Interpretação:
 - `getAsset` reutiliza a política `read_operation` por meio da âncora YAML;
 - a operação está habilitada, é leitura, possui risco baixo e timeout de 10 segundos.
 
-O profile também modela `max_retries: 2`, mas retry ainda não é executado. Modelar um campo não
-significa que o runtime já o aplica.
+O executor aplica `max_retries: 2` somente porque essa política também declara `idempotent: true`.
+Timeout, conexão, HTTP 429 e 5xx podem ser repetidos; erros 4xx comuns não são.
 
 ### 9.3 O domain do IndusGuard: como interpretar o domínio
 
@@ -829,6 +830,8 @@ OperationExecutionResult(
     status_code=200,
     data={"status": "complete", "data": {"id": "asset_M101"}},
     error=None,
+    attempts=1,
+    simulation=None,
     latency_ms=1.234,
 )
 ```
@@ -838,7 +841,7 @@ OperationExecutionResult(
 | `blocked` | não | regra local impediu a chamada |
 | `failed` | sim | transporte ou resposta apresentou problema |
 | `executed` | sim | upstream respondeu 2xx com JSON válido ou body vazio |
-| `simulated` | não | reservado para futura simulação de escrita |
+| `simulated` | não | escrita validada transformada em prévia redigida |
 
 ---
 
@@ -854,13 +857,15 @@ flowchart TD
     C -- não --> C1[BLOCKED: OPERATION_NOT_FOUND]
     C -- sim --> D{Está habilitada?}
     D -- não --> D1[BLOCKED: OPERATION_DISABLED]
-    D -- sim --> E[Preparar path, query, headers, auth e body]
-    E --> F[Resolver URL do ambiente]
+    D -- sim --> E[Validar path, query, headers, auth e body]
+    E --> W{É escrita?}
+    W -- sim --> S{Modo simulate?}
+    S -- sim --> S1[SIMULATED: prévia redigida]
+    S -- não --> S2[BLOCKED: WRITE_POLICY_REQUIRED]
+    W -- não --> F[Resolver URL do ambiente]
     F --> G{URL pertence à allowlist?}
     G -- não --> G1[BLOCKED]
-    G -- sim --> H{Método é GET?}
-    H -- não --> H1[BLOCKED: METHOD_NOT_SUPPORTED]
-    H -- sim --> I[Enviar request com timeout]
+    G -- sim --> I[Enviar GET com timeout e retry idempotente]
     I --> J{Erro de transporte?}
     J -- sim --> J1[FAILED]
     J -- não --> K{Body vazio ou JSON válido?}
@@ -903,17 +908,20 @@ Operação desabilitada também para antes de preparar qualquer request.
 
 ```python
 path = _render_path(resolved, request.arguments.path)
-query = _build_query(resolved, request.arguments.query)
-auth_headers = _build_auth_headers(
+auth = _build_auth_material(
     resolved,
     request.context,
     request.arguments.headers,
+    request.arguments.query,
+    self._environment,
+    include_secrets=include_auth_secrets,
 )
+query = _build_query(resolved, request.arguments.query) + auth.query
 headers = _build_headers(resolved, request.arguments.headers)
-headers.update(auth_headers)
+headers.update(auth.headers)
 body = _build_body(resolved, request.arguments)
 
-return PreparedRequest(path=path, query=query, headers=headers, body=body)
+return PreparedRequest(..., sensitive_values=auth.sensitive_values)
 ```
 
 Até aqui não há rede. É uma fase de compilação:
@@ -956,24 +964,33 @@ http://localhost:8000
 profile.allowed_base_urls contém exatamente esse destino
 ```
 
-## 29. Etapa 4 — manter escrita fora da rede
+## 29. Etapa 4 — simular escrita sem rede
 
 Trecho de [`execute()`](../apps/api/src/indusguard_api/executor.py#L481-L489):
 
 ```python
-if resolved.operation.method != "GET":
+if resolved.operation.access is AccessMode.WRITE:
+    prepared = self._prepare_request(
+        resolved,
+        request,
+        include_auth_secrets=False,
+    )
+    if self._execution_mode == "simulate":
+        return self._simulated(request, resolved, prepared, started_at)
     return self._blocked(
         request,
         started_at,
-        "METHOD_NOT_SUPPORTED",
-        "este incremento executa somente GET; escritas continuam bloqueadas",
+        "WRITE_POLICY_REQUIRED",
+        "a execução real de escrita exige uma decisão da policy engine",
     )
 ```
 
-O body de um PATCH é validado antes dessa condição. Isso prepara o próximo incremento e permite
-detectar contrato/body inválido sem enviar a escrita.
+O body de um PATCH é validado antes do resultado. No modo default, o executor devolve uma
+`SimulatedAction` com método, path relativo, query, nomes de headers e body redigido. A prévia não
+resolve a URL-base, não lê API key/Bearer e não abre conexão.
 
-Mas `simulate` ainda não finge sucesso: hoje PATCH termina em `blocked`.
+`simulated` não significa sucesso externo. Ele significa apenas que a ação é tecnicamente válida e
+poderia seguir para uma futura avaliação de política. No modo `execute`, ela continua bloqueada.
 
 ## 30. Etapa 5 — abrir a fronteira de rede
 
@@ -1007,29 +1024,31 @@ return await self._client.request(method, url, **request_arguments)
 
 Essa é a fronteira crítica: tudo antes valida e prepara; esta função pode acessar o upstream.
 
-## 31. Etapa 6 — normalizar falhas de transporte
+## 31. Etapa 6 — repetir somente falhas transitórias seguras
 
 Trecho de [`execute()`](../apps/api/src/indusguard_api/executor.py#L501-L516):
 
 ```python
-except httpx.TimeoutException:
-    return self._failed(
-        ...,
-        "UPSTREAM_TIMEOUT",
-        "a API conectada excedeu o timeout configurado",
-        retryable=True,
-    )
-except httpx.RequestError:
-    return self._failed(
-        ...,
-        "UPSTREAM_CONNECTION_ERROR",
-        "não foi possível conectar à API configurada",
-        retryable=True,
-    )
+max_attempts = 1 + (
+    resolved.operation.max_retries
+    if resolved.operation.idempotent
+    else 0
+)
+
+for attempts in range(1, max_attempts + 1):
+    try:
+        response = await self._send_request(...)
+    except httpx.TimeoutException:
+        if attempts < max_attempts:
+            await self._wait_before_retry(attempts)
+            continue
+        return self._failed(..., retryable=True, attempts=attempts)
 ```
 
 A mensagem original da exceção não é devolvida. Ela poderia conter host, porta ou outros detalhes
-internos.
+internos. Entre tentativas há backoff exponencial limitado; os testes injetam atraso zero para
+continuarem rápidos. Operação não idempotente faz exatamente uma tentativa, mesmo que o profile
+contenha `max_retries`.
 
 ## 32. Etapa 7 — interpretar JSON e status
 
@@ -1040,6 +1059,8 @@ try:
     data = response.json() if response.content else None
 except ValueError:
     return self._failed(..., "INVALID_JSON_RESPONSE", ...)
+
+data = _redact(data, redaction_fields, sensitive_values)
 
 if not 200 <= response.status_code < 300:
     return OperationExecutionResult(
@@ -1063,7 +1084,9 @@ return OperationExecutionResult(
 ```
 
 Uma response `503` com JSON preserva o JSON em `data` e fica `retryable=True`. Uma response `200`
-com texto não JSON vira `INVALID_JSON_RESPONSE`.
+com texto não JSON vira `INVALID_JSON_RESPONSE`. Antes de o envelope sair, `_redact()` percorre
+objetos e listas: chaves declaradas em `redact_fields` e valores de credenciais refletidos pelo
+upstream viram `[REDACTED]`.
 
 ---
 
@@ -1223,10 +1246,17 @@ canônica declarada no OpenAPI.
 
 Valores com `\r` ou `\n` são bloqueados, evitando que um valor tente criar outra linha de header.
 
-## 40. `_build_auth_headers()`
+## 40. `_build_auth_material()`
 
-[`_build_auth_headers()`](../apps/api/src/indusguard_api/executor.py#L348-L388) implementa `none` e
-`context_header`.
+[`_build_auth_material()`](../apps/api/src/indusguard_api/executor.py) implementa cinco modos:
+
+| Tipo | Origem | Transporte |
+|---|---|---|
+| `none` | nenhum valor | nenhum |
+| `context_header` | contexto validado | header configurado |
+| `api_key_header` | variável indicada por `env` | header configurado |
+| `api_key_query` | variável indicada por `env` | query reservada |
+| `bearer` | variável indicada por `env` | `Authorization: Bearer ...` |
 
 Para Tractian:
 
@@ -1238,9 +1268,12 @@ profile.auth.name          = x-user-id
 header final               = x-user-id: usr_001
 ```
 
-Se o request tentar enviar `x-user-id` em `arguments.headers`, ocorre `RESERVED_AUTH_HEADER`.
+Se o request tentar enviar `x-user-id`, uma API key ou `Authorization` em argumentos, ocorre
+`RESERVED_AUTH_HEADER` ou `RESERVED_AUTH_QUERY`.
 
-Por que? Porque identidade não deve ser um argumento livre escolhido pelo futuro agente.
+Por que? Porque identidade e credencial não devem ser argumentos livres escolhidos pelo futuro
+agente. Em uma simulação, `include_secrets=False` garante que API keys e tokens nem sequer sejam
+lidos do ambiente.
 
 ## 41. `_build_body()`
 
@@ -1408,7 +1441,8 @@ Experimentos sugeridos:
 2. remova `user_id` e observe `AUTH_CONTEXT_MISSING`;
 3. troque a URL do ambiente e observe `BASE_URL_NOT_ALLOWED`;
 4. troque `getAsset` por uma operação inexistente;
-5. troque para `updateAssetConfig`, forneça body válido e observe `METHOD_NOT_SUPPORTED`.
+5. troque para `updateAssetConfig`, forneça body válido e observe `SIMULATED`, `attempts=0` e a
+   ausência de URL externa na prévia.
 
 ---
 
@@ -1428,8 +1462,10 @@ Exemplos:
 | `INVALID_REQUEST_BODY` | body viola JSON Schema |
 | `AUTH_CONTEXT_MISSING` | contexto não possui identidade |
 | `RESERVED_AUTH_HEADER` | tentativa de fornecer auth nos argumentos |
+| `AUTH_ENV_MISSING` | variável de credencial não configurada |
 | `BASE_URL_NOT_ALLOWED` | destino não pertence à allowlist |
-| `METHOD_NOT_SUPPORTED` | método diferente de GET |
+| `METHOD_NOT_SUPPORTED` | método de leitura diferente de GET |
+| `WRITE_POLICY_REQUIRED` | modo execute tentou escrita sem policy engine |
 
 Um teste comum usa um contador:
 
@@ -1456,7 +1492,8 @@ assert network_calls == 0
 | `INVALID_JSON_RESPONSE` | body não é JSON | não por default |
 | `UPSTREAM_HTTP_ERROR` | status fora de 2xx | 429 ou 5xx |
 
-`retryable=True` é informação no envelope. O executor ainda não repete a chamada automaticamente.
+`retryable=True` informa que a categoria permite repetição. O executor realiza até `max_retries`
+novas tentativas somente quando `idempotent=true`; `attempts` registra o total efetivo.
 
 ## 49. `executed` não significa “verdade de negócio completa”
 
@@ -1531,10 +1568,11 @@ Erros não reproduzem:
 - a URL rejeitada;
 - a mensagem interna de timeout/conexão.
 
-## 57. Escritas permanecem fora da rede
+## 57. Escritas simuladas permanecem fora da rede
 
-Mesmo operações habilitadas no profile não são enviadas se o método não for GET. Habilitar no
-profile é necessário, mas a capacidade de transporte também precisa estar implementada.
+No modo default, uma escrita habilitada e válida retorna uma prévia redigida. No modo `execute`, ela
+é bloqueada por `WRITE_POLICY_REQUIRED`. Habilitar no profile é necessário, mas não substitui a
+futura decisão da policy engine.
 
 ---
 
@@ -1550,11 +1588,14 @@ profile é necessário, mas a capacidade de transporte também precisa estar imp
 - modelos Pydantic de execução;
 - validação de path, query, headers e body;
 - serialização previsível de path, query e headers;
-- autenticação `none` e `context_header`;
+- autenticação `none`, `context_header`, API key em header/query e Bearer;
 - URL de ambiente + allowlist;
 - transporte somente GET;
 - timeout;
-- envelope comum;
+- retry condicionado por idempotência;
+- simulação de escrita sem rede;
+- redaction recursiva de campos e credenciais;
+- envelope com `attempts` e `SimulatedAction`;
 - testes com `MockTransport`.
 
 ## 59. Ainda não implementado
@@ -1563,12 +1604,7 @@ profile é necessário, mas a capacidade de transporte também precisa estar imp
 - agente ou LLM;
 - MCP;
 - policy engine completa;
-- API key em header/query;
-- Bearer token;
-- escrita simulada;
 - escrita real;
-- retry automático;
-- redaction em runtime;
 - validação do JSON de resposta contra o schema OpenAPI da response;
 - interpretação semântica de `complete`, `partial`, `inconclusive`, `conflict` e `unavailable`;
 - banco, observabilidade e frontend.
@@ -1585,8 +1621,9 @@ O profile contém:
 - `idempotent`;
 - `redact_fields`.
 
-O executor atual aplica `enabled`, timeout, auth suportada e allowlist. Os demais campos preparam
-etapas futuras. Não interprete presença no schema como execução completa da regra.
+O executor atual aplica `enabled`, timeout, `max_retries`, `idempotent`, `redact_fields`, auth e
+allowlist. `risk`, `permission`, `requires_direct_request` e `requires_confirmation` permanecem
+reservados para a policy engine. Não interprete presença no schema como execução completa da regra.
 
 ---
 
@@ -1748,7 +1785,8 @@ Qual outcome e código são esperados?
    1. OpenAPI descreve capacidade técnica; autorização é decisão local do profile.
    2. Para impedir que a execução vire um proxy para destinos arbitrários.
    3. Profile guarda política/conexão; domain guarda contexto, idioma e significado do domínio.
-   4. O transporte atual aceita apenas GET; PATCH é validado e depois bloqueado.
+   4. O transporte externo atual aceita GET; PATCH vira prévia em `simulate` e é bloqueado por
+      `WRITE_POLICY_REQUIRED` em `execute`.
    5. No OpenAPI, consolidado em `ResolvedOperation.operation.method`.
    6. No profile, consolidado na política da operação.
    7. Em `request.context`.
