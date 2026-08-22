@@ -2,7 +2,7 @@
 
 > Documento único para entender o projeto desde o problema até o código atual.
 >
-> Última atualização: 20 de agosto de 2026.
+> Última atualização: 21 de agosto de 2026.
 
 ## 1. Como usar este guia
 
@@ -17,7 +17,7 @@ A ordem recomendada é:
 4. acompanhar o caminho executado pelo Python;
 5. rodar a aplicação e observar as respostas;
 6. ler os testes como regras do sistema;
-7. estudar os três cortes do executor HTTP junto com seus testes.
+7. estudar executor, policy engine e MCP interno junto com seus testes.
 
 Se alguma seção parecer abstrata, avance até o laboratório prático e volte depois. Ver o sistema
 funcionando costuma tornar os conceitos mais concretos.
@@ -94,13 +94,18 @@ O projeto está sendo construído por camadas.
 - verificação de identidade, permissões, escopos, pedido direto e justificativa;
 - digest SHA-256 para vincular confirmação à pessoa e à ação exata;
 - `GuardedExecutor` que impede rede em bloqueios e confirmações pendentes;
+- servidor MCP v2 interno, sem porta ou subprocesso;
+- uma tool por operação habilitada, totalizando 20 tools nos conectores atuais;
+- schemas MCP específicos e autocontidos, gerados do OpenAPI;
+- annotations de leitura, potencial destrutivo, idempotência e acesso externo;
+- provider assíncrono para identidade, permissões, escopos e confirmação confiáveis;
+- cliente MCP real em memória atravessando policy engine e executor nos testes;
 - testes automatizados;
 - CI com Ruff, pytest e cobertura.
 
 ### Ainda não implementado
 
 - execução real de escritas;
-- servidor MCP;
 - LangGraph;
 - chamadas à Groq;
 - chat;
@@ -111,9 +116,8 @@ O projeto está sendo construído por camadas.
 - deployment público.
 
 Portanto, se você iniciar o projeto agora, ele ainda não responderá perguntas industriais nem
-chamará um LLM. O executor já transforma `getWidget` e GETs autenticados da Tractian em requests
-seguros, além de simular mutações após uma decisão política, mas ainda é uma interface interna
-exercitada por transporte em memória, não uma rota.
+chamará um LLM. Um cliente MCP interno já consegue descobrir e chamar as operações protegidas,
+mas não existe rota MCP pública: os testes conectam cliente e servidor diretamente em memória.
 
 Isso é intencional. Estamos construindo primeiro a fundação previsível.
 
@@ -134,11 +138,12 @@ Pense em um restaurante:
 | FastAPI | O balcão que expõe as informações já conferidas. |
 | Executor atual | O garçom que leva GETs à cozinha e ensaia escritas sem entregá-las. |
 | Policy engine atual | O supervisor que permite, simula, pede confirmação ou bloqueia. |
+| Servidor MCP atual | A comanda padronizada que traduz o pedido para o supervisor. |
 | Agente futuro | O atendente que conversa e sugere o que pedir. |
 
-Hoje temos cardápio, regras, glossário, conferência, supervisor, percursos GET e simulação de
-escrita, inclusive com quatro estratégias de autenticação. Ainda não implementamos escrita real
-nem o atendente inteligente.
+Hoje temos cardápio, regras, glossário, conferência, comanda MCP, supervisor, percursos GET e
+simulação de escrita, inclusive com quatro estratégias de autenticação. Ainda não implementamos
+escrita real nem o atendente inteligente.
 
 ---
 
@@ -225,6 +230,21 @@ Biblioteca que transforma dados recebidos em objetos Python tipados e rejeita fo
 
 Framework que cria endpoints HTTP a partir de funções Python e modelos Pydantic.
 
+### MCP
+
+Model Context Protocol. É um protocolo para um host descobrir e chamar tools por contratos
+padronizados. No projeto, ele é a interface entre o futuro LangGraph e as operações protegidas.
+
+### Tool MCP
+
+Uma operação nomeada com `inputSchema`, `outputSchema` e annotations. Exemplo:
+`synthetic.getWidget`. Tool descreve como chamar; não concede autorização por si só.
+
+### Provider confiável
+
+Componente do runtime autenticado que fornece identidade, permissões, escopos, pedido direto e
+confirmação. Esses sinais ficam fora dos argumentos que o modelo pode produzir.
+
 ### Fail-fast
 
 Falhar imediatamente ao detectar configuração inválida. É melhor impedir o startup do que subir um
@@ -270,12 +290,14 @@ indusguard/
 │   │   │       ├── connectors.py
 │   │   │       ├── executor.py
 │   │   │       ├── policy.py
+│   │   │       ├── mcp_server.py
 │   │   │       └── main.py
 │   │   ├── tests/
 │   │   │   ├── conftest.py
 │   │   │   ├── test_connectors.py
 │   │   │   ├── test_executor.py
 │   │   │   ├── test_policy.py
+│   │   │   ├── test_mcp_server.py
 │   │   │   └── test_system.py
 │   │   └── pyproject.toml
 │   └── web/
@@ -315,22 +337,23 @@ indusguard/
 ```mermaid
 flowchart LR
     O[openapi.yaml] --> C[ConnectorCatalog]
-    P[profile.yaml] --> C
+    Y[profile.yaml] --> C
     D[domain.yaml] --> C
     C --> V[Validação]
     V --> M[Catálogo em memória]
     M --> F[FastAPI]
     F --> R[Endpoints de inspeção]
 
-    M --> P[PolicyEngine]
+    M --> MCP[Servidor MCP interno]
+    MCP --> T[TrustedPolicyContextProvider]
+    T --> P[PolicyEngine]
     P --> G[GuardedExecutor]
     G --> E[Executor HTTP protegido]
-    E -. depois .-> MCP[Tools MCP]
-    MCP -. depois .-> A[Agente LangGraph]
+    A[Agente LangGraph futuro] -. cliente .-> MCP
 ```
 
-Linhas contínuas representam o que existe hoje. O executor ainda não possui rota pública. Linhas
-tracejadas representam etapas futuras.
+Linhas contínuas representam o que existe hoje. MCP e executor não possuem rota pública. A linha
+tracejada representa o próximo consumidor: o agente LangGraph.
 
 ---
 
@@ -527,7 +550,7 @@ pelo agente e pela interface em etapas futuras.
 Leia os arquivos nesta ordem:
 
 ```text
-settings.py -> schemas.py -> connectors.py -> main.py -> tests
+settings.py -> schemas.py -> connectors.py -> executor.py -> policy.py -> mcp_server.py -> main.py
 ```
 
 ### 9.1 `__init__.py`
@@ -1123,6 +1146,116 @@ modos diferentes, e seu método só chama `HttpExecutor` para leitura `allow` ou
 
 ---
 
+### 9.8 `mcp_server.py`
+
+Responsabilidade: apresentar as operações habilitadas como tools padronizadas sem criar um atalho
+em torno da policy engine.
+
+#### Por que o MCP é interno?
+
+Neste incremento, `create_mcp_server()` devolve um objeto `Server` do SDK v2. Ele não abre porta,
+não inicia subprocesso e não cria `/mcp` no FastAPI. Isso reduz o problema ao comportamento que
+precisamos provar agora: descoberta e chamada de tools. O futuro LangGraph poderá usar o mesmo
+objeto como cliente em memória.
+
+#### O que acontece na construção
+
+1. o catálogo fornece conectores e operações;
+2. operações com `enabled: false` são omitidas;
+3. cada nome vira `connector_id.operationId`;
+4. nomes fora de `[A-Za-z0-9._-]`, maiores que 128 caracteres ou colidindo falham no startup;
+5. os argumentos OpenAPI viram um `inputSchema` fechado;
+6. `GuardedExecutionResult` vira a base do `outputSchema`;
+7. a lista é congelada até o próximo restart.
+
+Os conectores atuais produzem 20 tools: 18 Tractian e 2 synthetic. Adicionar outra pasta de
+conector produz novas tools sem editar Python ou TypeScript.
+
+#### Como o schema é gerado
+
+Uma operação como `synthetic.getWidget` publica, de forma simplificada:
+
+```json
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "object",
+      "properties": {"widgetId": {"type": "string"}},
+      "required": ["widgetId"],
+      "additionalProperties": false
+    },
+    "query": {
+      "type": "object",
+      "properties": {
+        "labels": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": ["path"],
+  "additionalProperties": false
+}
+```
+
+Path, query, headers e body permanecem separados porque um mesmo nome pode existir em posições
+diferentes. `$ref` local não pode continuar apontando para o OpenAPI inteiro, que não é enviado ao
+cliente. `_SchemaBundler` copia apenas as definições necessárias para `$defs` e reescreve o
+apontador, deixando o schema MCP autocontido.
+
+As annotations comunicam intenção ao host:
+
+| Annotation | Origem |
+|---|---|
+| `readOnlyHint` | `access == read` |
+| `destructiveHint` | `access == write`, mesmo que hoje seja simulado |
+| `idempotentHint` | `idempotent` do profile |
+| `openWorldHint` | `true`, pois a tool conversa com uma API externa |
+
+Annotations ajudam o planejamento, mas não autorizam nada. A policy engine continua sendo o gate.
+
+#### A fronteira confiável
+
+O cliente fornece apenas os argumentos técnicos descritos pelo OpenAPI. Ele não consegue enviar:
+
+- `principal`;
+- permissões ou escopos;
+- `direct_request`;
+- confirmação;
+- `connector_id`, `operation_id` ou URL;
+- credenciais.
+
+Depois que os argumentos passam no JSON Schema, `TrustedPolicyContextProvider.resolve()` recebe o
+conector, a operação e um `ExecutionArguments` já validado. Ele devolve `TrustedPolicySignals`.
+Ainda não existe implementação concreta do provider: o host LangGraph deverá conectá-lo à camada
+autenticada e às evidências do recurso. Ausência ou falha produz `TRUSTED_CONTEXT_UNAVAILABLE`;
+jamais existe fallback para valores escolhidos pelo LLM.
+
+#### O que acontece em uma chamada
+
+```text
+call_tool(nome, argumentos)
+    -> localizar tool no snapshot
+    -> validar inputSchema
+    -> consultar TrustedPolicyContextProvider
+    -> construir PolicyEvaluationRequest
+    -> chamar somente GuardedExecutor.execute()
+    -> devolver GuardedExecutionResult em structuredContent
+```
+
+`allow`, `simulate`, `block`, `require_confirmation` e falha do upstream são resultados normais,
+com `isError=false`. Isso permite que o agente entenda “a política negou” sem confundir com
+“o protocolo quebrou”. `isError=true` é reservado para:
+
+- `MCP_TOOL_NOT_FOUND`;
+- `MCP_TOOL_ARGUMENTS_INVALID`;
+- `TRUSTED_CONTEXT_UNAVAILABLE`;
+- `MCP_TOOL_INTERNAL_ERROR`.
+
+Esses erros são redigidos: não repetem argumentos, segredos, mensagens internas ou stack trace.
+
+---
+
 ## 10. Fluxo completo de startup
 
 ```mermaid
@@ -1229,9 +1362,30 @@ Seus 23 casos comprovam:
 - leitura executada e escrita simulada pelo `GuardedExecutor`;
 - modos divergentes rejeitados na construção.
 
-### 11.6 Estado atual da suíte
+### 11.6 `test_mcp_server.py`
 
-- 78 testes;
+Seus 19 casos usam um cliente MCP real ligado diretamente ao objeto servidor. Eles comprovam:
+
+- listagem das 20 operações habilitadas;
+- nomes estáveis, schemas específicos, output schema e annotations;
+- `$ref` convertido em `$defs` autocontido;
+- novo conector gerando tool somente por OpenAPI + YAML;
+- operação desabilitada omitida e startup rejeitando nome, colisão ou parâmetro impossível;
+- GET cruzando MCP, provider, policy e executor com uma chamada HTTP;
+- escrita simulada com prévia e zero rede;
+- permissão, escopo e confirmação interrompendo antes da rede;
+- `REAL_WRITE_DISABLED` mesmo depois de confirmação válida;
+- argumento inválido rejeitado antes do provider;
+- tool desconhecida, provider indisponível e erro interno redigidos;
+- falha 503 permanecendo separada de bloqueio político e erro MCP;
+- claims confiáveis ausentes dos schemas e resultados.
+
+`httpx.MockTransport` substitui somente o sistema externo. Policy engine, executor, servidor e
+cliente MCP são componentes reais, portanto o teste acompanha a mesma fronteira que o host usará.
+
+### 11.7 Estado atual da suíte
+
+- 97 testes;
 - 91% de cobertura total;
 - Ruff aprovado;
 - formatação aprovada;
@@ -1709,17 +1863,22 @@ flowchart LR
 - `execute` não libera PATCH pelo executor isolado;
 - testes anteriores continuam verdes.
 
-### Integração com o quarto corte
+### Integração com o quarto e o quinto cortes
 
 A policy engine agora existe em `policy.py`. Ela avalia identidade, escopos, permissão, pedido
 direto, justificativa e confirmação, produz uma decisão auditável e usa `GuardedExecutor` para
 controlar a entrada no executor HTTP. Escrita real permanece bloqueada por
 `REAL_WRITE_DISABLED`.
 
+O servidor em `mcp_server.py` transforma cada operação habilitada em tool e injeta os sinais
+confiáveis antes de montar `PolicyEvaluationRequest`. O adaptador não importa nem recebe
+`HttpExecutor`, portanto não possui uma passagem alternativa em torno de `GuardedExecutor`.
+
 ### Próximo incremento do projeto
 
-Expor a composição protegida como tools MCP internas, sem criar rota pública nem permitir escrita
-real. Depois disso, LangGraph e Groq poderão consumir as tools sem contornar a policy engine.
+Criar o host LangGraph que se conecta ao servidor MCP em memória, começando pelo fluxo de leitura
+com evidência e limites de turnos/tools. Groq, rota pública MCP e escrita real continuam fora até
+existirem novos gates explícitos.
 
 ---
 
@@ -1737,7 +1896,8 @@ escopos de contexto/recurso. Escrita real continua fora do escopo.
 
 ### Etapa 4: MCP
 
-Disponibilizar operações aprovadas como tools.
+Concluída internamente. As 20 operações habilitadas são tools com schemas OpenAPI, annotations,
+provider confiável e resultados do fluxo protegido. Não existe transporte público.
 
 ### Etapa 5: LangGraph + Groq
 
@@ -1984,13 +2144,18 @@ O núcleo atual:
 22. impede rede em bloqueios e confirmações pendentes;
 23. protege decisões importantes com testes.
 
-O sistema ainda não possui agente, mas já possui catálogo, policy engine e executor autenticado.
-Ele impede que o futuro agente opere sobre uma lista ambígua, prova o caminho seguro até APIs com
-diferentes autenticações e permite visualizar uma mutação sem executá-la.
+24. transforma operações habilitadas em tools MCP com nomes estáveis;
+25. gera schemas autocontidos de path, query, headers e body;
+26. mantém claims confiáveis fora dos argumentos do modelo;
+27. conecta cliente MCP real ao fluxo protegido em memória;
+28. diferencia bloqueio político, falha do upstream e erro MCP redigido.
 
-O próximo passo é MCP: transformar operações em tools que obrigatoriamente atravessem o
-`GuardedExecutor`. Depois, LangGraph poderá planejar chamadas sem receber autoridade para fabricar
-permissões, escopos ou confirmações.
+O sistema ainda não possui agente, mas já possui catálogo, MCP, policy engine e executor
+autenticado. Ele impede que o futuro agente opere sobre uma lista ambígua, prova o caminho seguro
+até APIs com diferentes autenticações e permite visualizar uma mutação sem executá-la.
+
+O próximo passo é LangGraph: hospedar o servidor MCP interno e planejar chamadas sem receber
+autoridade para fabricar permissões, escopos ou confirmações.
 
 Se você guardar apenas três ideias, guarde estas:
 

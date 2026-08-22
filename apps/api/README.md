@@ -16,10 +16,12 @@ Pydantic, validação de conectores, endpoints de inspeção, policy engine e ex
 9. avalia identidade, escopos, permissão, pedido direto, justificativa e confirmação;
 10. encaminha somente leituras permitidas e escritas simuladas ao executor;
 11. mantém escrita real bloqueada mesmo depois de confirmação válida;
-12. redige campos sensíveis e normaliza execução, simulação, bloqueio e falha.
+12. transforma operações habilitadas em tools MCP tipadas;
+13. injeta contexto confiável fora dos argumentos controlados pelo modelo;
+14. redige campos sensíveis e normaliza execução, simulação, bloqueio e falha.
 
-O executor ainda não possui rota pública. Os testes exercitam uma API simulada em memória. A
-aplicação não usa LLM.
+MCP e executor não possuem rota pública. Os testes conectam um cliente MCP real ao servidor em
+memória e simulam somente a API externa. A aplicação não usa LLM.
 
 ## Arquivos
 
@@ -30,6 +32,7 @@ aplicação não usa LLM.
 | `connectors.py` | Descobre, valida e consolida conectores. |
 | `executor.py` | Valida, autentica, simula ou executa chamadas HTTP protegidas. |
 | `policy.py` | Decide deterministicamente se uma proposta pode avançar. |
+| `mcp_server.py` | Gera tools OpenAPI e encaminha chamadas ao `GuardedExecutor`. |
 | `main.py` | Cria a aplicação FastAPI e suas rotas. |
 | `tests/` | Protege os contratos e as decisões de segurança. |
 
@@ -81,6 +84,12 @@ Para testar somente a fronteira política:
 .venv/bin/pytest apps/api/tests/test_policy.py -q
 ```
 
+Para testar descoberta e chamadas MCP em memória:
+
+```bash
+.venv/bin/pytest apps/api/tests/test_mcp_server.py -q
+```
+
 Os testes injetam `httpx.MockTransport`. Isso permite conferir método, URL, percent-encoding,
 timeout e envelopes sem abrir porta ou acessar a internet.
 
@@ -112,3 +121,16 @@ PolicyEvaluationRequest
 Permissões e escopos são claims confiáveis do runtime. Em uma futura integração com agente, o LLM
 poderá propor argumentos, mas não fabricar `principal`, `resource_scopes` ou confirmação. Escritas
 reais ainda terminam em `REAL_WRITE_DISABLED`, e nenhuma rota pública foi adicionada.
+
+## Servidor MCP interno
+
+`create_mcp_server()` recebe catálogo, `GuardedExecutor` e um `TrustedPolicyContextProvider`.
+Cada operação habilitada vira `connector_id.operationId`; operações desabilitadas não aparecem.
+O schema é derivado do OpenAPI, separa `path`, `query`, `headers` e `body`, fecha propriedades
+inesperadas e copia referências locais para `$defs`.
+
+O provider é obrigatório como argumento da factory e pode estar indisponível em runtime, caso em
+que a chamada termina com `TRUSTED_CONTEXT_UNAVAILABLE`. Não há provider permissivo default. Tool
+desconhecida, argumentos inválidos e falha interna também são erros MCP redigidos. `allow`,
+`simulate`, `block`, `require_confirmation` e falhas HTTP continuam resultados estruturados
+normais do fluxo protegido.

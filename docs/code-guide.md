@@ -145,7 +145,23 @@ argumentos, contexto, principal ou escopos mudam. A decisão só expõe o hash, 
 texto puro. Confirmação não é exigida para simulação; no modo `execute`, ela é verificada e depois a
 escrita ainda é bloqueada pelo limite explícito deste release.
 
-## 7. Testes: qual comportamento não pode regredir
+## 7. `mcp_server.py`: como operações viram tools sem ganhar autoridade
+
+[`mcp_server.py`](../apps/api/src/indusguard_api/mcp_server.py) cria uma tool
+`connector_id.operationId` para cada operação habilitada. Leia o arquivo nesta ordem:
+
+1. `TrustedPolicySignals` e `TrustedPolicyContextProvider` definem a fronteira autenticada;
+2. `_SchemaBundler` transforma `$ref` do OpenAPI em `$defs` autocontido;
+3. `_input_schema` separa path, query, headers e body;
+4. `_snapshot_tools` valida nomes, colisões e annotations no startup;
+5. `create_mcp_server` implementa listagem e chamada.
+
+No handler de chamada, observe a ordem: argumentos são validados antes do provider; conector e
+operação vêm do nome registrado; claims vêm apenas do provider; e o único método de execução
+chamado é `GuardedExecutor.execute()`. Erros MCP usam `isError=true`, enquanto bloqueios políticos
+continuam em `GuardedExecutionResult` como resultados normais.
+
+## 8. Testes: qual comportamento não pode regredir
 
 Leia [`test_connectors.py`](../apps/api/tests/test_connectors.py) depois do núcleo. Os testes provam
 cinco propriedades arquiteturais:
@@ -161,9 +177,11 @@ simulação. [`test_executor.py`](../apps/api/tests/test_executor.py) usa `httpx
 conectores temporários para provar URLs, autenticação, retry, redaction e envelopes sem internet.
 [`test_policy.py`](../apps/api/tests/test_policy.py) prova identidade, escopos, justificativa,
 digest, confirmação e ausência de rede em decisões que interrompem o fluxo.
+[`test_mcp_server.py`](../apps/api/tests/test_mcp_server.py) usa cliente e servidor MCP reais em
+memória para provar descoberta, schemas, provider confiável, execução protegida e erros redigidos.
 
-## 8. O que ainda não procurar no código
+## 9. O que ainda não procurar no código
 
-Ainda não existem chamada de LLM, MCP, LangGraph, banco ou frontend. Também não há rota pública do
-executor nem escrita real. A policy engine já avalia a proposta internamente; o próximo consumidor
-planejado é a camada de tools MCP.
+Ainda não existem chamada de LLM, LangGraph, banco ou frontend. Também não há rota pública do MCP
+ou do executor nem escrita real. O próximo consumidor planejado é o host LangGraph conectado ao
+servidor MCP interno.

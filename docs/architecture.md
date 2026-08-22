@@ -9,22 +9,23 @@ perfil de política local.
 ```mermaid
 flowchart LR
     O[openapi.yaml] --> L[ConnectorCatalog]
-    P[profile.yaml] --> L
+    Y[profile.yaml] --> L
     D[domain.yaml] --> L
     L --> V[Validação fail-fast]
     V --> C[Catálogo em memória]
     C --> API[FastAPI]
     API --> UI[UI futura]
-    C --> P[PolicyEngine]
+    C --> MCP[Servidor MCP interno]
+    MCP --> T[TrustedPolicyContextProvider]
+    T --> P[PolicyEngine]
     P --> G[GuardedExecutor]
     G --> E[Executor HTTP protegido]
-    E -. etapas futuras .-> MCP[MCP tools]
-    MCP --> A[Agente LangGraph]
+    A[Agente LangGraph futuro] -. cliente em memória .-> MCP
 ```
 
-As linhas contínuas representam o que já está implementado. Policy engine e executor ainda são
-interfaces internas: nenhuma rota do FastAPI os chama. As linhas tracejadas mostram o próximo
-caminho de desenvolvimento.
+As linhas contínuas representam o que já está implementado. MCP, policy engine e executor são
+interfaces internas: nenhuma rota do FastAPI os chama e o MCP não abre porta. A linha tracejada
+mostra o próximo consumidor, o host LangGraph.
 
 ## Responsabilidade de cada arquivo do conector
 
@@ -81,6 +82,10 @@ Os três cortes do executor acrescentam validação JSON Schema para path, query
 resolução local de `$ref`, quatro estratégias de autenticação, percent-encoding, allowlist,
 timeout, retry idempotente, redaction e simulação segura de mutações.
 
+O quinto corte acrescenta outra fronteira: somente operações habilitadas viram tools; nomes e
+schemas são validados no startup; argumentos são validados antes de buscar identidade; e a tool
+não aceita claims confiáveis como entrada.
+
 ## Fluxo protegido atual
 
 ```mermaid
@@ -124,6 +129,51 @@ O catálogo mantém agora duas visões:
 
 Essa separação fornece ao executor os metadados necessários sem aumentar a superfície pública.
 
+## Fluxo MCP interno
+
+```mermaid
+sequenceDiagram
+    participant C as MCP Client
+    participant M as Server MCP
+    participant T as Trusted Context Provider
+    participant G as GuardedExecutor
+    participant P as PolicyEngine
+    participant H as HttpExecutor
+
+    C->>M: list_tools()
+    M-->>C: 20 tools + schemas + annotations
+    C->>M: call_tool(nome, argumentos)
+    M->>M: resolve nome e valida inputSchema
+    alt argumentos inválidos
+        M-->>C: isError + MCP_TOOL_ARGUMENTS_INVALID
+    else argumentos válidos
+        M->>T: obter sinais autenticados
+        T-->>M: principal, contexto, escopos, pedido, confirmação
+        M->>G: PolicyEvaluationRequest
+        G->>P: evaluate()
+        P-->>G: allow / simulate / require_confirmation / block
+        opt allow ou simulate
+            G->>H: execute()
+            H-->>G: executado ou prévia
+        end
+        G-->>M: GuardedExecutionResult
+        M-->>C: structuredContent
+    end
+```
+
+O nome da tool resolve conector e operação por um mapa interno; o cliente não escolhe URL nem
+repete IDs dentro dos argumentos. O `inputSchema` é derivado do OpenAPI e usa quatro grupos:
+`path`, `query`, `headers` e `body`. Referências `#/components/...` são copiadas para `$defs`, pois
+o documento OpenAPI completo não é exposto ao cliente.
+
+`TrustedPolicyContextProvider` é uma interface, não uma implementação permissiva. O runtime que
+hospedar o servidor deverá obter os sinais de autenticação e evidência. Provider ausente ou com
+falha produz `TRUSTED_CONTEXT_UNAVAILABLE`; nunca faz fallback para claims enviados pelo agente.
+
+Bloqueio político e confirmação pendente são resultados válidos do domínio, com `isError=false`.
+Erros de protocolo ficam separados de falhas do upstream: um HTTP 503 autorizado aparece dentro
+de `execution.error`, enquanto tool desconhecida ou argumento inválido usa `isError=true`.
+
 ## Liveness e readiness
 
 Os dois sinais têm propósitos diferentes:
@@ -147,8 +197,9 @@ instância cujo catálogo ainda não esteja pronto.
 | `$ref` local e quatro estratégias de autenticação | Implementados |
 | Escrita simulada, retry idempotente e redaction | Implementados internamente |
 | Policy engine e `GuardedExecutor` | Implementados internamente |
+| MCP interno com schemas e contexto confiável | Implementado e testado em memória |
 | Escrita real | Bloqueada por `REAL_WRITE_DISABLED` |
-| MCP e LangGraph | Planejado |
+| LangGraph e Groq | Planejados |
 | Persistência e OpenTelemetry | Planejado |
 | Frontend Next.js | Planejado |
 | Benchmark `prompt_only` × `guarded` | Planejado |

@@ -8,12 +8,12 @@ porém, não conhece regras Tractian no núcleo: uma API entra por contrato e co
 
 ## Em uma frase
 
-O IndusGuard transforma **OpenAPI + política + domínio** em operações HTTP validadas e
-controladas que, nas próximas etapas, serão disponibilizadas para MCP, LangGraph e frontend.
+O IndusGuard transforma **OpenAPI + política + domínio** em tools MCP tipadas que só alcançam
+APIs externas depois de atravessar validação, contexto confiável e políticas determinísticas.
 
 ## Estado do projeto
 
-O repositório concluiu o quarto corte vertical: a policy engine determinística interna.
+O repositório concluiu o quinto corte vertical: o servidor MCP interno e protegido.
 
 | Capacidade | Situação |
 |---|---|
@@ -27,14 +27,15 @@ O repositório concluiu o quarto corte vertical: a policy engine determinística
 | `$ref` local e autenticação `context_header` | Pronto |
 | API key/Bearer, retry, redaction e escrita simulada | Pronto internamente |
 | Policy engine determinística e `GuardedExecutor` | Pronto internamente |
+| MCP interno com 20 tools OpenAPI | Pronto e testado em memória |
 | Escrita real | Bloqueada intencionalmente |
-| MCP e agente LangGraph/Groq | Planejado |
+| Agente LangGraph/Groq | Planejado |
 | Banco e OpenTelemetry | Planejado |
 | Frontend Next.js | Planejado |
 | Benchmark e dashboard | Planejado |
 
-Importante: o fluxo protegido permite GETs autenticados e simula escritas validadas, mas ainda não
-está exposto por uma rota. Os testes usam transporte em memória e não acessam a API real. Mesmo uma
+Importante: o MCP é um objeto interno, sem rota, porta ou subprocesso. Os testes conectam o cliente
+real do SDK ao servidor em memória e substituem somente o transporte da API externa. Mesmo uma
 confirmação válida recebe `REAL_WRITE_DISABLED`; a aplicação ainda não chama um LLM.
 
 ## Por que começar pelo catálogo?
@@ -47,14 +48,15 @@ O catálogo cria essa fronteira antes da camada probabilística do agente:
 
 ```mermaid
 flowchart LR
-    U[OpenAPI da API] --> C[ConnectorCatalog]
-    P[Políticas locais] --> C
+    O[OpenAPI da API] --> C[ConnectorCatalog]
+    Y[Políticas locais] --> C
     D[Domínio] --> C
     C --> F[FastAPI: catálogo validado]
-    C --> P[PolicyEngine]
+    C --> M[Servidor MCP interno]
+    M --> P[PolicyEngine]
     P --> G[GuardedExecutor]
     G --> E[Executor HTTP protegido]
-    E -. depois .-> A[Agente]
+    A[Agente futuro] -. cliente em memória .-> M
 ```
 
 ## Modelo mental dos três arquivos
@@ -77,7 +79,8 @@ indusguard/
 ├── apps/
 │   ├── api/
 │   │   ├── src/indusguard_api/    # código FastAPI
-│   │   └── tests/                 # testes do catálogo e sistema
+│   │   │   └── mcp_server.py      # OpenAPI -> tools -> fluxo protegido
+│   │   └── tests/                 # testes do catálogo, executor, policy e MCP
 │   └── web/                       # placeholder do frontend
 ├── connectors/
 │   ├── tractian/                  # contrato industrial e suas políticas
@@ -249,7 +252,13 @@ startup bem-sucedido do catálogo.
 - mutações são simuladas por default sem ler segredos ou resolver a URL externa;
 - retry só ocorre para operações idempotentes em timeout, conexão, HTTP 429 ou 5xx;
 - campos declarados em `redact_fields` e credenciais refletidas são removidos do envelope;
-- timeout, resposta HTTP de erro e JSON inválido viram envelopes estruturados.
+- timeout, resposta HTTP de erro e JSON inválido viram envelopes estruturados;
+- somente operações habilitadas viram tools MCP;
+- o schema da tool não aceita principal, permissões, escopos, confirmação, URL ou credenciais;
+- argumentos MCP inválidos param antes do provider confiável e da rede;
+- toda chamada de tool usa `GuardedExecutor`, nunca `HttpExecutor` diretamente;
+- nomes inválidos, colisões e argumentos OpenAPI não representáveis falham no startup;
+- erros MCP são estáveis e redigidos, enquanto bloqueios políticos continuam resultados normais.
 
 ## Integração contínua
 
@@ -286,7 +295,8 @@ avaliação existirem.
 
 - Web: Next.js, TypeScript, Tailwind, shadcn/ui, TanStack Query e Recharts;
 - API: Python 3.12, FastAPI e Pydantic v2;
-- Agente: LangGraph, MCP e Groq;
+- Protocolo de tools: SDK Python MCP v2, já implementado internamente;
+- Agente: LangGraph e Groq, ainda planejados;
 - Execução: httpx e validação JSON Schema/OpenAPI;
 - Dados: SQLAlchemy, Alembic, PostgreSQL e fallback SQLite;
 - Observabilidade: OpenTelemetry e OTLP;
@@ -334,11 +344,42 @@ recurso. Uma confirmação de outra pessoa ou vinculada a outro digest não vale
 uma confirmação correta ainda termina em `REAL_WRITE_DISABLED`: habilitar efeito externo não faz
 parte deste incremento.
 
+## MCP interno implementado
+
+[`mcp_server.py`](apps/api/src/indusguard_api/mcp_server.py) cria uma fotografia das operações
+habilitadas no startup. Cada uma vira uma tool `connector_id.operationId`, por exemplo
+`synthetic.getWidget` ou `tractian.updateAssetConfig`.
+
+```text
+MCP Client
+    -> valida inputSchema OpenAPI
+    -> TrustedPolicyContextProvider
+    -> GuardedExecutor
+    -> PolicyEngine
+    -> HttpExecutor, somente quando a decisão permite
+```
+
+O schema separa `path`, `query`, `headers` e `body`, fecha propriedades inesperadas e copia `$ref`
+local para `$defs`, tornando o contrato autocontido. Annotations informam leitura, potencial
+destrutivo, idempotência e acesso a sistema externo. Principal, permissões, escopos, pedido direto
+e confirmação não aparecem nos argumentos: um `TrustedPolicyContextProvider` assíncrono precisa
+obtê-los da camada autenticada do runtime.
+
+Bloqueios e confirmações pendentes são respostas estruturadas normais. `isError=true` fica
+reservado para tool desconhecida, argumento inválido, provider indisponível ou falha interna
+redigida. O servidor não possui transporte público neste incremento.
+
+Execute somente os testes MCP:
+
+```bash
+.venv/bin/pytest apps/api/tests/test_mcp_server.py -q
+```
+
 ### Próximo incremento
 
-Apresentar as operações protegidas como tools MCP internas, preservando `GuardedExecutor` como a
-única passagem até o HTTP. FastAPI público, LangGraph, Groq e escrita real continuam fora deste
-corte.
+Hospedar esse objeto MCP dentro do runtime LangGraph e implementar o primeiro fluxo do agente sem
+adicionar uma rota MCP pública. Groq, persistência, OpenTelemetry, frontend e escrita real
+continuam fora deste corte.
 
 ## Roteiro de estudo recomendado
 
@@ -348,8 +389,9 @@ corte.
 4. Leia `Settings`, depois os schemas, depois `ConnectorCatalog`.
 5. Leia `executor.py` acompanhando `test_executor.py`.
 6. Leia `policy.py` junto de `test_policy.py` e compare os quatro outcomes.
-7. Rode `make test` e leia cada teste como uma regra do sistema.
-8. Altere temporariamente uma cópia de profile para provocar um erro e observar o fail-fast.
+7. Leia `mcp_server.py` junto de `test_mcp_server.py` e observe a fronteira confiável.
+8. Rode `make test` e leia cada teste como uma regra do sistema.
+9. Altere temporariamente uma cópia de profile para provocar um erro e observar o fail-fast.
 
 ## Glossário rápido
 
@@ -364,6 +406,8 @@ corte.
 | Idempotente | Operação que pode ser repetida sem multiplicar seu efeito. |
 | Redaction | Remoção de valores sensíveis antes de trace ou persistência. |
 | Drift de contrato | Diferença entre OpenAPI, profile, código ou tipos gerados. |
+| MCP tool | Operação com nome, schema e resultado padronizados para um host de agente. |
+| Provider confiável | Componente autenticado que fornece claims que o LLM não pode inventar. |
 
 ## Documentação detalhada
 
