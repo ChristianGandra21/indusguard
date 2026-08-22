@@ -1,8 +1,8 @@
 """Aplicação HTTP que expõe o estado atual do núcleo IndusGuard.
 
 As rotas desta etapa permitem verificar se o processo está vivo, se os conectores são válidos e
-quais operações foram descobertas. O endpoint de execução e o agente serão adicionados somente
-depois que essa camada declarativa estiver estável e testada.
+quais operações foram descobertas. O runtime do agente existe como interface interna, mas não é
+exposto por estas rotas: publicação exige autenticação, rate limit e observabilidade próprios.
 """
 
 from contextlib import asynccontextmanager

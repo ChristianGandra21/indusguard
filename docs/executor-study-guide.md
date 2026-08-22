@@ -454,8 +454,8 @@ intents:
 Hoje, a parte mais importante para o executor é `context_fields`: o loader exige que
 `auth.context_field: user_id` aponte para um campo declarado no domínio.
 
-Terminologia e intenções estão preparadas para o futuro agente e a futura interface, mas ainda não
-orientam a execução HTTP.
+Terminologia e intenções orientam o classificador e o planejador do agente. Elas não alteram a
+execução HTTP: autorização continua pertencendo ao profile e à policy engine.
 
 ---
 

@@ -2,12 +2,12 @@
 
 > Documento único para entender o projeto desde o problema até o código atual.
 >
-> Última atualização: 21 de agosto de 2026.
+> Última atualização: 22 de agosto de 2026.
 
 ## 1. Como usar este guia
 
 Este guia foi escrito para ser lido em ordem. Você não precisa começar abrindo o maior arquivo do
-projeto nem precisa entender LangGraph, MCP ou deployment neste momento.
+projeto nem precisa dominar LangGraph, MCP ou deployment antes de entender as camadas básicas.
 
 A ordem recomendada é:
 
@@ -17,7 +17,7 @@ A ordem recomendada é:
 4. acompanhar o caminho executado pelo Python;
 5. rodar a aplicação e observar as respostas;
 6. ler os testes como regras do sistema;
-7. estudar executor, policy engine e MCP interno junto com seus testes.
+7. estudar executor, policy engine, MCP e runtime LangGraph junto com seus testes.
 
 Se alguma seção parecer abstrata, avance até o laboratório prático e volte depois. Ver o sistema
 funcionando costuma tornar os conceitos mais concretos.
@@ -100,14 +100,20 @@ O projeto está sendo construído por camadas.
 - annotations de leitura, potencial destrutivo, idempotência e acesso externo;
 - provider assíncrono para identidade, permissões, escopos e confirmação confiáveis;
 - cliente MCP real em memória atravessando policy engine e executor nos testes;
+- `domain.yaml` inteiramente tipado, com intenções e referências de operações validadas;
+- runtime LangGraph stateless com classificação, planejamento, tools e finalização explícitos;
+- aliases de tools isolados por conector e resolvidos internamente para nomes MCP;
+- contexto confiável da run separado da mensagem controlada pela pessoa/modelo;
+- evidências redigidas, limitadas e identificadas como `ev-001`, `ev-002` etc.;
+- limites de 8 chamadas de modelo, 12 tools, 60 segundos, 32 KiB por evidência e 128 KiB por run;
+- modelo fake determinístico para testes e CI;
+- adapter opcional da Groq Free com `openai/gpt-oss-20b`, sem fallback pago ou Ollama;
 - testes automatizados;
 - CI com Ruff, pytest e cobertura.
 
 ### Ainda não implementado
 
 - execução real de escritas;
-- LangGraph;
-- chamadas à Groq;
 - chat;
 - frontend Next.js;
 - banco de dados;
@@ -115,9 +121,9 @@ O projeto está sendo construído por camadas.
 - benchmark `prompt_only` × `guarded`;
 - deployment público.
 
-Portanto, se você iniciar o projeto agora, ele ainda não responderá perguntas industriais nem
-chamará um LLM. Um cliente MCP interno já consegue descobrir e chamar as operações protegidas,
-mas não existe rota MCP pública: os testes conectam cliente e servidor diretamente em memória.
+Portanto, se você iniciar apenas o FastAPI, ele ainda não exporá chat ou rota de runs. O agente já
+existe como interface Python interna. A suíte o executa com modelo fake e MCP real em memória; a
+Groq só é chamada pelo smoke manual quando `GROQ_API_KEY` está configurada.
 
 Isso é intencional. Estamos construindo primeiro a fundação previsível.
 
@@ -233,7 +239,7 @@ Framework que cria endpoints HTTP a partir de funções Python e modelos Pydanti
 ### MCP
 
 Model Context Protocol. É um protocolo para um host descobrir e chamar tools por contratos
-padronizados. No projeto, ele é a interface entre o futuro LangGraph e as operações protegidas.
+padronizados. No projeto, ele é a interface entre o runtime LangGraph e as operações protegidas.
 
 ### Tool MCP
 
@@ -344,16 +350,15 @@ flowchart LR
     M --> F[FastAPI]
     F --> R[Endpoints de inspeção]
 
-    M --> MCP[Servidor MCP interno]
+    M --> A[Runtime LangGraph interno]
+    A --> MCP[Cliente e servidor MCP em memória]
     MCP --> T[TrustedPolicyContextProvider]
     T --> P[PolicyEngine]
     P --> G[GuardedExecutor]
     G --> E[Executor HTTP protegido]
-    A[Agente LangGraph futuro] -. cliente .-> MCP
 ```
 
-Linhas contínuas representam o que existe hoje. MCP e executor não possuem rota pública. A linha
-tracejada representa o próximo consumidor: o agente LangGraph.
+Todas as linhas representam o que existe hoje. Agente, MCP e executor não possuem rota pública.
 
 ---
 
@@ -1154,9 +1159,8 @@ em torno da policy engine.
 #### Por que o MCP é interno?
 
 Neste incremento, `create_mcp_server()` devolve um objeto `Server` do SDK v2. Ele não abre porta,
-não inicia subprocesso e não cria `/mcp` no FastAPI. Isso reduz o problema ao comportamento que
-precisamos provar agora: descoberta e chamada de tools. O futuro LangGraph poderá usar o mesmo
-objeto como cliente em memória.
+não inicia subprocesso e não cria `/mcp` no FastAPI. O runtime LangGraph usa esse mesmo objeto como
+cliente em memória; o transporte continua interno e não é uma rota de produto.
 
 #### O que acontece na construção
 
@@ -1227,9 +1231,9 @@ O cliente fornece apenas os argumentos técnicos descritos pelo OpenAPI. Ele nã
 
 Depois que os argumentos passam no JSON Schema, `TrustedPolicyContextProvider.resolve()` recebe o
 conector, a operação e um `ExecutionArguments` já validado. Ele devolve `TrustedPolicySignals`.
-Ainda não existe implementação concreta do provider: o host LangGraph deverá conectá-lo à camada
-autenticada e às evidências do recurso. Ausência ou falha produz `TRUSTED_CONTEXT_UNAVAILABLE`;
-jamais existe fallback para valores escolhidos pelo LLM.
+O agente implementa `RunBoundTrustedContextProvider`, que liga as chamadas ao
+`TrustedRunContext` da run. Ausência ou falha produz `TRUSTED_CONTEXT_UNAVAILABLE`; jamais existe
+fallback para valores escolhidos pelo LLM.
 
 #### O que acontece em uma chamada
 
@@ -1385,7 +1389,8 @@ cliente MCP são componentes reais, portanto o teste acompanha a mesma fronteira
 
 ### 11.7 Estado atual da suíte
 
-- 97 testes;
+- 127 testes offline selecionados por default;
+- 1 smoke Groq `live` excluído por default;
 - 91% de cobertura total;
 - Ruff aprovado;
 - formatação aprovada;
@@ -1863,7 +1868,7 @@ flowchart LR
 - `execute` não libera PATCH pelo executor isolado;
 - testes anteriores continuam verdes.
 
-### Integração com o quarto e o quinto cortes
+### Integração com o quarto, quinto e sexto cortes
 
 A policy engine agora existe em `policy.py`. Ela avalia identidade, escopos, permissão, pedido
 direto, justificativa e confirmação, produz uma decisão auditável e usa `GuardedExecutor` para
@@ -1874,11 +1879,32 @@ O servidor em `mcp_server.py` transforma cada operação habilitada em tool e in
 confiáveis antes de montar `PolicyEvaluationRequest`. O adaptador não importa nem recebe
 `HttpExecutor`, portanto não possui uma passagem alternativa em torno de `GuardedExecutor`.
 
+O sexto corte adiciona `agent.py`. `AgentRuntime.run()` recebe a mensagem e o contexto confiável
+separadamente, cria o provider da run e executa este StateGraph:
+
+```text
+validate -> classify -> plan -> tools -> plan -> finalize
+```
+
+- `validate` escolhe apenas as tools habilitadas do conector e cria aliases com `__`;
+- `classify` retorna somente um ID do `domain.yaml` ou intenção ambígua;
+- `plan` pode pedir várias tools, mas o runtime as executa em ordem;
+- `tools` usa o cliente MCP real em memória e cria evidências `ev-001`, `ev-002`;
+- `finalize` não recebe tools e só pode citar IDs coletados.
+
+`ScriptedAgentModelGateway` torna CI e testes determinísticos. `GroqAgentModelGateway` implementa
+o caminho real com `openai/gpt-oss-20b`: classificador e finalizador usam JSON Schema, enquanto o
+planejador usa tool calling com paralelismo desabilitado. Esses caminhos são separados porque
+saída estruturada estrita e tools não são combinadas na mesma chamada.
+
+Resultados de APIs são dados não confiáveis e permanecem `ToolMessage`. Se um documento retornado
+mandar “ignore as regras”, esse texto não vira system prompt. Limites de chamadas, tempo e bytes
+encerram a run com códigos estáveis e preservam evidências parciais.
+
 ### Próximo incremento do projeto
 
-Criar o host LangGraph que se conecta ao servidor MCP em memória, começando pelo fluxo de leitura
-com evidência e limites de turnos/tools. Groq, rota pública MCP e escrita real continuam fora até
-existirem novos gates explícitos.
+Persistir runs já redigidas e instrumentar request, modelo, tool, policy e ação com OpenTelemetry.
+Rota pública, frontend e escrita real continuam fora até existirem novos gates explícitos.
 
 ---
 
@@ -1901,7 +1927,7 @@ provider confiável e resultados do fluxo protegido. Não existe transporte púb
 
 ### Etapa 5: LangGraph + Groq
 
-Criar o fluxo:
+Concluída internamente. O fluxo implementado é:
 
 ```text
 validar solicitação
@@ -2149,16 +2175,22 @@ O núcleo atual:
 26. mantém claims confiáveis fora dos argumentos do modelo;
 27. conecta cliente MCP real ao fluxo protegido em memória;
 28. diferencia bloqueio político, falha do upstream e erro MCP redigido.
+29. valida intenções e operações do domínio no startup;
+30. executa um StateGraph stateless com limites explícitos;
+31. isola as tools pelo conector escolhido;
+32. mantém contexto confiável fora da mensagem e dos argumentos do modelo;
+33. coleta evidências limitadas e valida suas referências;
+34. usa fake determinístico no CI e Groq Free somente no smoke manual.
 
-O sistema ainda não possui agente, mas já possui catálogo, MCP, policy engine e executor
-autenticado. Ele impede que o futuro agente opere sobre uma lista ambígua, prova o caminho seguro
-até APIs com diferentes autenticações e permite visualizar uma mutação sem executá-la.
+O sistema já possui agente interno, catálogo, MCP, policy engine e executor autenticado. Ele impede
+que o modelo opere sobre uma lista ambígua, prova o caminho seguro até APIs com diferentes
+autenticações e permite visualizar uma mutação sem executá-la.
 
-O próximo passo é LangGraph: hospedar o servidor MCP interno e planejar chamadas sem receber
-autoridade para fabricar permissões, escopos ou confirmações.
+O próximo passo é persistência e observabilidade: registrar runs redigidas e spans sem armazenar
+credenciais, respostas completas ou raciocínio interno do modelo.
 
 Se você guardar apenas três ideias, guarde estas:
 
 1. **OpenAPI descreve capacidade; profile concede permissão.**
-2. **O agente será probabilístico, mas as regras de segurança serão determinísticas.**
+2. **O agente é probabilístico, mas as regras de segurança são determinísticas.**
 3. **O executor recebe operationId, nunca uma URL arbitrária.**

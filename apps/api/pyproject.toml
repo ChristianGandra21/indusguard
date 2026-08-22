@@ -18,6 +18,11 @@ dependencies = [
   "jsonschema>=4.23,<5.0",
   # O SDK MCP v2 fornece o protocolo interno e o cliente em memória usado nos testes de aceitação.
   "mcp>=2.0,<3.0",
+  # LangGraph coordena o fluxo explícito; langchain-core define mensagens e tools dinâmicas.
+  "langgraph>=1.0,<2.0",
+  "langchain-core>=1.0,<2.0",
+  # Somente este adaptador fala com a faixa gratuita da Groq; não há fallback pago ou Ollama.
+  "langchain-groq>=1.0,<2.0",
   # Validação estrutural complementa as restrições locais implementadas em connectors.py.
   "openapi-spec-validator>=0.7,<1.0",
   "pydantic-settings>=2.6,<3.0",
@@ -38,9 +43,12 @@ dev = [
 packages = ["src/indusguard_api"]
 
 [tool.pytest.ini_options]
-addopts = "-q --strict-markers --disable-warnings"
+addopts = "-q --strict-markers --disable-warnings -m 'not live'"
 pythonpath = ["src"]
 testpaths = ["tests"]
+markers = [
+  "live: usa a Groq real e só roda quando GROQ_API_KEY está presente",
+]
 
 [tool.ruff]
 line-length = 100

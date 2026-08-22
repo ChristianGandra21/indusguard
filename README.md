@@ -13,7 +13,7 @@ APIs externas depois de atravessar validação, contexto confiável e políticas
 
 ## Estado do projeto
 
-O repositório concluiu o quinto corte vertical: o servidor MCP interno e protegido.
+O repositório concluiu o sexto corte vertical: o runtime LangGraph interno sobre o MCP protegido.
 
 | Capacidade | Situação |
 |---|---|
@@ -29,14 +29,15 @@ O repositório concluiu o quinto corte vertical: o servidor MCP interno e proteg
 | Policy engine determinística e `GuardedExecutor` | Pronto internamente |
 | MCP interno com 20 tools OpenAPI | Pronto e testado em memória |
 | Escrita real | Bloqueada intencionalmente |
-| Agente LangGraph/Groq | Planejado |
+| Agente LangGraph stateless | Pronto internamente e testado offline |
+| Adapter Groq Free (`openai/gpt-oss-20b`) | Pronto; smoke real é manual |
 | Banco e OpenTelemetry | Planejado |
 | Frontend Next.js | Planejado |
 | Benchmark e dashboard | Planejado |
 
-Importante: o MCP é um objeto interno, sem rota, porta ou subprocesso. Os testes conectam o cliente
-real do SDK ao servidor em memória e substituem somente o transporte da API externa. Mesmo uma
-confirmação válida recebe `REAL_WRITE_DISABLED`; a aplicação ainda não chama um LLM.
+Importante: agente e MCP são objetos internos, sem rota, porta ou subprocesso. Os testes usam um
+modelo fake determinístico, cliente MCP real e transporte HTTP simulado; por isso a suíte padrão
+não acessa Groq nem APIs externas. Mesmo uma confirmação válida recebe `REAL_WRITE_DISABLED`.
 
 ## Por que começar pelo catálogo?
 
@@ -56,7 +57,7 @@ flowchart LR
     M --> P[PolicyEngine]
     P --> G[GuardedExecutor]
     G --> E[Executor HTTP protegido]
-    A[Agente futuro] -. cliente em memória .-> M
+    A[Runtime LangGraph] --> M
 ```
 
 ## Modelo mental dos três arquivos
@@ -79,8 +80,10 @@ indusguard/
 ├── apps/
 │   ├── api/
 │   │   ├── src/indusguard_api/    # código FastAPI
-│   │   │   └── mcp_server.py      # OpenAPI -> tools -> fluxo protegido
-│   │   └── tests/                 # testes do catálogo, executor, policy e MCP
+│   │   │   ├── mcp_server.py      # OpenAPI -> tools -> fluxo protegido
+│   │   │   ├── agent.py           # grafo, contratos, limites e modelo fake
+│   │   │   └── groq_gateway.py    # adapter opcional da Groq Free
+│   │   └── tests/                 # catálogo, executor, policy, MCP e agente
 │   └── web/                       # placeholder do frontend
 ├── connectors/
 │   ├── tractian/                  # contrato industrial e suas políticas
@@ -296,7 +299,7 @@ avaliação existirem.
 - Web: Next.js, TypeScript, Tailwind, shadcn/ui, TanStack Query e Recharts;
 - API: Python 3.12, FastAPI e Pydantic v2;
 - Protocolo de tools: SDK Python MCP v2, já implementado internamente;
-- Agente: LangGraph e Groq, ainda planejados;
+- Agente: LangGraph implementado e Groq Free disponível somente por adapter explícito;
 - Execução: httpx e validação JSON Schema/OpenAPI;
 - Dados: SQLAlchemy, Alembic, PostgreSQL e fallback SQLite;
 - Observabilidade: OpenTelemetry e OTLP;
@@ -375,11 +378,46 @@ Execute somente os testes MCP:
 .venv/bin/pytest apps/api/tests/test_mcp_server.py -q
 ```
 
+## Runtime LangGraph interno implementado
+
+[`agent.py`](apps/api/src/indusguard_api/agent.py) executa uma run stateless pelo fluxo explícito:
+
+```text
+validar conector/domínio
+-> classificar intenção com saída estruturada
+-> planejar tools do conector selecionado
+-> chamar o MCP em memória sequencialmente
+-> finalizar sem tools e com evidence_ids validados
+```
+
+O modelo recebe aliases como `synthetic__getWidget`, mas o runtime resolve internamente o nome
+MCP `synthetic.getWidget`. `TrustedRunContext` é passado separadamente da mensagem e injeta
+identidade, permissões, escopos, pedido direto e confirmação pelo provider da run.
+
+Os limites default são 8 chamadas de modelo, 12 tools, 60 segundos, 32 KiB por evidência e
+128 KiB por run. Falha upstream, erro MCP, timeout e cota da Groq produzem `AgentRunResult`
+estruturado. Payloads de tools permanecem `ToolMessage` não confiáveis e nunca viram system prompt.
+
+Execute somente os testes do agente, sempre offline:
+
+```bash
+.venv/bin/pytest apps/api/tests/test_agent_runtime.py -q
+```
+
+Para o smoke manual com a faixa gratuita da Groq:
+
+```bash
+# Defina GROQ_API_KEY no .env ignorado pelo Git e execute:
+.venv/bin/pytest apps/api/tests/test_agent_runtime.py -m live -q
+```
+
+Não existe fallback para Ollama ou modelo pago. Um rate limit termina com
+`MODEL_RATE_LIMITED`, sem nova tentativa em outro provedor.
+
 ### Próximo incremento
 
-Hospedar esse objeto MCP dentro do runtime LangGraph e implementar o primeiro fluxo do agente sem
-adicionar uma rota MCP pública. Groq, persistência, OpenTelemetry, frontend e escrita real
-continuam fora deste corte.
+Persistir runs redigidas e adicionar spans OpenTelemetry para request, modelo, tool, policy e
+ação. Rota pública, frontend e escrita real continuam fora deste corte.
 
 ## Roteiro de estudo recomendado
 
@@ -390,8 +428,9 @@ continuam fora deste corte.
 5. Leia `executor.py` acompanhando `test_executor.py`.
 6. Leia `policy.py` junto de `test_policy.py` e compare os quatro outcomes.
 7. Leia `mcp_server.py` junto de `test_mcp_server.py` e observe a fronteira confiável.
-8. Rode `make test` e leia cada teste como uma regra do sistema.
-9. Altere temporariamente uma cópia de profile para provocar um erro e observar o fail-fast.
+8. Leia `agent.py` junto de `test_agent_runtime.py` e acompanhe os nós do StateGraph.
+9. Rode `make test` e leia cada teste como uma regra do sistema.
+10. Altere temporariamente uma cópia de profile para provocar um erro e observar o fail-fast.
 
 ## Glossário rápido
 

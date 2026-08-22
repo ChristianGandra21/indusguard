@@ -1,7 +1,7 @@
 # Backend FastAPI
 
 Este pacote contém as primeiras camadas executáveis do IndusGuard: configuração, modelos
-Pydantic, validação de conectores, endpoints de inspeção, policy engine e executor HTTP protegido.
+Pydantic, conectores, executor protegido, policy engine, MCP e runtime LangGraph interno.
 
 ## O que ele faz hoje
 
@@ -19,9 +19,14 @@ Pydantic, validação de conectores, endpoints de inspeção, policy engine e ex
 12. transforma operações habilitadas em tools MCP tipadas;
 13. injeta contexto confiável fora dos argumentos controlados pelo modelo;
 14. redige campos sensíveis e normaliza execução, simulação, bloqueio e falha.
+15. valida integralmente o `domain.yaml` e suas referências a operações;
+16. executa um StateGraph stateless de classificação, planejamento, tools e finalização;
+17. converte aliases do modelo para tools MCP do conector selecionado;
+18. limita modelo, tools, tempo e tamanho de evidências;
+19. usa fake determinístico no CI e oferece Groq Free somente quando configurada.
 
-MCP e executor não possuem rota pública. Os testes conectam um cliente MCP real ao servidor em
-memória e simulam somente a API externa. A aplicação não usa LLM.
+Agente, MCP e executor não possuem rota pública. Os testes usam modelo fake, cliente MCP real em
+memória e API externa simulada. A Groq real só é acessada pelo teste manual marcado como `live`.
 
 ## Arquivos
 
@@ -33,6 +38,8 @@ memória e simulam somente a API externa. A aplicação não usa LLM.
 | `executor.py` | Valida, autentica, simula ou executa chamadas HTTP protegidas. |
 | `policy.py` | Decide deterministicamente se uma proposta pode avançar. |
 | `mcp_server.py` | Gera tools OpenAPI e encaminha chamadas ao `GuardedExecutor`. |
+| `agent.py` | Define contratos, limites, modelo fake e o StateGraph interno. |
+| `groq_gateway.py` | Implementa classificação/finalização estruturadas e tool calling na Groq. |
 | `main.py` | Cria a aplicação FastAPI e suas rotas. |
 | `tests/` | Protege os contratos e as decisões de segurança. |
 
@@ -90,6 +97,12 @@ Para testar descoberta e chamadas MCP em memória:
 .venv/bin/pytest apps/api/tests/test_mcp_server.py -q
 ```
 
+Para testar o runtime completo sem internet:
+
+```bash
+.venv/bin/pytest apps/api/tests/test_agent_runtime.py -q
+```
+
 Os testes injetam `httpx.MockTransport`. Isso permite conferir método, URL, percent-encoding,
 timeout e envelopes sem abrir porta ou acessar a internet.
 
@@ -118,9 +131,9 @@ PolicyEvaluationRequest
             -> HttpExecutor somente em allow/simulate
 ```
 
-Permissões e escopos são claims confiáveis do runtime. Em uma futura integração com agente, o LLM
-poderá propor argumentos, mas não fabricar `principal`, `resource_scopes` ou confirmação. Escritas
-reais ainda terminam em `REAL_WRITE_DISABLED`, e nenhuma rota pública foi adicionada.
+Permissões e escopos são claims confiáveis do runtime. O LLM propõe argumentos, mas não pode
+fabricar `principal`, `resource_scopes` ou confirmação. Escritas reais ainda terminam em
+`REAL_WRITE_DISABLED`, e nenhuma rota pública foi adicionada.
 
 ## Servidor MCP interno
 
@@ -134,3 +147,32 @@ que a chamada termina com `TRUSTED_CONTEXT_UNAVAILABLE`. Não há provider permi
 desconhecida, argumentos inválidos e falha interna também são erros MCP redigidos. `allow`,
 `simulate`, `block`, `require_confirmation` e falhas HTTP continuam resultados estruturados
 normais do fluxo protegido.
+
+## Agente LangGraph e Groq Free
+
+`AgentRuntime.run()` recebe `AgentRunRequest` e `TrustedRunContext` separadamente. Durante uma run,
+ele cria um provider vinculado ao contexto, abre um cliente MCP em memória e executa os nós
+`validate -> classify -> plan -> tools -> finalize`. Somente as tools habilitadas do conector
+selecionado chegam ao planejador, com aliases como `tractian__getAsset`.
+
+O classificador aceita apenas IDs do domínio. O planejador chama tools sequencialmente. O
+finalizador é uma chamada separada, sem tools, e só pode citar IDs de evidência realmente
+coletados. Resultados externos continuam em `ToolMessage`; instruções contidas neles não recebem
+autoridade de system prompt.
+
+Defaults defensivos:
+
+- `openai/gpt-oss-20b`, temperatura zero e seed da run;
+- 8 chamadas de modelo e 12 tools;
+- 60 segundos;
+- 32 KiB por evidência e 128 KiB por run;
+- `parallel_tool_calls=false`;
+- sem fallback pago ou Ollama.
+
+Sem `GROQ_API_KEY`, o adapter real falha na construção, mas toda a suíte offline funciona. Com a
+chave, o smoke manual é executado por:
+
+```bash
+# Defina GROQ_API_KEY no .env ignorado pelo Git e execute:
+.venv/bin/pytest apps/api/tests/test_agent_runtime.py -m live -q
+```

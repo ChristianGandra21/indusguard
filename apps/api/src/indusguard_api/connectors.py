@@ -27,6 +27,7 @@ from pydantic import ValidationError
 from indusguard_api.schemas import (
     AccessMode,
     ConnectorDetails,
+    ConnectorDomain,
     ConnectorProfile,
     ConnectorSummary,
     OperationPolicy,
@@ -65,6 +66,7 @@ class LoadedConnector:
     profile: ConnectorProfile
     details: ConnectorDetails
     operations: dict[str, RuntimeOperation]
+    domain: ConnectorDomain | None
 
 
 @dataclass(frozen=True)
@@ -447,17 +449,59 @@ class ConnectorCatalog:
         _validate_runtime_constraints(spec, openapi_path)
         operations = _parse_operations(spec, profile.operations)
 
-        # ``domain.yaml`` é opcional no loader para permitir contratos puramente técnicos. Quando
-        # existe, seus campos de contexto precisam ser simples e previsíveis para a futura UI.
+        # ``domain.yaml`` é opcional para permitir conectores puramente técnicos. Quando existe,
+        # todo o documento é tipado porque o agente não deve consumir YAML sem contrato.
         domain_path = connector_dir / "domain.yaml"
-        domain = _load_yaml(domain_path) if domain_path.exists() else {}
-        context_fields = domain.get("context_fields", [])
-        if not isinstance(context_fields, list) or not all(
-            isinstance(field, str) for field in context_fields
-        ):
-            raise ConnectorValidationError(f"{domain_path}: context_fields deve ser uma lista")
-        if len(context_fields) != len(set(context_fields)):
-            raise ConnectorValidationError(f"{domain_path}: context_fields contém duplicatas")
+        domain: ConnectorDomain | None = None
+        if domain_path.exists():
+            raw_domain = _load_yaml(domain_path)
+            # Defaults preservam conectores técnicos antigos que declaravam somente contexto.
+            raw_domain.setdefault("id", profile.id)
+            try:
+                domain = ConnectorDomain.model_validate(raw_domain)
+            except ValidationError as exc:
+                raise ConnectorValidationError(f"domínio inválido em {domain_path}: {exc}") from exc
+            if domain.id != profile.id:
+                raise ConnectorValidationError(
+                    f"{domain_path}: id '{domain.id}' deve corresponder ao conector '{profile.id}'"
+                )
+
+            operation_access = {
+                operation.summary.operation_id: operation.summary.access for operation in operations
+            }
+            for intent in domain.intents:
+                for operation_id in intent.evidence_operations:
+                    if operation_id not in operation_access:
+                        raise ConnectorValidationError(
+                            f"{domain_path}: intenção '{intent.id}' referencia operationId "
+                            f"inexistente '{operation_id}'"
+                        )
+                    if not profile.operations.get(operation_id, OperationPolicy()).enabled:
+                        raise ConnectorValidationError(
+                            f"{domain_path}: intenção '{intent.id}' referencia operação "
+                            f"desabilitada '{operation_id}'"
+                        )
+                    if operation_access[operation_id] is not AccessMode.READ:
+                        raise ConnectorValidationError(
+                            f"{domain_path}: evidence_operations exige leitura: '{operation_id}'"
+                        )
+                for operation_id in intent.action_operations:
+                    if operation_id not in operation_access:
+                        raise ConnectorValidationError(
+                            f"{domain_path}: intenção '{intent.id}' referencia operationId "
+                            f"inexistente '{operation_id}'"
+                        )
+                    if not profile.operations.get(operation_id, OperationPolicy()).enabled:
+                        raise ConnectorValidationError(
+                            f"{domain_path}: intenção '{intent.id}' referencia operação "
+                            f"desabilitada '{operation_id}'"
+                        )
+                    if operation_access[operation_id] is not AccessMode.WRITE:
+                        raise ConnectorValidationError(
+                            f"{domain_path}: action_operations exige escrita: '{operation_id}'"
+                        )
+
+        context_fields = domain.context_fields if domain else []
         if (
             profile.auth.type == "context_header"
             and profile.auth.context_field not in context_fields
@@ -481,6 +525,7 @@ class ConnectorCatalog:
             profile=profile,
             details=details,
             operations={operation.summary.operation_id: operation for operation in operations},
+            domain=domain,
         )
 
     def list(self) -> list[ConnectorSummary]:
@@ -496,6 +541,12 @@ class ConnectorCatalog:
 
         connector = self._connectors.get(connector_id)
         return deepcopy(connector.details) if connector else None
+
+    def get_domain(self, connector_id: str) -> ConnectorDomain | None:
+        """Retorna o domínio tipado; ``None`` distingue ausência de arquivo de domínio vazio."""
+
+        connector = self._connectors.get(connector_id)
+        return deepcopy(connector.domain) if connector and connector.domain else None
 
     def resolve_operation(
         self,

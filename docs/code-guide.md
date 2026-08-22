@@ -179,9 +179,11 @@ conectores temporários para provar URLs, autenticação, retry, redaction e env
 digest, confirmação e ausência de rede em decisões que interrompem o fluxo.
 [`test_mcp_server.py`](../apps/api/tests/test_mcp_server.py) usa cliente e servidor MCP reais em
 memória para provar descoberta, schemas, provider confiável, execução protegida e erros redigidos.
+[`test_agent_runtime.py`](../apps/api/tests/test_agent_runtime.py) usa StateGraph e MCP reais, modelo
+fake e `MockTransport` para provar o fluxo completo sem Groq ou rede externa.
 
 ## 9. O que ainda não procurar no código
 
-Ainda não existem chamada de LLM, LangGraph, banco ou frontend. Também não há rota pública do MCP
-ou do executor nem escrita real. O próximo consumidor planejado é o host LangGraph conectado ao
-servidor MCP interno.
+Ainda não existem banco, OpenTelemetry ou frontend. Também não há rota pública do agente, MCP ou
+executor nem escrita real. O runtime LangGraph está em `agent.py`; o adapter Groq fica isolado em
+`groq_gateway.py` e somente o teste `live` pode acessá-lo.

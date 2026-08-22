@@ -15,17 +15,16 @@ flowchart LR
     V --> C[Catálogo em memória]
     C --> API[FastAPI]
     API --> UI[UI futura]
-    C --> MCP[Servidor MCP interno]
+    C --> A[Runtime LangGraph stateless]
+    A --> MCP[Cliente + servidor MCP em memória]
     MCP --> T[TrustedPolicyContextProvider]
     T --> P[PolicyEngine]
     P --> G[GuardedExecutor]
     G --> E[Executor HTTP protegido]
-    A[Agente LangGraph futuro] -. cliente em memória .-> MCP
 ```
 
-As linhas contínuas representam o que já está implementado. MCP, policy engine e executor são
-interfaces internas: nenhuma rota do FastAPI os chama e o MCP não abre porta. A linha tracejada
-mostra o próximo consumidor, o host LangGraph.
+Todas as linhas representam componentes implementados. Runtime, MCP, policy engine e executor são
+interfaces internas: nenhuma rota do FastAPI os chama e o MCP não abre porta.
 
 ## Responsabilidade de cada arquivo do conector
 
@@ -85,6 +84,10 @@ timeout, retry idempotente, redaction e simulação segura de mutações.
 O quinto corte acrescenta outra fronteira: somente operações habilitadas viram tools; nomes e
 schemas são validados no startup; argumentos são validados antes de buscar identidade; e a tool
 não aceita claims confiáveis como entrada.
+
+O sexto corte acrescenta o host LangGraph. Ele seleciona somente as tools do conector da run,
+injeta claims por `TrustedRunContext`, executa calls sequencialmente e valida toda referência de
+evidência antes de devolver a resposta.
 
 ## Fluxo protegido atual
 
@@ -167,12 +170,35 @@ repete IDs dentro dos argumentos. O `inputSchema` é derivado do OpenAPI e usa q
 o documento OpenAPI completo não é exposto ao cliente.
 
 `TrustedPolicyContextProvider` é uma interface, não uma implementação permissiva. O runtime que
-hospedar o servidor deverá obter os sinais de autenticação e evidência. Provider ausente ou com
+cria a run fornece os sinais de autenticação e evidência. Provider ausente ou com
 falha produz `TRUSTED_CONTEXT_UNAVAILABLE`; nunca faz fallback para claims enviados pelo agente.
 
 Bloqueio político e confirmação pendente são resultados válidos do domínio, com `isError=false`.
 Erros de protocolo ficam separados de falhas do upstream: um HTTP 503 autorizado aparece dentro
 de `execution.error`, enquanto tool desconhecida ou argumento inválido usa `isError=true`.
+
+## Fluxo do agente interno
+
+```mermaid
+flowchart TD
+    R[AgentRunRequest + TrustedRunContext] --> V[Validar conector e domain.yaml]
+    V --> I[Classificar intenção estruturada]
+    I --> P[Planejar com tools do conector]
+    P --> T[Chamar MCP sequencialmente]
+    T --> E[Coletar evidência redigida e limitada]
+    E --> P
+    P --> F[Finalizar sem tools]
+    F --> C[Validar evidence_ids]
+    C --> O[AgentRunResult + métricas]
+```
+
+Classificação e finalização usam saída estruturada em chamadas separadas. O planejador recebe
+aliases como `connector__operationId`; o mapa interno resolve o nome MCP com ponto. Tool results
+são dados não confiáveis e permanecem `ToolMessage`, nunca system prompt.
+
+O runtime encerra de forma controlada em rate limit, timeout, limite de chamadas, erro MCP ou
+falha upstream. A suíte usa `ScriptedAgentModelGateway`; `GroqAgentModelGateway` é opcional e usa
+somente `openai/gpt-oss-20b`, sem fallback pago ou Ollama.
 
 ## Liveness e readiness
 
@@ -199,7 +225,8 @@ instância cujo catálogo ainda não esteja pronto.
 | Policy engine e `GuardedExecutor` | Implementados internamente |
 | MCP interno com schemas e contexto confiável | Implementado e testado em memória |
 | Escrita real | Bloqueada por `REAL_WRITE_DISABLED` |
-| LangGraph e Groq | Planejados |
+| LangGraph stateless e fake determinístico | Implementados internamente |
+| Groq Free `openai/gpt-oss-20b` | Adapter implementado; smoke manual |
 | Persistência e OpenTelemetry | Planejado |
 | Frontend Next.js | Planejado |
 | Benchmark `prompt_only` × `guarded` | Planejado |

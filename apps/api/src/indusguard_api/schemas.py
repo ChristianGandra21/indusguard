@@ -183,6 +183,73 @@ class ConnectorProfile(BaseModel):
     operations: dict[str, OperationPolicy]
 
 
+class DomainIntent(BaseModel):
+    """Intenção de negócio e operações que podem fundamentá-la ou realizá-la.
+
+    O modelo escolhe somente o ``id`` da intenção. As listas de operações continuam vindo do
+    arquivo validado, o que impede que uma resposta do LLM invente uma capacidade do conector.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9_-]*$")
+    description: str = Field(min_length=1)
+    evidence_operations: list[str] = Field(default_factory=list)
+    action_operations: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_operation_lists(self) -> "DomainIntent":
+        """Mantém referências não vazias, únicas e sem dupla classificação."""
+
+        for field_name, operations in (
+            ("evidence_operations", self.evidence_operations),
+            ("action_operations", self.action_operations),
+        ):
+            if len(operations) != len(set(operations)):
+                raise ValueError(f"{field_name} não pode conter duplicatas")
+            if any(not operation or operation.strip() != operation for operation in operations):
+                raise ValueError(f"{field_name} contém operationId inválido")
+        overlap = set(self.evidence_operations) & set(self.action_operations)
+        if overlap:
+            raise ValueError("uma operação não pode ser evidência e ação na mesma intenção")
+        return self
+
+
+class ConnectorDomain(BaseModel):
+    """Vocabulário tipado usado pelo classificador e pelo planejador do agente."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9_-]*$")
+    language: str = Field(default="pt-BR", min_length=2)
+    context_fields: list[str] = Field(default_factory=list)
+    terminology: dict[str, str] = Field(default_factory=dict)
+    intents: list[DomainIntent] = Field(default_factory=list)
+    evidence_states: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_domain_collections(self) -> "ConnectorDomain":
+        """Rejeita ambiguidades que tornariam prompts e métricas não determinísticos."""
+
+        if len(self.context_fields) != len(set(self.context_fields)):
+            raise ValueError("context_fields não pode conter duplicatas")
+        if any(not field or field.strip() != field for field in self.context_fields):
+            raise ValueError("context_fields contém nome inválido")
+        intent_ids = [intent.id for intent in self.intents]
+        if len(intent_ids) != len(set(intent_ids)):
+            raise ValueError("intents não pode conter ids duplicados")
+        if len(self.evidence_states) != len(set(self.evidence_states)):
+            raise ValueError("evidence_states não pode conter duplicatas")
+        if any(not state or state.strip() != state for state in self.evidence_states):
+            raise ValueError("evidence_states contém estado inválido")
+        if any(
+            not term or term.strip() != term or not definition.strip()
+            for term, definition in self.terminology.items()
+        ):
+            raise ValueError("terminology contém termo ou definição inválida")
+        return self
+
+
 class OperationSummary(BaseModel):
     """Visão consolidada de uma operação, segura para API, UI e geração futura de tools."""
 
