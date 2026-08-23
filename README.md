@@ -13,7 +13,7 @@ APIs externas depois de atravessar validação, contexto confiável e políticas
 
 ## Estado do projeto
 
-O repositório concluiu o sexto corte vertical: o runtime LangGraph interno sobre o MCP protegido.
+O repositório concluiu o sétimo corte vertical: persistência e observabilidade do runtime interno.
 
 | Capacidade | Situação |
 |---|---|
@@ -31,7 +31,8 @@ O repositório concluiu o sexto corte vertical: o runtime LangGraph interno sobr
 | Escrita real | Bloqueada intencionalmente |
 | Agente LangGraph stateless | Pronto internamente e testado offline |
 | Adapter Groq Free (`openai/gpt-oss-20b`) | Pronto; smoke real é manual |
-| Banco e OpenTelemetry | Planejado |
+| SQLAlchemy, Alembic, SQLite/PostgreSQL | Pronto internamente |
+| OpenTelemetry, JSONL e OTLP opcional | Pronto internamente |
 | Frontend Next.js | Planejado |
 | Benchmark e dashboard | Planejado |
 
@@ -58,6 +59,8 @@ flowchart LR
     P --> G[GuardedExecutor]
     G --> E[Executor HTTP protegido]
     A[Runtime LangGraph] --> M
+    A --> B[(SQLite ou PostgreSQL)]
+    A --> O[OpenTelemetry]
 ```
 
 ## Modelo mental dos três arquivos
@@ -82,8 +85,11 @@ indusguard/
 │   │   ├── src/indusguard_api/    # código FastAPI
 │   │   │   ├── mcp_server.py      # OpenAPI -> tools -> fluxo protegido
 │   │   │   ├── agent.py           # grafo, contratos, limites e modelo fake
-│   │   │   └── groq_gateway.py    # adapter opcional da Groq Free
-│   │   └── tests/                 # catálogo, executor, policy, MCP e agente
+│   │   │   ├── groq_gateway.py    # adapter opcional da Groq Free
+│   │   │   ├── persistence.py     # runs transacionais em SQLite/PostgreSQL
+│   │   │   └── observability.py   # spans JSONL e OTLP opcional
+│   │   ├── migrations/            # histórico Alembic do schema
+│   │   └── tests/                 # catálogo, execução, agente, banco e traces
 │   └── web/                       # placeholder do frontend
 ├── connectors/
 │   ├── tractian/                  # contrato industrial e suas políticas
@@ -301,8 +307,8 @@ avaliação existirem.
 - Protocolo de tools: SDK Python MCP v2, já implementado internamente;
 - Agente: LangGraph implementado e Groq Free disponível somente por adapter explícito;
 - Execução: httpx e validação JSON Schema/OpenAPI;
-- Dados: SQLAlchemy, Alembic, PostgreSQL e fallback SQLite;
-- Observabilidade: OpenTelemetry e OTLP;
+- Dados: SQLAlchemy, Alembic, PostgreSQL e fallback SQLite, já implementados internamente;
+- Observabilidade: OpenTelemetry, JSONL local e OTLP opcional, já implementados;
 - Qualidade: pytest, respx, Schemathesis, Vitest e Playwright;
 - Entrega: Docker e GitHub Actions.
 
@@ -414,10 +420,38 @@ Para o smoke manual com a faixa gratuita da Groq:
 Não existe fallback para Ollama ou modelo pago. Um rate limit termina com
 `MODEL_RATE_LIMITED`, sem nova tentativa em outro provedor.
 
+## Persistência e observabilidade implementadas
+
+O `run_id` agora nasce antes do primeiro nó e correlaciona resultado, banco e trace. Um
+`AgentRunRecorder` injetável mantém SQL fora do LangGraph; sua implementação SQLAlchemy grava
+`agent_runs`, `tool_calls`, `agent_evidence` e `policy_decisions` em uma transação. SQLite é o
+default local e a mesma camada usa PostgreSQL/Neon por URL assíncrona.
+
+O OpenTelemetry registra uma árvore `agent.run -> model/tool -> action -> policy/http` sem prompts,
+headers, bodies ou credenciais. JSONL funciona localmente em `.data/traces.jsonl`; OTLP só é
+ativado explicitamente. Se banco ou exporter falhar, a resposta funcional sobrevive e recebe o
+bloco destacado `observability.status=degraded`, o código `OBSERVABILITY_DEGRADED` e a mesma marca
+nas métricas.
+
+Prepare o banco local e valide que a migração não divergiu dos modelos:
+
+```bash
+cp .env.example .env
+make migrate
+make migration-check
+```
+
+Testes específicos:
+
+```bash
+.venv/bin/pytest apps/api/tests/test_persistence.py \
+  apps/api/tests/test_observability.py -q
+```
+
 ### Próximo incremento
 
-Persistir runs redigidas e adicionar spans OpenTelemetry para request, modelo, tool, policy e
-ação. Rota pública, frontend e escrita real continuam fora deste corte.
+Construir o runner de avaliação `prompt_only` × `guarded` sobre os cenários oficiais, usando as
+runs e métricas agora persistidas. Rota pública, frontend e escrita real continuam fora.
 
 ## Roteiro de estudo recomendado
 
@@ -429,8 +463,9 @@ ação. Rota pública, frontend e escrita real continuam fora deste corte.
 6. Leia `policy.py` junto de `test_policy.py` e compare os quatro outcomes.
 7. Leia `mcp_server.py` junto de `test_mcp_server.py` e observe a fronteira confiável.
 8. Leia `agent.py` junto de `test_agent_runtime.py` e acompanhe os nós do StateGraph.
-9. Rode `make test` e leia cada teste como uma regra do sistema.
-10. Altere temporariamente uma cópia de profile para provocar um erro e observar o fail-fast.
+9. Leia `persistence.py` e `observability.py` junto de seus testes.
+10. Rode `make migrate`, `make migration-check` e `make test`.
+11. Altere temporariamente uma cópia de profile para provocar um erro e observar o fail-fast.
 
 ## Glossário rápido
 

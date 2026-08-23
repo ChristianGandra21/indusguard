@@ -13,6 +13,23 @@ jobs:
     name: API · lint e testes
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: indusguard_test
+          POSTGRES_USER: indusguard
+          POSTGRES_PASSWORD: indusguard
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U indusguard -d indusguard_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      INDUSGUARD_DATABASE_URL: postgresql://indusguard:indusguard@localhost:5432/indusguard_test
+      INDUSGUARD_TEST_POSTGRES_URL: postgresql://indusguard:indusguard@localhost:5432/indusguard_test
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,6 +48,11 @@ jobs:
         run: |
           ruff check apps/api
           ruff format --check apps/api
+
+      - name: Aplicar e verificar migrações PostgreSQL
+        run: |
+          alembic -c apps/api/alembic.ini upgrade head
+          alembic -c apps/api/alembic.ini check
 
       - name: Testar API e conectores
         run: pytest apps/api --cov=indusguard_api --cov-report=term-missing

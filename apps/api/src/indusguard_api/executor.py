@@ -31,6 +31,8 @@ from jsonschema import SchemaError
 from jsonschema.validators import validator_for
 
 from indusguard_api.connectors import ConnectorCatalog, ResolvedOperation
+from indusguard_api.observability import NoOpTelemetry, Telemetry, mark_span_error
+from indusguard_api.redaction import REDACTED_VALUE, redact_text
 from indusguard_api.schemas import (
     AccessMode,
     ExecutionArguments,
@@ -45,7 +47,6 @@ from indusguard_api.schemas import (
 PATH_PLACEHOLDER: Final = re.compile(r"\{([^{}]+)\}")
 HEADER_NAME: Final = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
 NO_BODY: Final = object()
-REDACTED_VALUE: Final = "[REDACTED]"
 
 
 @dataclass(frozen=True)
@@ -502,7 +503,7 @@ def _redact(
         for sensitive in sorted(sensitive_values, key=len, reverse=True):
             if sensitive:
                 redacted = redacted.replace(sensitive, REDACTED_VALUE)
-        return redacted
+        return redact_text(redacted)
     return value
 
 
@@ -559,6 +560,7 @@ class HttpExecutor:
         execution_mode: ExecutionMode = "simulate",
         retry_base_delay_seconds: float = 0.1,
         sleeper: Callable[[float], Awaitable[None]] = async_sleep,
+        telemetry: Telemetry | None = None,
     ) -> None:
         if execution_mode not in {"simulate", "execute"}:
             raise ValueError("execution_mode precisa ser 'simulate' ou 'execute'")
@@ -570,6 +572,7 @@ class HttpExecutor:
         self._execution_mode = execution_mode
         self._retry_base_delay_seconds = retry_base_delay_seconds
         self._sleeper = sleeper
+        self._telemetry = telemetry or NoOpTelemetry()
 
     @property
     def execution_mode(self) -> ExecutionMode:
@@ -578,6 +581,33 @@ class HttpExecutor:
         return self._execution_mode
 
     async def execute(self, request: OperationExecutionRequest) -> OperationExecutionResult:
+        """Instrumenta o envelope HTTP sem registrar URL, headers, query ou body."""
+
+        with self._telemetry.start_span(
+            "indusguard.http.execute",
+            {
+                "indusguard.connector.id": request.connector_id,
+                "indusguard.operation.id": request.operation_id,
+                "indusguard.execution.mode": self._execution_mode,
+            },
+        ) as span:
+            result = await self._execute_untraced(request)
+            span.set_attribute("indusguard.execution.outcome", result.outcome.value)
+            span.set_attribute("http.request.resend_count", max(0, result.attempts - 1))
+            span.set_attribute("indusguard.http.attempts", result.attempts)
+            span.set_attribute("indusguard.http.latency_ms", result.latency_ms)
+            if result.status_code is not None:
+                span.set_attribute("http.response.status_code", result.status_code)
+            # Bloqueio determinístico é resultado de domínio; somente falha externa/interna marca
+            # o span como erro operacional.
+            if result.error and result.outcome is ExecutionOutcome.FAILED:
+                mark_span_error(span, result.error.code)
+            return result
+
+    async def _execute_untraced(
+        self,
+        request: OperationExecutionRequest,
+    ) -> OperationExecutionResult:
         """Valida, prepara, executa e normaliza uma operação do catálogo."""
 
         started_at = perf_counter()

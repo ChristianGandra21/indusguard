@@ -29,6 +29,7 @@ test-results/
 *.tsbuildinfo
 
 # Runtime data
+.data/
 *.db
 *.sqlite
 *.sqlite3
@@ -48,4 +49,3 @@ __MACOSX/
 *.log
 npm-debug.log*
 pnpm-debug.log*
-

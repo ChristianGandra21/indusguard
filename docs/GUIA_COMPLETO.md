@@ -117,7 +117,7 @@ O projeto está sendo construído por camadas.
 - chat;
 - frontend Next.js;
 - banco de dados;
-- OpenTelemetry;
+- OpenTelemetry com JSONL local e OTLP opcional;
 - benchmark `prompt_only` × `guarded`;
 - deployment público.
 
@@ -1901,10 +1901,31 @@ Resultados de APIs são dados não confiáveis e permanecem `ToolMessage`. Se um
 mandar “ignore as regras”, esse texto não vira system prompt. Limites de chamadas, tempo e bytes
 encerram a run com códigos estáveis e preservam evidências parciais.
 
-### Próximo incremento do projeto
+### Persistência e observabilidade do agente
 
-Persistir runs já redigidas e instrumentar request, modelo, tool, policy e ação com OpenTelemetry.
-Rota pública, frontend e escrita real continuam fora até existirem novos gates explícitos.
+O sétimo corte faz o `run_id` nascer antes do StateGraph e reaproveita esse identificador no
+resultado, nas tabelas e em todos os spans. `AgentRunRecorder` é uma interface injetada: o grafo
+não conhece SQL, e a implementação SQLAlchemy não recebe `TrustedRunContext`. Uma transação grava
+`agent_runs`, `tool_calls`, `agent_evidence` e `policy_decisions`; Alembic mantém SQLite e
+PostgreSQL no mesmo histórico de schema.
+
+OpenTelemetry produz a timeline `agent.run -> model/tool -> action -> policy/http`. JSONL é a saída
+local gratuita; OTLP/Grafana é opcional. Somente IDs, versões, códigos, contagens e latências entram
+nos spans. Prompt, chain of thought, headers, bodies e credenciais permanecem fora.
+
+Se banco ou exporter falhar, a resposta continua disponível com um bloco destacado:
+
+```json
+{
+  "observability": {
+    "status": "degraded",
+    "warning_code": "OBSERVABILITY_DEGRADED"
+  }
+}
+```
+
+O próximo incremento é o runner de avaliação `prompt_only` × `guarded`. Rota pública, frontend e
+escrita real continuam fora até existirem novos gates explícitos.
 
 ---
 
@@ -1942,7 +1963,9 @@ validar solicitação
 
 ### Etapa 6: persistência e observabilidade
 
-Guardar runs redigidas, tool calls, decisões de política, tokens e latência.
+Concluída internamente. Guarda runs redigidas, tool calls, evidências, decisões de política,
+tokens e latência. SQLite é o default local, PostgreSQL é validado no CI, e spans podem sair em
+JSONL ou OTLP. Falhas de auditoria geram `OBSERVABILITY_DEGRADED` sem ocultar a resposta.
 
 ### Etapa 7: avaliação
 
@@ -2181,13 +2204,18 @@ O núcleo atual:
 32. mantém contexto confiável fora da mensagem e dos argumentos do modelo;
 33. coleta evidências limitadas e valida suas referências;
 34. usa fake determinístico no CI e Groq Free somente no smoke manual.
+35. cria o `run_id` antes do grafo para correlacionar banco e trace;
+36. persiste run, tools, evidências e decisões políticas em uma transação;
+37. emite spans de modelo, tool, policy, ação e HTTP sem conteúdo sensível;
+38. exporta JSONL local e OTLP opcional;
+39. preserva a resposta com ressalva explícita quando a auditoria falha.
 
 O sistema já possui agente interno, catálogo, MCP, policy engine e executor autenticado. Ele impede
 que o modelo opere sobre uma lista ambígua, prova o caminho seguro até APIs com diferentes
 autenticações e permite visualizar uma mutação sem executá-la.
 
-O próximo passo é persistência e observabilidade: registrar runs redigidas e spans sem armazenar
-credenciais, respostas completas ou raciocínio interno do modelo.
+O próximo passo é avaliação: executar os mesmos cenários em `prompt_only` e `guarded`, registrar
+decisão, ferramentas, evidências, segurança, tokens e latência e então testar a hipótese do projeto.
 
 Se você guardar apenas três ideias, guarde estas:
 

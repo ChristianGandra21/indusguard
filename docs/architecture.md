@@ -17,6 +17,8 @@ flowchart LR
     API --> UI[UI futura]
     C --> A[Runtime LangGraph stateless]
     A --> MCP[Cliente + servidor MCP em memória]
+    A --> DB[(SQLite ou PostgreSQL)]
+    A --> OT[OpenTelemetry JSONL / OTLP]
     MCP --> T[TrustedPolicyContextProvider]
     T --> P[PolicyEngine]
     P --> G[GuardedExecutor]
@@ -200,6 +202,33 @@ O runtime encerra de forma controlada em rate limit, timeout, limite de chamadas
 falha upstream. A suíte usa `ScriptedAgentModelGateway`; `GroqAgentModelGateway` é opcional e usa
 somente `openai/gpt-oss-20b`, sem fallback pago ou Ollama.
 
+## Persistência e observabilidade
+
+O sétimo corte antecipa a criação do `run_id` e usa esse valor em resultado, banco e spans. O
+`AgentRunRecorder` é uma porta do runtime: o LangGraph fornece um `AgentRunResult` já limitado e a
+implementação SQLAlchemy grava run, tool calls, evidências e decisões políticas em uma transação.
+O recorder não recebe `TrustedRunContext`, impedindo que principal e permissões atravessem essa
+fronteira por conveniência.
+
+```mermaid
+flowchart TD
+    R[AgentRuntime] --> T[Trace agent.run]
+    T --> M[Spans model]
+    T --> C[Span tool.call]
+    C --> A[Span action]
+    A --> P[Span policy.evaluate]
+    A --> H[Span http.execute]
+    R --> S[AgentRunRecorder]
+    S --> Q[(SQLite / PostgreSQL)]
+    T --> J[JSONL local]
+    T -. opcional .-> O[OTLP / Grafana]
+```
+
+Falha do banco ou exporter não altera `completed`, `partial` ou `failed`, pois escrita real ainda
+não existe. O resultado recebe `OBSERVABILITY_DEGRADED`, e a futura UI deverá apresentá-lo como
+alerta. Quando mutações reais forem autorizadas, auditoria saudável poderá virar precondição para
+ações de alto risco.
+
 ## Liveness e readiness
 
 Os dois sinais têm propósitos diferentes:
@@ -227,6 +256,7 @@ instância cujo catálogo ainda não esteja pronto.
 | Escrita real | Bloqueada por `REAL_WRITE_DISABLED` |
 | LangGraph stateless e fake determinístico | Implementados internamente |
 | Groq Free `openai/gpt-oss-20b` | Adapter implementado; smoke manual |
-| Persistência e OpenTelemetry | Planejado |
+| Persistência SQLAlchemy + Alembic | Implementada internamente |
+| OpenTelemetry JSONL + OTLP opcional | Implementado internamente |
 | Frontend Next.js | Planejado |
 | Benchmark `prompt_only` × `guarded` | Planejado |

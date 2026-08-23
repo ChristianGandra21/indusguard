@@ -16,6 +16,7 @@ import json
 from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from time import perf_counter
 from typing import Any, Protocol
@@ -34,7 +35,14 @@ from indusguard_api.mcp_server import (
     TrustedPolicySignals,
     create_mcp_server,
 )
+from indusguard_api.observability import (
+    NoOpTelemetry,
+    Telemetry,
+    TelemetrySnapshot,
+    mark_span_error,
+)
 from indusguard_api.policy import GuardedExecutor
+from indusguard_api.redaction import redact_text
 from indusguard_api.schemas import (
     ConnectorDomain,
     PolicyConfirmation,
@@ -59,6 +67,23 @@ class AgentRunStatus(StrEnum):
 
     COMPLETED = "completed"
     PARTIAL = "partial"
+    FAILED = "failed"
+
+
+class AgentObservabilityStatus(StrEnum):
+    """Saúde da auditoria sem confundir sua falha com o resultado funcional da run."""
+
+    HEALTHY = "healthy"
+    DEGRADED = "degraded"
+    DISABLED = "disabled"
+
+
+class ObservabilityComponentStatus(StrEnum):
+    """Estado público e limitado de cada destino de observabilidade."""
+
+    DISABLED = "disabled"
+    CONFIGURED = "configured"
+    RECORDED = "recorded"
     FAILED = "failed"
 
 
@@ -382,12 +407,26 @@ class AgentRunMetrics(BaseModel):
     latency_ms: float = Field(ge=0)
     termination_reason: AgentTerminationReason
     truncations: int = Field(ge=0)
+    observability_degraded: bool = False
+
+
+class AgentObservability(BaseModel):
+    """Ressalva de auditoria apresentada em primeiro nível ao futuro frontend/API."""
+
+    status: AgentObservabilityStatus = AgentObservabilityStatus.DISABLED
+    warning_code: str | None = None
+    message: str | None = None
+    persistence: ObservabilityComponentStatus = ObservabilityComponentStatus.DISABLED
+    local_trace: ObservabilityComponentStatus = ObservabilityComponentStatus.DISABLED
+    otlp: ObservabilityComponentStatus = ObservabilityComponentStatus.DISABLED
 
 
 class AgentRunResult(BaseModel):
     """Envelope stateless devolvido pelo runtime interno."""
 
     run_id: str
+    started_at: datetime
+    completed_at: datetime
     connector_id: str
     status: AgentRunStatus
     intent: AgentIntentDecision
@@ -398,6 +437,14 @@ class AgentRunResult(BaseModel):
     uncertainties: list[str]
     tool_calls: list[AgentToolCall]
     metrics: AgentRunMetrics
+    observability: AgentObservability = Field(default_factory=AgentObservability)
+
+
+class AgentRunRecorder(Protocol):
+    """Seam de persistência: o grafo entrega um resultado seguro e nunca executa SQL."""
+
+    async def record(self, *, request: AgentRunRequest, result: AgentRunResult) -> None:
+        """Persiste uma run completa ou levanta uma falha redigida para o coordenador."""
 
 
 class AgentRuntimeConfig(BaseModel):
@@ -436,9 +483,11 @@ class RunBoundTrustedContextProvider(TrustedPolicyContextProvider):
 
 @dataclass
 class _RunData:
+    run_id: str
     request: AgentRunRequest
     trusted_context: TrustedRunContext
     started_at: float
+    started_at_utc: datetime
     domain: ConnectorDomain | None = None
     tools: list[AgentToolDefinition] = field(default_factory=list)
     tool_map: dict[str, AgentToolDefinition] = field(default_factory=dict)
@@ -480,6 +529,8 @@ def _redact_arguments(value: Any, fields: frozenset[str]) -> Any:
         }
     if isinstance(value, list):
         return [_redact_arguments(child, fields) for child in value]
+    if isinstance(value, str):
+        return redact_text(value)
     return value
 
 
@@ -618,11 +669,16 @@ class AgentRuntime:
         guarded_executor: GuardedExecutor,
         model_gateway: AgentModelGateway,
         config: AgentRuntimeConfig | None = None,
+        *,
+        recorder: AgentRunRecorder | None = None,
+        telemetry: Telemetry | None = None,
     ) -> None:
         self._catalog = catalog
         self._guarded_executor = guarded_executor
         self._model = model_gateway
         self._config = config or AgentRuntimeConfig()
+        self._recorder = recorder
+        self._telemetry = telemetry or NoOpTelemetry()
 
     async def run(
         self,
@@ -643,31 +699,158 @@ class AgentRuntime:
         if domain.id != request.connector_id:
             raise AgentConfigurationError("domain.id não corresponde ao conector selecionado")
 
+        run_id = str(uuid4())
         started_at = perf_counter()
+        started_at_utc = datetime.now(UTC)
         data = _RunData(
+            run_id=run_id,
             request=request,
             trusted_context=trusted_context,
             started_at=started_at,
+            started_at_utc=started_at_utc,
             domain=domain,
             messages=[HumanMessage(content=request.message)],
         )
         provider = RunBoundTrustedContextProvider(trusted_context)
         server = create_mcp_server(self._catalog, self._guarded_executor, provider)
 
-        try:
-            async with asyncio.timeout(self._config.run_timeout_seconds):
-                # O modo ``auto`` usa o dispatch direto oficial para servidores em processo.
-                # O modo legacy continua coberto pelos testes do adaptador MCP, mas depende de
-                # uma sessão JSON-RPC longa que não deve atravessar os tasks internos do grafo.
-                async with Client(server, mode="auto") as client:
-                    graph = self._build_graph(client, data)
-                    await graph.ainvoke({"data": data, "step": "start"})
-        except TimeoutError:
-            data.termination = AgentTerminationReason.TIMEOUT
-            data.stop_planning = True
-            _add_uncertainty(data, AgentTerminationReason.TIMEOUT)
+        with self._telemetry.start_span(
+            "indusguard.agent.run",
+            {
+                "indusguard.run.id": run_id,
+                "indusguard.connector.id": request.connector_id,
+                "gen_ai.request.model": self._model.model_name,
+                "indusguard.prompt.version": self._config.prompt_version,
+                "indusguard.policy.version": self._config.policy_version,
+            },
+        ) as run_span:
+            try:
+                async with asyncio.timeout(self._config.run_timeout_seconds):
+                    # O modo ``auto`` usa o dispatch direto oficial para servidores em processo.
+                    # O modo legacy continua coberto pelos testes do adaptador MCP, mas depende de
+                    # uma sessão JSON-RPC longa que não deve atravessar os tasks internos do grafo.
+                    async with Client(server, mode="auto") as client:
+                        graph = self._build_graph(client, data)
+                        await graph.ainvoke({"data": data, "step": "start"})
+            except TimeoutError:
+                data.termination = AgentTerminationReason.TIMEOUT
+                data.stop_planning = True
+                _add_uncertainty(data, AgentTerminationReason.TIMEOUT)
 
-        return self._result(data)
+            result = self._result(data)
+            result = await self._record_result(request, result)
+            run_span.set_attribute("indusguard.run.status", result.status.value)
+            run_span.set_attribute("indusguard.run.decision", result.decision.value)
+            run_span.set_attribute(
+                "indusguard.run.termination_reason",
+                result.metrics.termination_reason.value,
+            )
+            run_span.set_attribute("gen_ai.usage.input_tokens", result.metrics.input_tokens)
+            run_span.set_attribute("gen_ai.usage.output_tokens", result.metrics.output_tokens)
+            run_span.set_attribute("indusguard.run.tool_calls", result.metrics.tool_calls)
+            run_span.set_attribute(
+                "indusguard.observability.degraded",
+                result.metrics.observability_degraded,
+            )
+            if result.status is AgentRunStatus.FAILED:
+                mark_span_error(run_span, result.metrics.termination_reason.value)
+
+        # O exporter JSONL é síncrono: ao fechar o span raiz já sabemos se esta própria escrita
+        # falhou e conseguimos destacar a ressalva antes de devolver o resultado.
+        return self._apply_observability(
+            result,
+            persistence=result.observability.persistence,
+            telemetry=self._telemetry.snapshot(),
+        )
+
+    async def _record_result(
+        self,
+        request: AgentRunRequest,
+        result: AgentRunResult,
+    ) -> AgentRunResult:
+        """Persiste sem transformar indisponibilidade de auditoria em falha do agente."""
+
+        snapshot = self._telemetry.snapshot()
+        if self._recorder is None:
+            return self._apply_observability(
+                result,
+                persistence=ObservabilityComponentStatus.DISABLED,
+                telemetry=snapshot,
+            )
+
+        optimistic = self._apply_observability(
+            result,
+            persistence=ObservabilityComponentStatus.RECORDED,
+            telemetry=snapshot,
+        )
+        with self._telemetry.start_span(
+            "indusguard.persistence.save",
+            {"indusguard.run.id": result.run_id},
+        ) as span:
+            try:
+                await self._recorder.record(request=request, result=optimistic)
+            except Exception:
+                # O erro técnico não é devolvido nem anexado ao span, evitando vazar DSN, SQL ou
+                # conteúdo. O código estável é suficiente para métricas e para a futura UI.
+                mark_span_error(span, "OBSERVABILITY_DEGRADED")
+                return self._apply_observability(
+                    result,
+                    persistence=ObservabilityComponentStatus.FAILED,
+                    telemetry=self._telemetry.snapshot(),
+                )
+        return optimistic
+
+    @staticmethod
+    def _apply_observability(
+        result: AgentRunResult,
+        *,
+        persistence: ObservabilityComponentStatus,
+        telemetry: TelemetrySnapshot,
+    ) -> AgentRunResult:
+        component = {
+            "disabled": ObservabilityComponentStatus.DISABLED,
+            "configured": ObservabilityComponentStatus.CONFIGURED,
+            "recorded": ObservabilityComponentStatus.RECORDED,
+            "failed": ObservabilityComponentStatus.FAILED,
+        }
+        local_trace = component[telemetry.local_trace]
+        otlp = component[telemetry.otlp]
+        degraded = (
+            persistence is ObservabilityComponentStatus.FAILED
+            or local_trace is ObservabilityComponentStatus.FAILED
+            or otlp is ObservabilityComponentStatus.FAILED
+        )
+        enabled = persistence is not ObservabilityComponentStatus.DISABLED or telemetry.enabled
+        status = (
+            AgentObservabilityStatus.DEGRADED
+            if degraded
+            else AgentObservabilityStatus.HEALTHY
+            if enabled
+            else AgentObservabilityStatus.DISABLED
+        )
+        observability = AgentObservability(
+            status=status,
+            warning_code="OBSERVABILITY_DEGRADED" if degraded else None,
+            message=(
+                "A resposta foi produzida, mas parte do registro de auditoria não pôde ser salva."
+                if degraded
+                else None
+            ),
+            persistence=persistence,
+            local_trace=local_trace,
+            otlp=otlp,
+        )
+        metrics = result.metrics.model_copy(update={"observability_degraded": degraded})
+        uncertainties = list(result.uncertainties)
+        if degraded and "OBSERVABILITY_DEGRADED" not in uncertainties:
+            uncertainties.append("OBSERVABILITY_DEGRADED")
+        return result.model_copy(
+            update={
+                "observability": observability,
+                "metrics": metrics,
+                "uncertainties": uncertainties,
+            }
+        )
 
     def _build_graph(self, client: Any, data: _RunData) -> Any:
         """Compila um StateGraph explícito por run para manter o cliente MCP na mesma sessão."""
@@ -683,21 +866,38 @@ class AgentRuntime:
             return {"data": data, "step": "validated"}
 
         async def classify_node(_: _GraphState) -> dict[str, Any]:
-            try:
-                data.model_calls += 1
-                result = await self._model.classify(request=data.request, domain=data.domain)
-                _usage(data, result)
-                data.intent = AgentIntentDecision.model_validate(result.value)
-            except AgentModelError as exc:
-                data.termination = _termination_for_error(exc)
-                data.stop_planning = True
-                _add_uncertainty(data, data.termination)
-                return {"data": data, "step": "classification_failed"}
-            except Exception:
-                data.termination = AgentTerminationReason.MODEL_OUTPUT_INVALID
-                data.stop_planning = True
-                _add_uncertainty(data, data.termination)
-                return {"data": data, "step": "classification_failed"}
+            with self._telemetry.start_span(
+                "indusguard.model.classify",
+                {
+                    "indusguard.run.id": data.run_id,
+                    "gen_ai.request.model": self._model.model_name,
+                    "indusguard.model.call_index": data.model_calls + 1,
+                },
+            ) as span:
+                try:
+                    data.model_calls += 1
+                    result = await self._model.classify(request=data.request, domain=data.domain)
+                    _usage(data, result)
+                    span.set_attribute("gen_ai.usage.input_tokens", result.usage.input_tokens)
+                    span.set_attribute("gen_ai.usage.output_tokens", result.usage.output_tokens)
+                    data.intent = AgentIntentDecision.model_validate(result.value)
+                except AgentModelError as exc:
+                    data.termination = _termination_for_error(exc)
+                    data.stop_planning = True
+                    _add_uncertainty(data, data.termination)
+                    mark_span_error(span, data.termination.value)
+                    return {"data": data, "step": "classification_failed"}
+                except Exception:
+                    data.termination = AgentTerminationReason.MODEL_OUTPUT_INVALID
+                    data.stop_planning = True
+                    _add_uncertainty(data, data.termination)
+                    mark_span_error(span, data.termination.value)
+                    return {"data": data, "step": "classification_failed"}
+
+                span.set_attribute(
+                    "indusguard.intent.id",
+                    data.intent.intent_id or "ambiguous",
+                )
 
             valid_intents = {intent.id for intent in data.domain.intents}
             if data.intent.intent_id not in valid_intents:
@@ -718,27 +918,43 @@ class AgentRuntime:
                 data.stop_planning = True
                 _add_uncertainty(data, data.termination)
                 return {"data": data, "step": "model_limit"}
-            try:
-                data.model_calls += 1
-                result = await self._model.plan(
-                    request=data.request,
-                    domain=data.domain,
-                    intent=data.intent,
-                    messages=tuple(data.messages),
-                    tools=tuple(data.tools),
-                )
-                _usage(data, result)
-                step = AgentPlanStep.model_validate(result.value)
-            except AgentModelError as exc:
-                data.termination = _termination_for_error(exc)
-                data.stop_planning = True
-                _add_uncertainty(data, data.termination)
-                return {"data": data, "step": "planning_failed"}
-            except Exception:
-                data.termination = AgentTerminationReason.MODEL_OUTPUT_INVALID
-                data.stop_planning = True
-                _add_uncertainty(data, data.termination)
-                return {"data": data, "step": "planning_failed"}
+            with self._telemetry.start_span(
+                "indusguard.model.plan",
+                {
+                    "indusguard.run.id": data.run_id,
+                    "gen_ai.request.model": self._model.model_name,
+                    "indusguard.model.call_index": data.model_calls + 1,
+                    "indusguard.model.available_tools": len(data.tools),
+                },
+            ) as span:
+                try:
+                    data.model_calls += 1
+                    result = await self._model.plan(
+                        request=data.request,
+                        domain=data.domain,
+                        intent=data.intent,
+                        messages=tuple(data.messages),
+                        tools=tuple(data.tools),
+                    )
+                    _usage(data, result)
+                    span.set_attribute("gen_ai.usage.input_tokens", result.usage.input_tokens)
+                    span.set_attribute("gen_ai.usage.output_tokens", result.usage.output_tokens)
+                    step = AgentPlanStep.model_validate(result.value)
+                except AgentModelError as exc:
+                    data.termination = _termination_for_error(exc)
+                    data.stop_planning = True
+                    _add_uncertainty(data, data.termination)
+                    mark_span_error(span, data.termination.value)
+                    return {"data": data, "step": "planning_failed"}
+                except Exception:
+                    data.termination = AgentTerminationReason.MODEL_OUTPUT_INVALID
+                    data.stop_planning = True
+                    _add_uncertainty(data, data.termination)
+                    mark_span_error(span, data.termination.value)
+                    return {"data": data, "step": "planning_failed"}
+
+                span.set_attribute("indusguard.model.planned_tools", len(step.tool_calls))
+                span.set_attribute("indusguard.model.done", step.done)
 
             data.pending_calls = list(step.tool_calls)
             data.messages.append(
@@ -789,31 +1005,53 @@ class AgentRuntime:
             }
             if skip_model or data.model_calls >= self._config.max_model_calls:
                 return {"data": data, "step": "fallback_finalized"}
-            try:
-                data.model_calls += 1
-                result = await self._model.finalize(
-                    request=data.request,
-                    domain=data.domain,
-                    intent=data.intent,
-                    messages=tuple(data.messages),
-                    allowed_evidence_ids=tuple(evidence.id for evidence in data.evidence),
-                )
-                _usage(data, result)
-                final_answer = AgentFinalAnswer.model_validate(result.value)
-                allowed = {evidence.id for evidence in data.evidence}
-                if not set(final_answer.evidence_ids).issubset(allowed):
+            with self._telemetry.start_span(
+                "indusguard.model.finalize",
+                {
+                    "indusguard.run.id": data.run_id,
+                    "gen_ai.request.model": self._model.model_name,
+                    "indusguard.model.call_index": data.model_calls + 1,
+                    "indusguard.evidence.count": len(data.evidence),
+                },
+            ) as span:
+                try:
+                    data.model_calls += 1
+                    result = await self._model.finalize(
+                        request=data.request,
+                        domain=data.domain,
+                        intent=data.intent,
+                        messages=tuple(data.messages),
+                        allowed_evidence_ids=tuple(evidence.id for evidence in data.evidence),
+                    )
+                    _usage(data, result)
+                    span.set_attribute("gen_ai.usage.input_tokens", result.usage.input_tokens)
+                    span.set_attribute("gen_ai.usage.output_tokens", result.usage.output_tokens)
+                    final_answer = AgentFinalAnswer.model_validate(result.value)
+                    allowed = {evidence.id for evidence in data.evidence}
+                    if not set(final_answer.evidence_ids).issubset(allowed):
+                        data.termination = AgentTerminationReason.FINALIZATION_ERROR
+                        _add_uncertainty(data, "FINALIZER_EVIDENCE_REFERENCE_INVALID")
+                        mark_span_error(span, "FINALIZER_EVIDENCE_REFERENCE_INVALID")
+                    else:
+                        data.final_answer = final_answer
+                        span.set_attribute(
+                            "indusguard.run.decision",
+                            final_answer.decision.value,
+                        )
+                        span.set_attribute(
+                            "indusguard.evidence.references",
+                            len(final_answer.evidence_ids),
+                        )
+                        for uncertainty in final_answer.uncertainties:
+                            _add_uncertainty(data, uncertainty)
+                except AgentModelError as exc:
+                    data.termination = _termination_for_error(exc)
+                    _add_uncertainty(data, data.termination)
+                    mark_span_error(span, data.termination.value)
+                except Exception:
                     data.termination = AgentTerminationReason.FINALIZATION_ERROR
-                    _add_uncertainty(data, "FINALIZER_EVIDENCE_REFERENCE_INVALID")
-                else:
-                    data.final_answer = final_answer
-                    for uncertainty in final_answer.uncertainties:
-                        _add_uncertainty(data, uncertainty)
-            except AgentModelError as exc:
-                data.termination = _termination_for_error(exc)
-                _add_uncertainty(data, data.termination)
-            except Exception:
-                data.termination = AgentTerminationReason.FINALIZATION_ERROR
-                _add_uncertainty(data, data.termination)
+                    _add_uncertainty(data, data.termination)
+                    mark_span_error(span, data.termination.value)
             return {"data": data, "step": "finalized"}
 
         async def after_classify(_: _GraphState) -> str:
@@ -854,6 +1092,38 @@ class AgentRuntime:
         return builder.compile()
 
     async def _execute_tool(
+        self,
+        client: Any,
+        data: _RunData,
+        planned: AgentPlannedToolCall,
+    ) -> None:
+        """Cria o span da tool sem expor argumentos e delega a normalização existente."""
+
+        before_calls = len(data.tool_calls)
+        with self._telemetry.start_span(
+            "indusguard.tool.call",
+            {
+                "indusguard.run.id": data.run_id,
+                "indusguard.tool.alias": planned.alias,
+                "indusguard.tool.sequence": before_calls + 1,
+            },
+        ) as span:
+            await self._execute_tool_untraced(client, data, planned)
+            if len(data.tool_calls) == before_calls:
+                mark_span_error(span, "MCP_CALL_NOT_RECORDED")
+                return
+            recorded = data.tool_calls[-1]
+            span.set_attribute("indusguard.tool.status", recorded.status)
+            span.set_attribute("indusguard.tool.outcome", recorded.outcome)
+            span.set_attribute("indusguard.tool.latency_ms", recorded.latency_ms)
+            if recorded.mcp_tool_name:
+                span.set_attribute("indusguard.tool.name", recorded.mcp_tool_name)
+            if recorded.evidence_id:
+                span.set_attribute("indusguard.evidence.id", recorded.evidence_id)
+            if recorded.status == "error":
+                mark_span_error(span, recorded.outcome)
+
+    async def _execute_tool_untraced(
         self,
         client: Any,
         data: _RunData,
@@ -1062,7 +1332,9 @@ class AgentRuntime:
             truncations=data.truncations,
         )
         return AgentRunResult(
-            run_id=str(uuid4()),
+            run_id=data.run_id,
+            started_at=data.started_at_utc,
+            completed_at=datetime.now(UTC),
             connector_id=data.request.connector_id,
             status=status,
             intent=data.intent,

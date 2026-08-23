@@ -1,4 +1,4 @@
-.PHONY: setup dev-api test lint format validate
+.PHONY: setup dev-api test lint format validate migrate migration-check
 
 # Os comandos chamam executáveis dentro de .venv diretamente; ativar o ambiente é opcional.
 setup:
@@ -24,3 +24,10 @@ format:
 # Carregar o catálogo executa as mesmas validações usadas no startup do FastAPI.
 validate:
 	.venv/bin/python -c "from indusguard_api.connectors import ConnectorCatalog; from pathlib import Path; c = ConnectorCatalog(Path('connectors')); c.load(); print(f'{len(c.list())} conectores válidos')"
+
+# Alembic lê INDUSGUARD_DATABASE_URL; sem override, usa o SQLite local em .data/.
+migrate:
+	.venv/bin/alembic -c apps/api/alembic.ini upgrade head
+
+migration-check:
+	.venv/bin/alembic -c apps/api/alembic.ini check

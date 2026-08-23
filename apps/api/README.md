@@ -1,7 +1,8 @@
 # Backend FastAPI
 
 Este pacote contém as primeiras camadas executáveis do IndusGuard: configuração, modelos
-Pydantic, conectores, executor protegido, policy engine, MCP e runtime LangGraph interno.
+Pydantic, conectores, executor protegido, policy engine, MCP, runtime LangGraph, persistência e
+observabilidade internas.
 
 ## O que ele faz hoje
 
@@ -24,6 +25,10 @@ Pydantic, conectores, executor protegido, policy engine, MCP e runtime LangGraph
 17. converte aliases do modelo para tools MCP do conector selecionado;
 18. limita modelo, tools, tempo e tamanho de evidências;
 19. usa fake determinístico no CI e oferece Groq Free somente quando configurada.
+20. persiste runs redigidas de forma transacional em SQLite ou PostgreSQL;
+21. correlaciona modelo, tools, policy e HTTP por `run_id` em spans OpenTelemetry;
+22. exporta JSONL local e OTLP opcional;
+23. entrega a resposta com `OBSERVABILITY_DEGRADED` quando a auditoria falha.
 
 Agente, MCP e executor não possuem rota pública. Os testes usam modelo fake, cliente MCP real em
 memória e API externa simulada. A Groq real só é acessada pelo teste manual marcado como `live`.
@@ -40,6 +45,9 @@ memória e API externa simulada. A Groq real só é acessada pelo teste manual m
 | `mcp_server.py` | Gera tools OpenAPI e encaminha chamadas ao `GuardedExecutor`. |
 | `agent.py` | Define contratos, limites, modelo fake e o StateGraph interno. |
 | `groq_gateway.py` | Implementa classificação/finalização estruturadas e tool calling na Groq. |
+| `persistence.py` | Grava e reconstrói runs redigidas usando SQLAlchemy assíncrono. |
+| `observability.py` | Configura spans, JSONL local, saúde dos exporters e OTLP opcional. |
+| `runtime_factory.py` | Monta todas as camadas com banco e telemetria coerentes. |
 | `main.py` | Cria a aplicação FastAPI e suas rotas. |
 | `tests/` | Protege os contratos e as decisões de segurança. |
 
@@ -101,6 +109,13 @@ Para testar o runtime completo sem internet:
 
 ```bash
 .venv/bin/pytest apps/api/tests/test_agent_runtime.py -q
+```
+
+Para testar banco e traces:
+
+```bash
+.venv/bin/pytest apps/api/tests/test_persistence.py \
+  apps/api/tests/test_observability.py -q
 ```
 
 Os testes injetam `httpx.MockTransport`. Isso permite conferir método, URL, percent-encoding,
@@ -175,4 +190,28 @@ chave, o smoke manual é executado por:
 ```bash
 # Defina GROQ_API_KEY no .env ignorado pelo Git e execute:
 .venv/bin/pytest apps/api/tests/test_agent_runtime.py -m live -q
+```
+
+## Persistência e traces
+
+Execute `make migrate` antes de usar o recorder local. O default cria `.data/indusguard.db`; o
+arquivo e `.data/traces.jsonl` são ignorados pelo Git. `AgentRuntime` aceita `recorder` e
+`telemetry` por injeção, enquanto `create_internal_agent_host()` é a composition root recomendada
+para scripts e futuras avaliações.
+
+Uma run é salva atomicamente com tools, evidências e decisões políticas. O recorder nunca recebe
+`TrustedRunContext`, portanto não persiste principal, permissões, escopos ou confirmação. Prompts,
+headers, URLs e respostas ilimitadas também ficam fora do banco e dos spans.
+
+Se a persistência ou o JSONL falhar, a decisão funcional não muda. O resultado inclui:
+
+```json
+{
+  "observability": {
+    "status": "degraded",
+    "warning_code": "OBSERVABILITY_DEGRADED",
+    "persistence": "failed",
+    "local_trace": "recorded"
+  }
+}
 ```

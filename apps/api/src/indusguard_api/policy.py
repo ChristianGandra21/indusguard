@@ -17,6 +17,7 @@ from typing import Any, Final
 
 from indusguard_api.connectors import ConnectorCatalog, ResolvedOperation
 from indusguard_api.executor import HttpExecutor
+from indusguard_api.observability import NoOpTelemetry, Telemetry
 from indusguard_api.schemas import (
     AccessMode,
     ExecutionMode,
@@ -78,11 +79,13 @@ class PolicyEngine:
         catalog: ConnectorCatalog,
         *,
         execution_mode: ExecutionMode = "simulate",
+        telemetry: Telemetry | None = None,
     ) -> None:
         if execution_mode not in {"simulate", "execute"}:
             raise ValueError("execution_mode precisa ser 'simulate' ou 'execute'")
         self._catalog = catalog
         self._execution_mode = execution_mode
+        self._telemetry = telemetry or NoOpTelemetry()
 
     @property
     def execution_mode(self) -> ExecutionMode:
@@ -90,7 +93,45 @@ class PolicyEngine:
 
         return self._execution_mode
 
+    @property
+    def telemetry(self) -> Telemetry:
+        """Permite que o GuardedExecutor herde o mesmo trace sem acessar exportadores."""
+
+        return self._telemetry
+
     def evaluate(self, request: PolicyEvaluationRequest) -> PolicyDecision:
+        """Instrumenta a decisão sem registrar argumentos, contexto ou identidade."""
+
+        with self._telemetry.start_span(
+            "indusguard.policy.evaluate",
+            {
+                "indusguard.connector.id": request.execution.connector_id,
+                "indusguard.operation.id": request.execution.operation_id,
+                "indusguard.execution.mode": self._execution_mode,
+            },
+        ) as span:
+            decision = self._evaluate_untraced(request)
+            span.set_attribute("indusguard.policy.outcome", decision.outcome.value)
+            span.set_attribute(
+                "indusguard.policy.reason_codes",
+                tuple(code.value for code in decision.reason_codes),
+            )
+            span.set_attribute(
+                "indusguard.policy.confirmation_required",
+                decision.confirmation_required_for_execute,
+            )
+            if decision.access:
+                span.set_attribute("indusguard.operation.access", decision.access.value)
+            if decision.risk:
+                span.set_attribute("indusguard.operation.risk", decision.risk.value)
+            # Um bloqueio é a policy funcionando corretamente, não uma falha técnica do span.
+            span.set_attribute(
+                "indusguard.policy.blocked",
+                decision.outcome is PolicyOutcome.BLOCK,
+            )
+            return decision
+
+    def _evaluate_untraced(self, request: PolicyEvaluationRequest) -> PolicyDecision:
         """Produz uma decisão reproduzível e segura para auditoria."""
 
         execution = request.execution
@@ -327,18 +368,36 @@ class PolicyEngine:
 class GuardedExecutor:
     """Única composição autorizada a encaminhar uma decisão política ao executor HTTP."""
 
-    def __init__(self, policy_engine: PolicyEngine, http_executor: HttpExecutor) -> None:
+    def __init__(
+        self,
+        policy_engine: PolicyEngine,
+        http_executor: HttpExecutor,
+        *,
+        telemetry: Telemetry | None = None,
+    ) -> None:
         if policy_engine.execution_mode != http_executor.execution_mode:
             raise ValueError("PolicyEngine e HttpExecutor precisam usar o mesmo execution_mode")
         self._policy_engine = policy_engine
         self._http_executor = http_executor
+        self._telemetry = telemetry or policy_engine.telemetry
 
     async def execute(self, request: PolicyEvaluationRequest) -> GuardedExecutionResult:
         """Chama HTTP só para leitura permitida ou escrita aprovada para simulação."""
 
-        decision = self._policy_engine.evaluate(request)
-        if decision.outcome not in {PolicyOutcome.ALLOW, PolicyOutcome.SIMULATE}:
-            return GuardedExecutionResult(policy=decision)
+        with self._telemetry.start_span(
+            "indusguard.action",
+            {
+                "indusguard.connector.id": request.execution.connector_id,
+                "indusguard.operation.id": request.execution.operation_id,
+            },
+        ) as span:
+            decision = self._policy_engine.evaluate(request)
+            span.set_attribute("indusguard.policy.outcome", decision.outcome.value)
+            if decision.outcome not in {PolicyOutcome.ALLOW, PolicyOutcome.SIMULATE}:
+                span.set_attribute("indusguard.action.executed", False)
+                return GuardedExecutionResult(policy=decision)
 
-        execution = await self._http_executor.execute(request.execution)
-        return GuardedExecutionResult(policy=decision, execution=execution)
+            execution = await self._http_executor.execute(request.execution)
+            span.set_attribute("indusguard.action.executed", execution.attempts > 0)
+            span.set_attribute("indusguard.execution.outcome", execution.outcome.value)
+            return GuardedExecutionResult(policy=decision, execution=execution)

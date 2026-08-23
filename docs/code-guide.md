@@ -181,9 +181,13 @@ digest, confirmação e ausência de rede em decisões que interrompem o fluxo.
 memória para provar descoberta, schemas, provider confiável, execução protegida e erros redigidos.
 [`test_agent_runtime.py`](../apps/api/tests/test_agent_runtime.py) usa StateGraph e MCP reais, modelo
 fake e `MockTransport` para provar o fluxo completo sem Groq ou rede externa.
+[`test_persistence.py`](../apps/api/tests/test_persistence.py) prova transação, reconstrução,
+redaction e degradação segura. [`test_observability.py`](../apps/api/tests/test_observability.py)
+confere hierarquia, correlação e falha do JSONL sem backend externo.
 
 ## 9. O que ainda não procurar no código
 
-Ainda não existem banco, OpenTelemetry ou frontend. Também não há rota pública do agente, MCP ou
-executor nem escrita real. O runtime LangGraph está em `agent.py`; o adapter Groq fica isolado em
-`groq_gateway.py` e somente o teste `live` pode acessá-lo.
+Banco e OpenTelemetry agora existem como interfaces internas, mas ainda não há rota pública do
+agente, MCP ou executor, frontend nem escrita real. `runtime_factory.py` monta o mesmo recorder e
+telemetria para todas as camadas; a Groq continua isolada em `groq_gateway.py`, e somente o teste
+`live` pode acessá-la.
