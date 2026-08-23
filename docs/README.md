@@ -10,6 +10,7 @@ Esta pasta aprofunda decisões que deixariam o README principal longo demais.
 | [Guia do código](./code-guide.md) | Para estudar os arquivos Python na ordem recomendada. |
 | [Material dos stakeholders](./stakeholder-material.md) | Para conhecer a fixture Tractian, seus testes e limitações. |
 | [Guia de conectores](../connectors/README.md) | Para entender ou adicionar uma integração OpenAPI. |
+| [Benchmark e avaliações](../evals/README.md) | Para entender corpus, baseline, scorer, resume e ressalvas. |
 
 ## Regra de atualização
 

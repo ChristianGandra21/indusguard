@@ -20,6 +20,7 @@ from indusguard_api.agent import (
     AgentFinalAnswer,
     AgentIntentDecision,
     AgentPlannedToolCall,
+    AgentPlanningContext,
     AgentPlanStep,
     AgentRunRequest,
     AgentRuntime,
@@ -36,7 +37,7 @@ from indusguard_api.connectors import ConnectorCatalog
 from indusguard_api.executor import HttpExecutor
 from indusguard_api.groq_gateway import GroqAgentModelGateway, GroqAgentSettings
 from indusguard_api.policy import GuardedExecutor, PolicyEngine
-from indusguard_api.schemas import PolicyPrincipal
+from indusguard_api.schemas import PolicyConfirmation, PolicyPrincipal
 
 
 class RecordingRunnable:
@@ -184,6 +185,71 @@ def test_runs_grounded_read_through_langgraph_and_mcp() -> None:
     assert result.metrics.termination_reason == "COMPLETED"
     assert len(upstream_requests) == 1
     assert str(upstream_requests[0].url) == "http://localhost:9000/widgets/widget-1"
+
+
+def test_model_receives_only_allowlisted_trusted_context_and_policy_guidance() -> None:
+    """O modelo conhece o recurso e as regras, mas nunca recebe segredos ou confirmação."""
+
+    gateway = ScriptedAgentModelGateway(
+        classification=AgentIntentDecision(intent_id="agir"),
+        plans=[AgentPlanStep(done=True)],
+        final_answer=AgentFinalAnswer(
+            answer="A solicitação exige confirmação antes de uma execução real.",
+            decision=AgentDecision.ORIENT,
+        ),
+    )
+
+    _run_agent(
+        gateway,
+        request=AgentRunRequest(
+            connector_id="tractian",
+            message="Analise a alteração solicitada.",
+        ),
+        trusted_context=TrustedRunContext(
+            principal=PolicyPrincipal(
+                id="usr-001",
+                permissions=["action_high"],
+                scopes={"company_id": "comp-001", "internal_scope": "não-expor"},
+            ),
+            execution_context={
+                "user_id": "usr-001",
+                "company_id": "comp-001",
+                "asset_id": "asset-001",
+                "credential": "segredo",
+            },
+            resource_scopes={"company_id": "comp-001"},
+            direct_request=True,
+            confirmation=PolicyConfirmation(
+                confirmed_by="usr-001",
+                action_digest="a" * 64,
+            ),
+        ),
+    )
+
+    assert gateway.seen_planning_contexts
+    planning_context = gateway.seen_planning_contexts[0]
+    assert planning_context.context == {
+        "user_id": "usr-001",
+        "company_id": "comp-001",
+        "asset_id": "asset-001",
+    }
+    assert planning_context.permissions == ["action_high"]
+    assert planning_context.scopes == {"company_id": "comp-001"}
+    assert planning_context.direct_request is True
+
+    serialized = planning_context.model_dump_json()
+    assert "credential" not in serialized
+    assert "internal_scope" not in serialized
+    assert "confirmation" not in serialized
+    assert "action_digest" not in serialized
+
+    tools = {tool.mcp_name: tool for tool in gateway.seen_tools[0]}
+    write_description = tools["tractian.updateAssetConfig"].description
+    assert "permission=action_high" in write_description
+    assert "direct_request=true" in write_description
+    assert "justification_min_length=20" in write_description
+    assert "required_scopes=company_id" in write_description
+    assert "confirmation=true" in write_description
 
 
 def test_groq_gateway_requires_secret_only_when_real_adapter_is_created(
@@ -974,6 +1040,7 @@ def test_groq_adapter_separates_strict_outputs_from_sequential_tool_calling() ->
             request=request,
             domain=domain,
             intent=classified.value,
+            planning_context=AgentPlanningContext(),
             messages=[HumanMessage(content=request.message)],
             tools=[tool],
         )
@@ -981,6 +1048,7 @@ def test_groq_adapter_separates_strict_outputs_from_sequential_tool_calling() ->
             request=request,
             domain=domain,
             intent=classified.value,
+            planning_context=AgentPlanningContext(),
             messages=[
                 HumanMessage(content=request.message),
                 ToolMessage(

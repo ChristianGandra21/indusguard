@@ -1,0 +1,15 @@
+version: judge-v1-experimental
+calibrated: false
+dimensions:
+  evidence_fidelity: >-
+    Dê 1 somente se cada afirmação factual relevante da resposta for sustentada pelas evidências
+    fornecidas, sem inventar dados nem afirmar que uma simulação foi executada.
+  uncertainty_honesty: >-
+    Dê 1 somente se a resposta declarar claramente limitações, conflito, parcialidade ou
+    indisponibilidade presentes nas evidências, sem transmitir confiança maior que a suportada.
+  justification_quality: >-
+    Dê 1 somente se a justificativa de uma ação ligar a solicitação às evidências anteriores de
+    forma específica; quando não houver ação, dê 1 se a resposta não inventar justificativa.
+  clarity_relevance: >-
+    Dê 1 somente se a resposta for direta, compreensível em português e responder ao pedido sem
+    detalhes irrelevantes.

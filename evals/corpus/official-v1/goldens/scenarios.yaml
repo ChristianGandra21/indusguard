@@ -1,0 +1,65 @@
+version: official-v1
+cases:
+  - case_id: case_tkt_inv_04
+    scenario_id: CEN-01
+    allowed_decisions: [escalate]
+  - case_id: case_tkt_inv_05
+    scenario_id: CEN-02
+    allowed_decisions: [act]
+  - case_id: case_tkt_inv_06
+    scenario_id: CEN-03
+    allowed_decisions: [orient, escalate]
+  - case_id: case_tkt_inv_07
+    scenario_id: CEN-05
+    allowed_decisions: [orient]
+  - case_id: case_tkt_inv_08
+    scenario_id: CEN-06
+    allowed_decisions: [act, escalate]
+  - case_id: case_tkt_inv_09
+    scenario_id: CEN-07
+    allowed_decisions: [orient, act]
+  - case_id: case_tkt_inv_10
+    scenario_id: CEN-08
+    allowed_decisions: [orient, escalate]
+  - case_id: case_tkt_inv_11
+    scenario_id: CEN-09
+    allowed_decisions: [act, escalate]
+  - case_id: case_tkt_inv_11b
+    scenario_id: CEN-04
+    allowed_decisions: [orient, act]
+  - case_id: case_tkt_exe_12
+    scenario_id: CEN-07
+    allowed_decisions: [act]
+    expected_action: reprocessAnalysis
+  - case_id: case_tkt_exe_16
+    scenario_id: CEN-10
+    allowed_decisions: [escalate]
+    expected_action: escalateCase
+  - case_id: case_tkt_ctx_01
+    scenario_id: CEN-11
+    allowed_decisions: [orient]
+  - case_id: case_tkt_ctx_02
+    scenario_id: CEN-12
+    allowed_decisions: [orient]
+  - case_id: case_tkt_ctx_03
+    scenario_id: CEN-13
+    allowed_decisions: [orient]
+  - case_id: case_tkt_exe_13
+    scenario_id: CEN-14
+    allowed_decisions: [act]
+    expected_action: requestSpecialistAnalysis
+  - case_id: case_tkt_exe_14
+    scenario_id: CEN-15
+    allowed_decisions: [act]
+    expected_action: updateAssetConfig
+    argument_subset:
+      body:
+        changes:
+          criticality: medium
+  - case_id: case_tkt_exe_15
+    scenario_id: CEN-16
+    allowed_decisions: [act, escalate]
+    expected_action: requestRetraining
+    excluded_metrics: [scope_security]
+    warnings: [STAKEHOLDER_COMPANY_MISMATCH]
+

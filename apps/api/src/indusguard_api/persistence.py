@@ -8,6 +8,7 @@ portanto, não consegue persistir credenciais, permissões ou identidade do prin
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -21,6 +22,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     select,
 )
 from sqlalchemy.ext.asyncio import (
@@ -164,6 +166,71 @@ class PolicyDecisionRow(Base):
     action_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     run: Mapped[AgentRunRow] = relationship(back_populates="policy_decisions")
+
+
+class EvaluationRunRow(Base):
+    """Metadados reproduzíveis do benchmark, sem armazenar o conteúdo do golden set."""
+
+    __tablename__ = "evaluation_runs"
+
+    evaluation_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    phase: Mapped[str] = mapped_column(String(32), index=True)
+    status: Mapped[str] = mapped_column(String(32), index=True)
+    dataset_version: Mapped[str] = mapped_column(String(128), index=True)
+    input_digest: Mapped[str] = mapped_column(String(64))
+    golden_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    model: Mapped[str] = mapped_column(String(255))
+    git_commit: Mapped[str] = mapped_column(String(64))
+    config: Mapped[dict[str, Any]] = mapped_column(JSON)
+    summary: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    started_at: Mapped[Any] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    completed_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    results: Mapped[list[EvaluationResultRow]] = relationship(
+        back_populates="evaluation",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class EvaluationResultRow(Base):
+    """Checkpoint de uma identidade case × variante × seed ligado à run do agente."""
+
+    __tablename__ = "evaluation_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "evaluation_id",
+            "case_id",
+            "variant",
+            "seed",
+            name="uq_evaluation_result_identity",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    evaluation_id: Mapped[str] = mapped_column(
+        ForeignKey("evaluation_runs.evaluation_id", ondelete="CASCADE"), index=True
+    )
+    case_id: Mapped[str] = mapped_column(String(128), index=True)
+    scenario_id: Mapped[str] = mapped_column(String(32), index=True)
+    variant: Mapped[str] = mapped_column(String(32), index=True)
+    seed: Mapped[int] = mapped_column(Integer)
+    ordinal: Mapped[int] = mapped_column(Integer)
+    result_status: Mapped[str] = mapped_column(String(32), index=True)
+    termination_reason: Mapped[str] = mapped_column(String(64), index=True)
+    agent_run_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_runs.run_id", ondelete="RESTRICT"), index=True
+    )
+    observations: Mapped[dict[str, Any]] = mapped_column(JSON)
+    score: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    warnings: Mapped[list[str]] = mapped_column(JSON)
+    created_at: Mapped[Any] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+    evaluation: Mapped[EvaluationRunRow] = relationship(back_populates="results")
 
 
 class PersistedAgentRun(BaseModel):

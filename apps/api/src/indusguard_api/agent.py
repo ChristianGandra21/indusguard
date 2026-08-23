@@ -31,6 +31,7 @@ from typing_extensions import TypedDict
 
 from indusguard_api.connectors import ConnectorCatalog
 from indusguard_api.mcp_server import (
+    ProtectedOperationExecutor,
     TrustedPolicyContextProvider,
     TrustedPolicySignals,
     create_mcp_server,
@@ -41,7 +42,6 @@ from indusguard_api.observability import (
     TelemetrySnapshot,
     mark_span_error,
 )
-from indusguard_api.policy import GuardedExecutor
 from indusguard_api.redaction import redact_text
 from indusguard_api.schemas import (
     ConnectorDomain,
@@ -133,6 +133,22 @@ class TrustedRunContext(BaseModel):
     resource_scopes: dict[str, ScopeValue] = Field(default_factory=dict)
     direct_request: bool = False
     confirmation: PolicyConfirmation | None = None
+
+
+class AgentPlanningContext(BaseModel):
+    """Recorte seguro do contexto confiável que pode orientar o modelo.
+
+    O host continua sendo a autoridade sobre estes valores. A lista de campos de contexto vem do
+    ``domain.yaml`` e os escopos usam a mesma allowlist, evitando enviar claims internas, segredos
+    ou a confirmação vinculada a uma ação.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    context: dict[str, Any] = Field(default_factory=dict)
+    permissions: list[str] = Field(default_factory=list)
+    scopes: dict[str, ScopeValue] = Field(default_factory=dict)
+    direct_request: bool = False
 
 
 class AgentIntentDecision(BaseModel):
@@ -267,6 +283,7 @@ class AgentModelGateway(Protocol):
         request: AgentRunRequest,
         domain: ConnectorDomain,
         intent: AgentIntentDecision,
+        planning_context: AgentPlanningContext,
         messages: Sequence[BaseMessage],
         tools: Sequence[AgentToolDefinition],
     ) -> GatewayResult[AgentPlanStep]:
@@ -278,6 +295,7 @@ class AgentModelGateway(Protocol):
         request: AgentRunRequest,
         domain: ConnectorDomain,
         intent: AgentIntentDecision,
+        planning_context: AgentPlanningContext,
         messages: Sequence[BaseMessage],
         allowed_evidence_ids: Sequence[str],
     ) -> GatewayResult[AgentFinalAnswer]:
@@ -308,6 +326,7 @@ class ScriptedAgentModelGateway:
         self.plan_messages: list[list[BaseMessage]] = []
         self.finalize_messages: list[list[BaseMessage]] = []
         self.seen_tools: list[list[AgentToolDefinition]] = []
+        self.seen_planning_contexts: list[AgentPlanningContext] = []
 
     @property
     def model_name(self) -> str:
@@ -333,12 +352,14 @@ class ScriptedAgentModelGateway:
         request: AgentRunRequest,
         domain: ConnectorDomain,
         intent: AgentIntentDecision,
+        planning_context: AgentPlanningContext,
         messages: Sequence[BaseMessage],
         tools: Sequence[AgentToolDefinition],
     ) -> GatewayResult[AgentPlanStep]:
         del request, domain, intent
         self.plan_messages.append(list(messages))
         self.seen_tools.append(list(tools))
+        self.seen_planning_contexts.append(planning_context)
         if self._delay_seconds:
             await asyncio.sleep(self._delay_seconds)
         if not self._plans:
@@ -354,10 +375,11 @@ class ScriptedAgentModelGateway:
         request: AgentRunRequest,
         domain: ConnectorDomain,
         intent: AgentIntentDecision,
+        planning_context: AgentPlanningContext,
         messages: Sequence[BaseMessage],
         allowed_evidence_ids: Sequence[str],
     ) -> GatewayResult[AgentFinalAnswer]:
-        del request, domain, intent, allowed_evidence_ids
+        del request, domain, intent, planning_context, allowed_evidence_ids
         self.finalize_messages.append(list(messages))
         if self._delay_seconds:
             await asyncio.sleep(self._delay_seconds)
@@ -486,6 +508,7 @@ class _RunData:
     run_id: str
     request: AgentRunRequest
     trusted_context: TrustedRunContext
+    planning_context: AgentPlanningContext
     started_at: float
     started_at_utc: datetime
     domain: ConnectorDomain | None = None
@@ -666,7 +689,7 @@ class AgentRuntime:
     def __init__(
         self,
         catalog: ConnectorCatalog,
-        guarded_executor: GuardedExecutor,
+        operation_executor: ProtectedOperationExecutor,
         model_gateway: AgentModelGateway,
         config: AgentRuntimeConfig | None = None,
         *,
@@ -674,7 +697,7 @@ class AgentRuntime:
         telemetry: Telemetry | None = None,
     ) -> None:
         self._catalog = catalog
-        self._guarded_executor = guarded_executor
+        self._operation_executor = operation_executor
         self._model = model_gateway
         self._config = config or AgentRuntimeConfig()
         self._recorder = recorder
@@ -706,13 +729,14 @@ class AgentRuntime:
             run_id=run_id,
             request=request,
             trusted_context=trusted_context,
+            planning_context=self._planning_context(domain, trusted_context),
             started_at=started_at,
             started_at_utc=started_at_utc,
             domain=domain,
             messages=[HumanMessage(content=request.message)],
         )
         provider = RunBoundTrustedContextProvider(trusted_context)
-        server = create_mcp_server(self._catalog, self._guarded_executor, provider)
+        server = create_mcp_server(self._catalog, self._operation_executor, provider)
 
         with self._telemetry.start_span(
             "indusguard.agent.run",
@@ -933,6 +957,7 @@ class AgentRuntime:
                         request=data.request,
                         domain=data.domain,
                         intent=data.intent,
+                        planning_context=data.planning_context,
                         messages=tuple(data.messages),
                         tools=tuple(data.tools),
                     )
@@ -1020,6 +1045,7 @@ class AgentRuntime:
                         request=data.request,
                         domain=data.domain,
                         intent=data.intent,
+                        planning_context=data.planning_context,
                         messages=tuple(data.messages),
                         allowed_evidence_ids=tuple(evidence.id for evidence in data.evidence),
                     )
@@ -1259,8 +1285,11 @@ class AgentRuntime:
             )
         )
 
-    @staticmethod
-    def _tools_for_connector(tools: Sequence[Tool], connector_id: str) -> list[AgentToolDefinition]:
+    def _tools_for_connector(
+        self,
+        tools: Sequence[Tool],
+        connector_id: str,
+    ) -> list[AgentToolDefinition]:
         """Filtra a descoberta MCP e cria aliases sem expor tools de outro conector."""
 
         prefix = f"{connector_id}."
@@ -1275,11 +1304,28 @@ class AgentRuntime:
                 raise AgentConfigurationError(f"colisão de alias de tool: '{alias}'")
             aliases.add(alias)
             annotations = tool.annotations
+            resolved = self._catalog.resolve_operation(connector_id, operation_id)
+            if resolved is None:
+                raise AgentConfigurationError(
+                    f"tool MCP referencia operação ausente: '{tool.name}'"
+                )
+            operation = resolved.operation
+            policy_guidance = (
+                "Política confiável: "
+                f"access={operation.access.value}; "
+                f"risk={operation.risk.value}; "
+                f"permission={operation.permission or 'none'}; "
+                f"direct_request={str(operation.requires_direct_request).lower()}; "
+                f"justification_min_length={operation.justification_min_length}; "
+                f"required_scopes={','.join(operation.required_scopes) or 'none'}; "
+                f"confirmation={str(operation.requires_confirmation).lower()}."
+            )
+            description = tool.description or tool.title or operation_id
             selected.append(
                 AgentToolDefinition(
                     alias=alias,
                     mcp_name=tool.name,
-                    description=tool.description or tool.title or operation_id,
+                    description=f"{description}\n{policy_guidance}",
                     input_schema=dict(tool.input_schema),
                     read_only=bool(annotations and annotations.read_only_hint),
                     destructive=bool(annotations and annotations.destructive_hint),
@@ -1287,6 +1333,37 @@ class AgentRuntime:
                 )
             )
         return sorted(selected, key=lambda tool: tool.alias)
+
+    @staticmethod
+    def _planning_context(
+        domain: ConnectorDomain,
+        trusted_context: TrustedRunContext,
+    ) -> AgentPlanningContext:
+        """Aplica a allowlist do domínio antes de qualquer mensagem ao modelo."""
+
+        allowed = set(domain.context_fields)
+        principal = trusted_context.principal
+        context = {
+            key: value for key, value in trusted_context.execution_context.items() if key in allowed
+        }
+        scopes = (
+            {key: value for key, value in principal.scopes.items() if key in allowed}
+            if principal
+            else {}
+        )
+        result = AgentPlanningContext(
+            context=context,
+            permissions=sorted(principal.permissions) if principal else [],
+            scopes=scopes,
+            direct_request=trusted_context.direct_request,
+        )
+        try:
+            json.dumps(result.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            raise AgentConfigurationError(
+                "o contexto confiável permitido pelo domínio precisa ser JSON"
+            ) from exc
+        return result
 
     def _result(self, data: _RunData) -> AgentRunResult:
         """Converte estado parcial ou completo no mesmo contrato estável."""

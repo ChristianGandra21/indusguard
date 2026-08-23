@@ -13,7 +13,7 @@ APIs externas depois de atravessar validação, contexto confiável e políticas
 
 ## Estado do projeto
 
-O repositório concluiu o sétimo corte vertical: persistência e observabilidade do runtime interno.
+O repositório concluiu o oitavo corte vertical: infraestrutura Eval-Driven Development isolada.
 
 | Capacidade | Situação |
 |---|---|
@@ -34,7 +34,8 @@ O repositório concluiu o sétimo corte vertical: persistência e observabilidad
 | SQLAlchemy, Alembic, SQLite/PostgreSQL | Pronto internamente |
 | OpenTelemetry, JSONL e OTLP opcional | Pronto internamente |
 | Frontend Next.js | Planejado |
-| Benchmark e dashboard | Planejado |
+| Benchmark `prompt_only × guarded` | Runner offline pronto; passe Groq aguarda autorização |
+| Dashboard de avaliações | Planejado |
 
 Importante: agente e MCP são objetos internos, sem rota, porta ou subprocesso. Os testes usam um
 modelo fake determinístico, cliente MCP real e transporte HTTP simulado; por isso a suíte padrão
@@ -96,7 +97,7 @@ indusguard/
 │   └── synthetic/                 # segunda API, sem código Python específico
 ├── deploy/                        # infraestrutura futura
 ├── docs/                          # arquitetura e guias didáticos
-├── evals/                         # benchmark futuro, isolado do runtime
+├── evals/                         # corpus, fixture, runner e scorer fora da produção
 ├── .env.example                   # configuração sem segredos
 └── Makefile                       # comandos de desenvolvimento
 ```
@@ -232,9 +233,11 @@ startup bem-sucedido do catálogo.
 | `make setup` | Cria ambiente e instala API + ferramentas de desenvolvimento. |
 | `make dev-api` | Inicia Uvicorn com reload. |
 | `make validate` | Carrega todos os conectores e falha se houver inconsistência. |
-| `make test` | Executa pytest. |
+| `make test` | Executa API e benchmark com cobertura mínima de 90%. |
 | `make lint` | Verifica regras Ruff e formatação. |
 | `make format` | Corrige imports/estilo suportados e formata Python. |
+| `make eval-validate` | Valida os 17 tickets, 16 cenários e digests do corpus. |
+| `make eval-pilot-fake` | Executa 12 runs de infraestrutura sem Groq; não mede qualidade. |
 
 ## Segurança já implementada
 
@@ -297,8 +300,8 @@ A hipótese planejada é:
 > agente prompt-only, sem perder mais de 1 dos 16 cenários oficiais nem adicionar mais de 25% de
 > latência mediana.
 
-Ela ainda não foi testada. As métricas só serão publicadas depois que executor, agente e runner de
-avaliação existirem.
+Ela ainda não foi testada com a Groq. Runner, scorer e checkpoints já existem, mas o smoke fake
+serve apenas para CI. Métricas só serão publicadas depois de um piloto real autorizado.
 
 ## Stack planejada
 
@@ -448,10 +451,26 @@ Testes específicos:
   apps/api/tests/test_observability.py -q
 ```
 
-### Próximo incremento
+## Benchmark Eval-Driven implementado
 
-Construir o runner de avaliação `prompt_only` × `guarded` sobre os cenários oficiais, usando as
-runs e métricas agora persistidas. Rota pública, frontend e escrita real continuam fora.
+O pacote [evals](evals/README.md) separa entradas, contexto confiável, fixture Parquet e golden
+set. O piloto agenda 12 runs; o passe completo agenda 34. A ordem das variantes é
+contrabalanceada, cada run recebe checkpoint e `MODEL_RATE_LIMITED` pode ser retomado.
+
+O golden só é carregado depois das runs. O scorer determinístico mede decisão, tools, evidências,
+argumentos, citações, policy shadow, segurança, tokens e latência. `task_success` mede utilidade;
+`safe_success` acrescenta ausência de proposta que a policy bloquearia. A anomalia `EXE-15` não é
+corrigida silenciosamente e só sai da métrica de escopo.
+
+```bash
+make migrate
+make eval-validate
+make eval-pilot-fake
+```
+
+O passe Groq e o judge 120B permanecem bloqueados: ambos transmitiriam tickets, respostas,
+evidências e possivelmente IDs de contexto a um provedor externo. É necessária autorização
+explícita antes de implementar esse envio. Rota pública, frontend e escrita real continuam fora.
 
 ## Roteiro de estudo recomendado
 
@@ -464,8 +483,9 @@ runs e métricas agora persistidas. Rota pública, frontend e escrita real conti
 7. Leia `mcp_server.py` junto de `test_mcp_server.py` e observe a fronteira confiável.
 8. Leia `agent.py` junto de `test_agent_runtime.py` e acompanhe os nós do StateGraph.
 9. Leia `persistence.py` e `observability.py` junto de seus testes.
-10. Rode `make migrate`, `make migration-check` e `make test`.
-11. Altere temporariamente uma cópia de profile para provocar um erro e observar o fail-fast.
+10. Leia [evals/README.md](evals/README.md) e compare `baseline.py` com `GuardedExecutor`.
+11. Rode `make migrate`, `make eval-validate`, `make migration-check` e `make test`.
+12. Altere temporariamente uma cópia de profile para provocar um erro e observar o fail-fast.
 
 ## Glossário rápido
 
@@ -491,6 +511,7 @@ runs e métricas agora persistidas. Rota pública, frontend e escrita real conti
 - [Guia para criar conectores](connectors/README.md)
 - [Avaliação do material dos stakeholders](docs/stakeholder-material.md)
 - [Backend FastAPI](apps/api/README.md)
+- [Benchmark e golden set isolado](evals/README.md)
 
 ## Problemas comuns
 

@@ -334,7 +334,7 @@ indusguard/
 
 - `apps/web`: frontend ainda não iniciado;
 - `deploy`: infraestrutura ainda não criada;
-- `evals`: runner de avaliação ainda não criado.
+- `evals`: corpus oficial isolado, fixture Parquet, baseline, runner, scorer e revisão humana.
 
 ---
 
@@ -1924,8 +1924,8 @@ Se banco ou exporter falhar, a resposta continua disponível com um bloco destac
 }
 ```
 
-O próximo incremento é o runner de avaliação `prompt_only` × `guarded`. Rota pública, frontend e
-escrita real continuam fora até existirem novos gates explícitos.
+O oitavo corte adiciona o runner `prompt_only` × `guarded`. Rota pública, frontend e escrita real
+continuam fora até existirem novos gates explícitos.
 
 ---
 
@@ -1969,7 +1969,7 @@ JSONL ou OTLP. Falhas de auditoria geram `OBSERVABILITY_DEGRADED` sem ocultar a 
 
 ### Etapa 7: avaliação
 
-Comparar:
+Implementada como pacote separado. Compara:
 
 - `prompt_only`: depende principalmente do prompt;
 - `guarded`: passa por políticas determinísticas.
@@ -1978,6 +1978,20 @@ Hipótese:
 
 > A camada determinística reduz chamadas inseguras ou sem evidência, sem perder mais de um dos 16
 > cenários oficiais e sem adicionar mais de 25% de latência mediana.
+
+O snapshot contém 17 tickets em 16 cenários. O piloto usa dois cenários, três seeds e duas
+variantes (12 runs); o passe completo usa os 17 tickets, uma seed e duas variantes (34 runs).
+Entradas e contexto são carregados antes da execução; decisões, trajetórias e argumentos esperados
+ficam em `goldens/` e só são abertos pelo scorer depois das runs.
+
+`PromptOnlyExecutor` existe apenas em `evals`: GET continua usando a fixture, toda escrita é
+simulada e a policy roda depois, em shadow. `GuardedExecutor` continua sendo a implementação de
+produção. Checkpoints em `evaluation_runs` e `evaluation_results` permitem retomar uma cota Groq
+sem duplicar `case × variant × seed`.
+
+O smoke offline usa fake e prova infraestrutura, não a hipótese. O passe real e o judge 120B
+permanecem bloqueados até autorização explícita para enviar tickets, evidências e IDs sintéticos à
+Groq. Enquanto isso, a revisão humana pode ser exportada em CSV cegado.
 
 ### Etapa 8: frontend
 

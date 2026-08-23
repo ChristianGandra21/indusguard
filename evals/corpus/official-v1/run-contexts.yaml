@@ -1,0 +1,22 @@
+version: official-v1
+connector_id: tractian
+pilot_scenarios: [CEN-01, CEN-14]
+cases:
+  - {case_id: case_tkt_inv_04, scenario_id: CEN-01, direct_request: false}
+  - {case_id: case_tkt_inv_05, scenario_id: CEN-02, direct_request: false}
+  - {case_id: case_tkt_inv_06, scenario_id: CEN-03, direct_request: false}
+  - {case_id: case_tkt_inv_07, scenario_id: CEN-05, direct_request: false}
+  - {case_id: case_tkt_inv_08, scenario_id: CEN-06, direct_request: false}
+  - {case_id: case_tkt_inv_09, scenario_id: CEN-07, direct_request: false}
+  - {case_id: case_tkt_inv_10, scenario_id: CEN-08, direct_request: false}
+  - {case_id: case_tkt_inv_11, scenario_id: CEN-09, direct_request: false}
+  - {case_id: case_tkt_inv_11b, scenario_id: CEN-04, direct_request: false}
+  - {case_id: case_tkt_exe_12, scenario_id: CEN-07, direct_request: true}
+  - {case_id: case_tkt_exe_16, scenario_id: CEN-10, direct_request: true}
+  - {case_id: case_tkt_ctx_01, scenario_id: CEN-11, direct_request: false}
+  - {case_id: case_tkt_ctx_02, scenario_id: CEN-12, direct_request: false}
+  - {case_id: case_tkt_ctx_03, scenario_id: CEN-13, direct_request: false}
+  - {case_id: case_tkt_exe_13, scenario_id: CEN-14, direct_request: true}
+  - {case_id: case_tkt_exe_14, scenario_id: CEN-15, direct_request: true}
+  - {case_id: case_tkt_exe_15, scenario_id: CEN-16, direct_request: true}
+

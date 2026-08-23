@@ -27,7 +27,6 @@ from mcp_types import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from indusguard_api.connectors import ConnectorCatalog, ResolvedOperation
-from indusguard_api.policy import GuardedExecutor
 from indusguard_api.schemas import (
     AccessMode,
     ExecutionArguments,
@@ -74,6 +73,17 @@ class TrustedPolicyContextProvider(Protocol):
         arguments: ExecutionArguments,
     ) -> TrustedPolicySignals:
         """Resolve os sinais confiáveis associados à chamada já validada."""
+
+
+class ProtectedOperationExecutor(Protocol):
+    """Contrato mínimo aceito pelo MCP para executar uma proposta já tipada.
+
+    A implementação de produção continua sendo ``GuardedExecutor``. O protocolo permite que o
+    laboratório use uma variante observável sem importar seu bypass para o pacote de runtime.
+    """
+
+    async def execute(self, request: PolicyEvaluationRequest) -> GuardedExecutionResult:
+        """Executa ou simula a proposta e devolve o envelope comum."""
 
 
 @dataclass(frozen=True)
@@ -311,7 +321,7 @@ def _valid_arguments(schema: Mapping[str, Any], arguments: Any) -> bool:
 
 def create_mcp_server(
     catalog: ConnectorCatalog,
-    guarded_executor: GuardedExecutor,
+    operation_executor: ProtectedOperationExecutor,
     context_provider: TrustedPolicyContextProvider | None,
 ) -> Server[None]:
     """Cria o servidor MCP interno a partir de dependências explicitamente confiáveis.
@@ -379,7 +389,7 @@ def create_mcp_server(
             confirmation=signals.confirmation,
         )
         try:
-            result = await guarded_executor.execute(request)
+            result = await operation_executor.execute(request)
         except Exception:
             return _error_result(
                 "MCP_TOOL_INTERNAL_ERROR",

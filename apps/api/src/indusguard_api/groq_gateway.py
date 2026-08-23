@@ -22,6 +22,7 @@ from indusguard_api.agent import (
     AgentIntentDecision,
     AgentModelGateway,
     AgentPlannedToolCall,
+    AgentPlanningContext,
     AgentPlanStep,
     AgentRunRequest,
     AgentToolDefinition,
@@ -183,6 +184,7 @@ class GroqAgentModelGateway(AgentModelGateway):
         request: AgentRunRequest,
         domain: ConnectorDomain,
         intent: AgentIntentDecision,
+        planning_context: AgentPlanningContext,
         messages: Sequence[BaseMessage],
         tools: Sequence[AgentToolDefinition],
     ) -> GatewayResult[AgentPlanStep]:
@@ -237,6 +239,7 @@ class GroqAgentModelGateway(AgentModelGateway):
         request: AgentRunRequest,
         domain: ConnectorDomain,
         intent: AgentIntentDecision,
+        planning_context: AgentPlanningContext,
         messages: Sequence[BaseMessage],
         allowed_evidence_ids: Sequence[str],
     ) -> GatewayResult[AgentFinalAnswer]:

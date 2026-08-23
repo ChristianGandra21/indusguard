@@ -1,0 +1,63 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "indusguard-evals"
+version = "0.1.0"
+description = "Benchmark isolado prompt_only x guarded do IndusGuard"
+requires-python = ">=3.12"
+dependencies = [
+  "pydantic>=2.10,<3.0",
+  "PyYAML>=6.0,<7.0",
+]
+
+[project.optional-dependencies]
+fixture = [
+  "pandas>=2.2,<3.0",
+  "pyarrow>=15,<24",
+]
+judge = [
+  "deepeval>=4.0,<5.0",
+]
+dev = [
+  "pytest>=8.3,<9.0",
+  "pytest-cov>=6.0,<7.0",
+  "ruff>=0.8,<1.0",
+]
+
+[project.scripts]
+indusguard-eval = "indusguard_evals.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/indusguard_evals"]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers --disable-warnings -m 'not live'"
+pythonpath = ["src", "../apps/api/src"]
+testpaths = ["tests"]
+markers = ["live: usa Groq e nunca roda no CI"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# A fixture é um snapshot funcional entregue pelos stakeholders. FastAPI usa Depends no default
+# por design; mantemos esse código reconhecível e limitamos a exceção somente à cópia de avaliação.
+"src/indusguard_evals/tractian_fixture/*.py" = ["B008", "UP042", "SIM105"]
+
+[tool.coverage.run]
+source = ["indusguard_evals"]
+omit = [
+  # Snapshot funcional dos stakeholders e cola de processo não formam o núcleo pontuado.
+  "*/tractian_fixture/*",
+  "*/cli.py",
+]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true

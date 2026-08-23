@@ -23,6 +23,9 @@ flowchart LR
     T --> P[PolicyEngine]
     P --> G[GuardedExecutor]
     G --> E[Executor HTTP protegido]
+    A -. somente avaliação .-> X[PromptOnlyExecutor]
+    X --> E
+    A --> ER[(evaluation_runs / results)]
 ```
 
 Todas as linhas representam componentes implementados. Runtime, MCP, policy engine e executor são
@@ -258,5 +261,37 @@ instância cujo catálogo ainda não esteja pronto.
 | Groq Free `openai/gpt-oss-20b` | Adapter implementado; smoke manual |
 | Persistência SQLAlchemy + Alembic | Implementada internamente |
 | OpenTelemetry JSONL + OTLP opcional | Implementado internamente |
+| Benchmark `prompt_only` × `guarded` | Implementado offline; passe Groq bloqueado |
 | Frontend Next.js | Planejado |
-| Benchmark `prompt_only` × `guarded` | Planejado |
+
+## Fluxo de avaliação isolado
+
+```mermaid
+flowchart TD
+    I[inputs + contexto confiável] --> S[agenda pareada e contrabalanceada]
+    S --> R1[AgentRuntime guarded]
+    S --> R2[AgentRuntime prompt_only]
+    R1 --> M[MCP real em memória]
+    R2 --> M
+    M --> G[GuardedExecutor]
+    M --> B[PromptOnlyExecutor somente em evals]
+    G --> H[HttpExecutor simulate]
+    B --> H
+    G --> P[Policy gate]
+    B -. depois da run .-> PS[Policy shadow]
+    R1 --> C[checkpoint sem golden]
+    R2 --> C
+    C --> O[abrir golden]
+    O --> D[scorer determinístico]
+    D --> E[(evaluation_results)]
+```
+
+O `AgentRuntime` depende do protocolo `ProtectedOperationExecutor`, não de uma classe concreta.
+Produção injeta `GuardedExecutor`; somente o pacote `evals` possui `PromptOnlyExecutor`. A baseline
+preserva OpenAPI, autenticação e simulação de escrita, removendo apenas o gate para observar o
+contrafactual. A wheel de produção não contém esse pacote.
+
+`AgentPlanningContext` é uma allowlist derivada de `TrustedRunContext`: IDs de contexto declarados
+no domínio, permissões, escopos e pedido direto. Confirmação, digest, headers e credenciais nunca
+entram nela. O fake recebe esse contrato nos testes. A serialização desse contexto para a Groq e
+o benchmark real estão pausados até autorização explícita de transmissão externa.
