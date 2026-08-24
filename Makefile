@@ -64,4 +64,4 @@ e2e-api:
 	mkdir -p .data
 	INDUSGUARD_DATABASE_URL=sqlite+aiosqlite:///./.data/e2e-dashboard.db .venv/bin/alembic -c apps/api/alembic.ini upgrade head
 	INDUSGUARD_DATABASE_URL=sqlite+aiosqlite:///./.data/e2e-dashboard.db .venv/bin/python apps/api/scripts/seed_dashboard_demo.py
-	INDUSGUARD_DATABASE_URL=sqlite+aiosqlite:///./.data/e2e-dashboard.db INDUSGUARD_CORS_ALLOWED_ORIGINS='["http://127.0.0.1:3100"]' .venv/bin/uvicorn indusguard_api.main:app --app-dir apps/api/src --host 127.0.0.1 --port 8765
+	INDUSGUARD_DATABASE_URL=sqlite+aiosqlite:///./.data/e2e-dashboard.db .venv/bin/uvicorn e2e_app:app --app-dir apps/api/scripts --host 127.0.0.1 --port 8765

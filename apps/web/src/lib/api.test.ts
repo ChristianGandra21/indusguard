@@ -64,4 +64,60 @@ describe("cliente público", () => {
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ status: 404, code: "TRACE_NOT_FOUND" });
   });
+
+  it("envia o token somente no header da run e desativa cache", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          run_id: "run-1",
+          connector_id: "synthetic",
+          status: "completed",
+          intent_id: "consultar",
+          decision: "orient",
+          answer: "O widget está ativo [ev-001].",
+          evidence_ids: ["ev-001"],
+          evidence: [],
+          uncertainties: [],
+          tool_calls: [],
+          policy_decisions: [],
+          metrics: {
+            model: "fake",
+            model_calls: 3,
+            tool_calls: 1,
+            input_tokens: 10,
+            output_tokens: 5,
+            total_tokens: 15,
+            latency_ms: 12,
+            termination_reason: "COMPLETED",
+            truncations: 0,
+          },
+          observability: { status: "healthy" },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    await api.run(
+      {
+        connector_id: "synthetic",
+        message: "Consulte o widget.",
+        seed: 42,
+        context: { widget_id: "widget-1" },
+        direct_request: false,
+      },
+      "owner-secret-token",
+    );
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).not.toContain("owner-secret-token");
+    expect(init).toMatchObject({
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        Accept: "application/json",
+        Authorization: "Bearer owner-secret-token",
+        "Content-Type": "application/json",
+      },
+    });
+  });
 });

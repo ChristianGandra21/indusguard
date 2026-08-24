@@ -15,7 +15,7 @@ export default defineConfig({
         },
         {
           command:
-            "NEXT_PUBLIC_INDUSGUARD_API_URL=http://127.0.0.1:8765 npm run dev -- --hostname 127.0.0.1 --port 3100",
+            "NEXT_PUBLIC_INDUSGUARD_API_URL=http://127.0.0.1:8765 npm run build && npx serve@14 out -l 3100",
           url: "http://127.0.0.1:3100",
           reuseExistingServer: false,
         },

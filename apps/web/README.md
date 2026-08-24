@@ -1,8 +1,8 @@
-# Dashboard web
+# Dashboard e playground web
 
-Frontend estático e somente leitura do IndusGuard. Ele consome as projeções públicas do FastAPI e
-nunca recebe mensagens, argumentos de tools, respostas industriais, contexto confiável ou golden
-set.
+Frontend estático do IndusGuard. As páginas de dashboard continuam somente leitura. A rota
+`/playground` é exclusiva do proprietário, aceita apenas o conector `synthetic` e mantém o token
+Bearer somente no `sessionStorage` da aba.
 
 ```bash
 npm install
@@ -25,3 +25,20 @@ Comandos principais:
 
 O dashboard mostra honestamente quando ainda não existe avaliação. `offline_smoke` é sempre
 rotulado como teste de infraestrutura sem valor científico.
+
+## Playground protegido
+
+O navegador primeiro consulta `GET /api/v1/playground/config`. Depois que a pessoa informa o
+token, ele é salvo em `sessionStorage` sob `indusguard.owner_token` e enviado somente no header
+`Authorization` do `POST /api/v1/runs`. Ele não entra em URL, query key, logs ou build.
+
+A resposta fica apenas no estado da página e apresenta:
+
+- resposta fundamentada e incertezas;
+- evidências redigidas;
+- timeline de tools e decisions da policy;
+- tokens, latência, término e truncamentos;
+- estados específicos para cold start, 401, quota, concorrência, modelo ausente e run parcial.
+
+O E2E injeta um modelo fake somente pelo seam da app factory. FastAPI, host público, LangGraph,
+MCP, policy e upstream synthetic continuam reais e offline.

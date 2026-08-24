@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from indusguard_api.persistence import (
@@ -13,6 +14,7 @@ from indusguard_api.persistence import (
     EvaluationRunRow,
     EvidenceRow,
     PolicyDecisionRow,
+    PublicRunQuotaRow,
     ToolCallRow,
     normalize_database_url,
 )
@@ -55,6 +57,8 @@ async def seed() -> None:
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with sessions() as session, session.begin():
+            # O teste E2E é repetível localmente: quota anterior não pode bloquear a nova sessão.
+            await session.execute(delete(PublicRunQuotaRow))
             if await session.get(EvaluationRunRow, EVALUATION_ID) is not None:
                 return
             now = datetime.now(UTC)

@@ -13,8 +13,8 @@ APIs externas depois de atravessar validação, contexto confiável e políticas
 
 ## Estado do projeto
 
-O repositório está no décimo corte vertical: o backend do playground protegido já está pronto;
-a interface visual será o próximo corte do mesmo incremento.
+O repositório está no décimo corte vertical: backend e frontend do playground protegido estão
+prontos, incluindo um E2E inteiramente offline.
 
 | Capacidade | Situação |
 |---|---|
@@ -38,6 +38,7 @@ a interface visual será o próximo corte do mesmo incremento.
 | Benchmark `prompt_only × guarded` | Runner offline pronto; passe Groq aguarda autorização |
 | Dashboard de avaliações | Pronto; diferencia smoke fake de benchmark científico |
 | `POST /runs` do proprietário | Pronto; Bearer, quota, concorrência e synthetic apenas |
+| Página `/playground` | Pronta; token somente em `sessionStorage` |
 | Escritas pelo playground | Sempre simuladas, com zero rede |
 
 Importante: o MCP continua interno, sem porta ou subprocesso. O agente possui uma única rota
@@ -508,10 +509,11 @@ explícito no comando. O dashboard não chama Groq e escrita real continua fora.
 
 ## Dashboard fullstack seguro
 
-O frontend em [apps/web](apps/web/README.md) apresenta quatro rotas estáticas:
+O frontend em [apps/web](apps/web/README.md) apresenta cinco rotas estáticas:
 
 - `/`: saúde, versão, modo e arquitetura do sistema;
 - `/connectors`: operações e regras carregadas de OpenAPI + profile;
+- `/playground`: run owner-only com resultado, evidências, policy e métricas;
 - `/evaluations`: comparação, gates e limitações persistidas;
 - `/trace?run_id=...`: tools, policies, evidências e métricas operacionais.
 
@@ -523,6 +525,10 @@ público. CORS é allowlist, não autenticação; por isso nenhum conteúdo livr
 O OpenAPI do FastAPI gera os tipos TypeScript com `openapi-typescript`. O CI regenera snapshot e
 tipos, roda Vitest, build estático e Playwright contra FastAPI + SQLite sintético, e verifica que
 `out/` não contém corpus, Parquet ou golden set.
+
+No playground, o token nunca participa de query keys nem do build. O Playwright usa um fake apenas
+no lugar da Groq e atravessa a cadeia real FastAPI → `PublicRunHost` → LangGraph → MCP → policy →
+ASGI synthetic.
 
 ## Roteiro de estudo recomendado
 

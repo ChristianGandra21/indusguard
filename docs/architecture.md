@@ -287,7 +287,8 @@ depois.
 O frontend usa o OpenAPI do próprio FastAPI como contrato de compilação e Zod como verificação em
 runtime. Um smoke marcado `offline_smoke` aparece como infraestrutura sem valor científico;
 somente `groq_benchmark` pode receber o selo de evidência científica. CORS usa allowlist explícita
-e o build permanece estático, sem servidor Next.js ou segredo no navegador.
+e o build permanece estático. O único segredo do playground é informado pela pessoa e vive apenas
+no `sessionStorage`; não faz parte do bundle ou de query keys.
 
 ## Estado atual e roadmap
 
@@ -310,6 +311,7 @@ e o build permanece estático, sem servidor Next.js ou segredo no navegador.
 | OpenTelemetry JSONL + OTLP opcional | Implementado internamente |
 | Benchmark `prompt_only` × `guarded` | Implementado offline; passe Groq bloqueado |
 | Frontend Next.js read-only | Implementado e exportado estaticamente |
+| Playground owner-only | Implementado; synthetic e simulate apenas |
 
 ## Fluxo de avaliação isolado
 

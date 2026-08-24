@@ -1,6 +1,6 @@
 "use client";
 
-import { Activity, Cable, ChartNoAxesCombined, GitBranch, ShieldCheck } from "lucide-react";
+import { Activity, Bot, Cable, ChartNoAxesCombined, GitBranch, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 const navigation = [
   { href: "/", label: "Sistema", icon: Activity },
   { href: "/connectors", label: "Conectores", icon: Cable },
+  { href: "/playground", label: "Playground", icon: Bot },
   { href: "/evaluations", label: "Avaliações", icon: ChartNoAxesCombined },
   { href: "/trace", label: "Trace", icon: GitBranch },
 ];
@@ -30,7 +31,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </span>
           </Link>
 
-          <nav className="mt-5 grid grid-cols-4 gap-1 pb-1 lg:mt-12 lg:block lg:space-y-1" aria-label="Principal">
+          <nav className="mt-5 grid grid-cols-5 gap-1 pb-1 lg:mt-12 lg:block lg:space-y-1" aria-label="Principal">
             {navigation.map((item, index) => {
               const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
               const Icon = item.icon;
@@ -57,7 +58,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           <div className="mt-auto hidden border-t border-line pt-5 lg:block">
             <p className="font-mono text-[9px] uppercase tracking-[0.18em] text-dim">Modo público</p>
             <p className="mt-2 text-xs leading-relaxed text-muted">
-              Apenas metadados. Sem prompts, respostas ou payloads industriais.
+              Leituras públicas e playground owner-only. Escritas sempre simuladas.
             </p>
           </div>
         </div>

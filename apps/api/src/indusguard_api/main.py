@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from indusguard_api import __version__
-from indusguard_api.agent import AgentConfigurationError
+from indusguard_api.agent import AgentConfigurationError, AgentModelGateway
 from indusguard_api.connectors import ConnectorCatalog
 from indusguard_api.dashboard import (
     DashboardReader,
@@ -56,6 +56,7 @@ def create_app(
     settings: Settings | None = None,
     dashboard_reader: DashboardReader | None = None,
     public_run_host: PublicRunHost | None = None,
+    public_model_gateway: AgentModelGateway | None = None,
     telemetry: Telemetry | None = None,
 ) -> FastAPI:
     """Cria uma instância isolada da aplicação.
@@ -93,12 +94,14 @@ def create_app(
             if current_settings.public_runs_enabled:
                 quota_store = SqlAlchemyPublicRunQuota.from_url(current_settings.database_url)
                 quota = quota_store
-                try:
-                    model_gateway = GroqAgentModelGateway()
-                except AgentConfigurationError:
-                    # O serviço read-only continua disponível; readiness e POST mostram que o
-                    # modelo precisa ser configurado, sem registrar a exceção ou o ambiente.
-                    model_gateway = None
+                model_gateway = public_model_gateway
+                if model_gateway is None:
+                    try:
+                        model_gateway = GroqAgentModelGateway()
+                    except AgentConfigurationError:
+                        # O serviço read-only continua disponível; readiness e POST mostram que o
+                        # modelo precisa ser configurado, sem registrar exceção ou ambiente.
+                        model_gateway = None
                 if model_gateway is not None:
                     synthetic_client = httpx.AsyncClient(
                         transport=httpx.ASGITransport(app=create_synthetic_upstream()),

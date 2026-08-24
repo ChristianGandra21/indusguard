@@ -9,6 +9,9 @@ export type ConnectorSummary = components["schemas"]["ConnectorSummary"];
 export type OperationSummary = components["schemas"]["OperationSummary"];
 export type EvaluationDashboard = components["schemas"]["PublicEvaluationDashboard"];
 export type RunTrace = components["schemas"]["PublicRunTrace"];
+export type PlaygroundConfig = components["schemas"]["PublicPlaygroundConfig"];
+export type PublicRunRequest = components["schemas"]["PublicRunRequest"];
+export type PublicRunResult = components["schemas"]["PublicRunResult"];
 
 const ratio = z.number().min(0).max(1);
 
@@ -19,7 +22,99 @@ export const healthSchema: z.ZodType<HealthResponse> = z.object({
 export const readySchema: z.ZodType<ReadyResponse> = z.object({
   status: z.literal("ready"),
   connector_count: z.number().int().nonnegative(),
+  database_ready: z.boolean(),
+  public_run_host_ready: z.boolean(),
 });
+
+export const playgroundConfigSchema: z.ZodType<PlaygroundConfig> = z
+  .object({
+    enabled: z.boolean(),
+    model_configured: z.boolean(),
+    execution_mode: z.string(),
+    connectors: z.array(
+      z
+        .object({
+          id: z.string(),
+          name: z.string(),
+          context_fields: z.array(z.string()),
+        })
+        .strict(),
+    ),
+    max_message_length: z.number().int().positive(),
+    rate_limit_per_hour: z.number().int().positive(),
+    concurrency_limit: z.number().int().positive(),
+  })
+  .strict();
+
+const jsonObject = z.record(z.string(), z.unknown());
+
+export const publicRunResultSchema: z.ZodType<PublicRunResult> = z
+  .object({
+    run_id: z.string(),
+    connector_id: z.string(),
+    status: z.string(),
+    intent_id: z.string().nullable(),
+    decision: z.string(),
+    answer: z.string(),
+    evidence_ids: z.array(z.string()),
+    evidence: z.array(
+      z
+        .object({
+          id: z.string(),
+          tool_alias: z.string(),
+          mcp_tool_name: z.string(),
+          result: jsonObject,
+          outcome: z.string(),
+          status_code: z.number().int().nullable(),
+          truncated: z.boolean(),
+        })
+        .strict(),
+    ),
+    uncertainties: z.array(z.string()),
+    tool_calls: z.array(
+      z
+        .object({
+          sequence: z.number().int().positive(),
+          tool_alias: z.string(),
+          mcp_tool_name: z.string().nullable(),
+          arguments: jsonObject,
+          evidence_id: z.string().nullable(),
+          status: z.string(),
+          outcome: z.string(),
+          latency_ms: z.number().nonnegative(),
+        })
+        .strict(),
+    ),
+    policy_decisions: z.array(
+      z
+        .object({
+          tool_sequence: z.number().int().positive(),
+          operation_id: z.string(),
+          outcome: z.string(),
+          reason_codes: z.array(z.string()),
+          risk: z.string().nullable(),
+          required_permission: z.string().nullable(),
+          required_scopes: z.array(z.string()),
+          confirmation_required: z.boolean(),
+        })
+        .strict(),
+    ),
+    metrics: z
+      .object({
+        model: z.string(),
+        model_calls: z.number().int().nonnegative(),
+        tool_calls: z.number().int().nonnegative(),
+        input_tokens: z.number().int().nonnegative(),
+        output_tokens: z.number().int().nonnegative(),
+        total_tokens: z.number().int().nonnegative(),
+        latency_ms: z.number().nonnegative(),
+        termination_reason: z.string(),
+        truncations: z.number().int().nonnegative(),
+      })
+      .strict(),
+    observability: jsonObject,
+  })
+  .strict();
 
 export const versionSchema: z.ZodType<VersionResponse> = z.object({
   version: z.string(),

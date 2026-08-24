@@ -121,7 +121,6 @@ O projeto está sendo construído por camadas.
 
 - execução real de escritas;
 - contas multiusuário e OAuth;
-- interface visual do playground;
 - benchmark real autorizado na Groq;
 - deployment público.
 
@@ -2241,14 +2240,17 @@ O núcleo atual:
 47. limita duas runs simultâneas antes de consumir quota;
 48. atravessa LangGraph, MCP e policy até um upstream ASGI synthetic;
 49. simula PATCH com zero rede e remove o digest da projeção autenticada.
+50. guarda o Bearer apenas no `sessionStorage` da aba;
+51. valida config e resultado com Zod antes de renderizar;
+52. apresenta resposta, evidências, policy, tools e métricas em `/playground`;
+53. testa navegador → FastAPI → LangGraph → MCP → policy → ASGI sem rede externa.
 
 O sistema já possui agente interno, catálogo, MCP, policy engine e executor autenticado. Ele impede
 que o modelo opere sobre uma lista ambígua, prova o caminho seguro até APIs com diferentes
 autenticações e permite visualizar uma mutação sem executá-la.
 
-O próximo corte é a página `/playground`, que guardará o Bearer somente em `sessionStorage` e
-consumirá esta API. Depois serão habilitados exclusivamente o piloto Groq autorizado e os
-artefatos de deployment, sem provisionar serviços externos.
+O próximo corte habilita exclusivamente o piloto Groq autorizado. Depois entram os artefatos de
+deployment, sem provisionar serviços externos.
 
 Se você guardar apenas três ideias, guarde estas:
 
