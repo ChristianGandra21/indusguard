@@ -30,8 +30,8 @@ flowchart LR
 ```
 
 Todas as linhas representam componentes implementados. Runtime, MCP, policy engine e executor são
-interfaces internas: nenhuma rota do FastAPI os chama e o MCP não abre porta. As rotas novas usam
-somente `DashboardReader`, que lê metadados persistidos sem iniciar uma run.
+interfaces internas e o MCP não abre porta. O `PublicRunHost` é a única composição que pode
+chamá-los por HTTP; as rotas read-only continuam usando somente `DashboardReader`.
 
 ## Responsabilidade de cada arquivo do conector
 
@@ -239,10 +239,32 @@ ações de alto risco.
 Os dois sinais têm propósitos diferentes:
 
 - `/health` responde enquanto o processo HTTP está vivo;
-- `/ready` só fica disponível depois do lifespan carregar todos os conectores.
+- `/ready` só responde 200 depois do catálogo, banco, revisão Alembic e host público habilitado
+  estarem disponíveis.
 
 Em deployment, o balanceador poderá reiniciar um processo que falhou e evitar enviar tráfego a uma
 instância cujo catálogo ainda não esteja pronto.
+
+## Playground protegido
+
+```mermaid
+flowchart LR
+    W[Next.js: Bearer em sessionStorage] --> F[POST /runs]
+    F --> H[PublicRunHost]
+    H --> A[Auth constante + contexto allowlisted]
+    A --> Q[(quota persistente)]
+    Q --> C[concorrência em processo]
+    C --> R[AgentRuntime]
+    R --> M[MCP em memória]
+    M --> P[PolicyEngine]
+    P --> S[ASGI synthetic para GET]
+    P -. PATCH simulate: zero rede .-> Z[prévia redigida]
+```
+
+O cliente não fornece principal, permissões, escopos, confirmação ou digest. O host cria o
+principal fixo do proprietário, sobrescreve `user_id` e só aceita campos declarados no
+`domain.yaml`. A resposta autenticada pode mostrar evidências redigidas e reason codes, mas não
+prompt interno, token ou digest de confirmação.
 
 ## Dashboard público read-only
 

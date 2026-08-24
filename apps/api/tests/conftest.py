@@ -2,6 +2,7 @@
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -34,6 +35,45 @@ class ASGITestClient:
                     base_url="http://testserver",
                 ) as client:
                     return await client.get(path, headers=headers)
+
+        return asyncio.run(request())
+
+    def post(
+        self,
+        path: str,
+        *,
+        json: Any,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """Executa um POST mantendo o mesmo seam ASGI dos testes de leitura."""
+
+        async def request() -> httpx.Response:
+            async with self.app.router.lifespan_context(self.app):
+                transport = httpx.ASGITransport(app=self.app)
+                async with httpx.AsyncClient(
+                    transport=transport,
+                    base_url="http://testserver",
+                ) as client:
+                    return await client.post(path, json=json, headers=headers)
+
+        return asyncio.run(request())
+
+    def options(
+        self,
+        path: str,
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """Executa o preflight CORS usado antes do POST autenticado."""
+
+        async def request() -> httpx.Response:
+            async with self.app.router.lifespan_context(self.app):
+                transport = httpx.ASGITransport(app=self.app)
+                async with httpx.AsyncClient(
+                    transport=transport,
+                    base_url="http://testserver",
+                ) as client:
+                    return await client.options(path, headers=headers)
 
         return asyncio.run(request())
 

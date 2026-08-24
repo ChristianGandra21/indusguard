@@ -2,7 +2,7 @@
 
 > Documento único para entender o projeto desde o problema até o código atual.
 >
-> Última atualização: 22 de agosto de 2026.
+> Última atualização: 24 de agosto de 2026.
 
 ## 1. Como usar este guia
 
@@ -110,18 +110,24 @@ O projeto está sendo construído por camadas.
 - adapter opcional da Groq Free com `openai/gpt-oss-20b`, sem fallback pago ou Ollama;
 - testes automatizados;
 - CI com Ruff, pytest e cobertura.
+- `PublicRunHost` como única interface HTTP do agente;
+- Bearer exclusivo do proprietário com comparação em tempo constante;
+- quota persistente de três runs por hora e limite de duas simultâneas;
+- conector público `synthetic` executado por ASGI interno, sem fixture industrial;
+- `POST /api/v1/runs` stateless com escritas sempre simuladas;
+- projeção autenticada sem token, confirmação ou digest.
 
 ### Ainda não implementado
 
 - execução real de escritas;
-- chat e rota pública de runs;
-- autenticação de usuários do dashboard;
+- contas multiusuário e OAuth;
+- interface visual do playground;
 - benchmark real autorizado na Groq;
 - deployment público.
 
-Portanto, se você iniciar apenas o FastAPI, ele exporá catálogo e projeções read-only do dashboard,
-mas não chat ou rota de runs. O agente permanece uma interface Python interna. A suíte o executa
-com modelo fake e MCP real em memória; o dashboard nunca chama Groq.
+Ao iniciar o FastAPI, o catálogo e o dashboard continuam públicos e read-only. A única execução do
+agente é `POST /runs`, restrita ao token do proprietário e ao conector `synthetic`. A suíte usa
+modelo fake e MCP real em memória; nenhum teste padrão chama Groq.
 
 Isso é intencional. Estamos construindo primeiro a fundação previsível.
 
@@ -347,10 +353,11 @@ flowchart LR
     V --> M[Catálogo em memória]
     M --> F[FastAPI]
     F --> R[Catálogo + dashboard read-only]
+    F --> H[PublicRunHost autenticado]
     R --> W[Next.js estático]
     R --> DB[(SQLite ou PostgreSQL)]
 
-    M --> A[Runtime LangGraph interno]
+    H --> A[Runtime LangGraph interno]
     A --> MCP[Cliente e servidor MCP em memória]
     MCP --> T[TrustedPolicyContextProvider]
     T --> P[PolicyEngine]
@@ -358,8 +365,9 @@ flowchart LR
     G --> E[Executor HTTP protegido]
 ```
 
-Todas as linhas representam o que existe hoje. Agente, MCP e executor não possuem rota pública;
-o frontend consulta somente metadados já persistidos.
+Todas as linhas representam o que existe hoje. O MCP e o executor permanecem internos; somente o
+`PublicRunHost` pode iniciar o agente pela API. As páginas atuais do dashboard continuam lendo
+apenas metadados persistidos.
 
 ---
 
@@ -1847,7 +1855,7 @@ flowchart LR
 - métodos de leitura diferentes de GET retornam `METHOD_NOT_SUPPORTED`;
 - o `HttpExecutor` isolado retorna `WRITE_POLICY_REQUIRED` para escrita real;
 - OAuth interativo continua fora do escopo;
-- não existe rota FastAPI de execução.
+- a rota pública não aceita o conector Tractian e mantém `simulate` obrigatório.
 
 ### Critérios comprovados pelos testes
 
@@ -1926,8 +1934,8 @@ Se banco ou exporter falhar, a resposta continua disponível com um bloco destac
 ```
 
 O oitavo corte adiciona o runner `prompt_only` × `guarded`. O nono adiciona o dashboard Next.js e
-duas rotas GET que carregam somente colunas públicas. Rota de execução e escrita real continuam
-fora até existirem novos gates explícitos.
+duas rotas GET que carregam somente colunas públicas. O décimo adiciona `PublicRunHost`, Bearer,
+quota, concorrência e a rota synthetic. Escrita real continua fora.
 
 ---
 
@@ -1935,8 +1943,8 @@ fora até existirem novos gates explícitos.
 
 ### Etapa 2: executor
 
-Concluída internamente. GET, autenticação, simulação, retry idempotente e redaction estão prontos;
-o executor ainda não possui rota pública nem autorização para escrita real.
+Concluída. GET, autenticação, simulação, retry idempotente e redaction estão prontos. O executor
+continua inacessível diretamente; a rota pública passa pelo host, MCP e policy, sem escrita real.
 
 ### Etapa 3: policy engine
 
@@ -2228,14 +2236,19 @@ O núcleo atual:
 42. gera tipos TypeScript a partir do FastAPI e valida respostas com Zod;
 43. exporta quatro páginas Next.js estáticas com estados de loading, vazio e erro;
 44. prova o caminho navegador → FastAPI → SQLite com Playwright.
+45. autentica o proprietário antes de admitir uma execução pública;
+46. persiste a quota sem guardar token, IP ou mensagem;
+47. limita duas runs simultâneas antes de consumir quota;
+48. atravessa LangGraph, MCP e policy até um upstream ASGI synthetic;
+49. simula PATCH com zero rede e remove o digest da projeção autenticada.
 
 O sistema já possui agente interno, catálogo, MCP, policy engine e executor autenticado. Ele impede
 que o modelo opere sobre uma lista ambígua, prova o caminho seguro até APIs com diferentes
 autenticações e permite visualizar uma mutação sem executá-la.
 
-O próximo passo é deployment: empacotar backend e frontend, executar migrações no ambiente,
-configurar CORS e banco gratuitos e publicar somente depois dos gates de CI. O playground ficará
-para depois de autenticação, rate limit e autorização explícita de transmissão à Groq.
+O próximo corte é a página `/playground`, que guardará o Bearer somente em `sessionStorage` e
+consumirá esta API. Depois serão habilitados exclusivamente o piloto Groq autorizado e os
+artefatos de deployment, sem provisionar serviços externos.
 
 Se você guardar apenas três ideias, guarde estas:
 

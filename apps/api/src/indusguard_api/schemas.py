@@ -436,10 +436,12 @@ class HealthResponse(BaseModel):
 
 
 class ReadyResponse(BaseModel):
-    """Contrato do endpoint de readiness após validação dos conectores."""
+    """Contrato do readiness após catálogo, banco e host público serem verificados."""
 
     status: Literal["ready"] = "ready"
     connector_count: int
+    database_ready: bool = True
+    public_run_host_ready: bool = True
 
 
 class VersionResponse(BaseModel):

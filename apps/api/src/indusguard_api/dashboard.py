@@ -12,11 +12,12 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import load_only, selectinload
 
 from indusguard_api.persistence import (
+    LATEST_MIGRATION_REVISION,
     AgentRunRow,
     EvaluationResultRow,
     EvaluationRunRow,
@@ -193,6 +194,8 @@ class DashboardReader(Protocol):
 
     async def trace(self, run_id: str) -> PublicRunTrace | None: ...
 
+    async def ready(self) -> bool: ...
+
 
 class SqlAlchemyDashboardReader:
     """Implementação que projeta diretamente das tabelas compartilhadas."""
@@ -207,6 +210,15 @@ class SqlAlchemyDashboardReader:
 
     async def close(self) -> None:
         await self._engine.dispose()
+
+    async def ready(self) -> bool:
+        """Confirma conexão e revisão Alembic sem criar ou alterar tabelas."""
+
+        async with self._sessions() as session:
+            revision = (
+                await session.execute(text("SELECT version_num FROM alembic_version"))
+            ).scalar_one_or_none()
+        return revision == LATEST_MIGRATION_REVISION
 
     async def latest_evaluation(self) -> PublicEvaluationDashboard | None:
         statement = (

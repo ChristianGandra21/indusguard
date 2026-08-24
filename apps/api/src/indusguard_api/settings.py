@@ -7,7 +7,7 @@ devolvida nos endpoints de catálogo.
 
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from indusguard_api.schemas import ExecutionMode
@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     otlp_headers: str | None = None
     telemetry_service_name: str = "indusguard-api"
 
+    # O caminho público nasce desligado. Token e chave do modelo permanecem somente no processo;
+    # nenhum deles é parâmetro do frontend nem parte da OpenAPI.
+    public_runs_enabled: bool = False
+    public_connector_ids: list[str] = Field(default_factory=lambda: ["synthetic"])
+    owner_token: SecretStr | None = None
+    public_run_rate_limit_per_hour: int = Field(default=3, ge=1, le=100)
+    public_run_concurrency: int = Field(default=2, ge=1, le=10)
+
     @field_validator("cors_allowed_origins")
     @classmethod
     def reject_wildcard_cors(cls, value: list[str]) -> list[str]:
@@ -69,3 +77,22 @@ class Settings(BaseSettings):
         if "*" in normalized:
             raise ValueError("cors_allowed_origins não aceita wildcard")
         return normalized
+
+    @model_validator(mode="after")
+    def validate_public_runtime(self) -> "Settings":
+        if len(self.public_connector_ids) != len(set(self.public_connector_ids)):
+            raise ValueError("public_connector_ids não aceita duplicatas")
+        if not self.public_connector_ids:
+            raise ValueError("public_connector_ids precisa declarar ao menos um conector")
+        if set(self.public_connector_ids) - {"synthetic"}:
+            raise ValueError("neste incremento somente o conector synthetic pode ser público")
+        if self.public_runs_enabled and (
+            self.owner_token is None or len(self.owner_token.get_secret_value()) < 32
+        ):
+            raise ValueError(
+                "INDUSGUARD_OWNER_TOKEN precisa ter ao menos 32 caracteres "
+                "quando runs públicas estão ativas"
+            )
+        if self.public_runs_enabled and self.execution_mode != "simulate":
+            raise ValueError("runs públicas exigem INDUSGUARD_EXECUTION_MODE=simulate")
+        return self

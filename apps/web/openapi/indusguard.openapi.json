@@ -276,6 +276,32 @@
         "title": "PublicBenchmarkSummary",
         "type": "object"
       },
+      "PublicConnectorConfig": {
+        "properties": {
+          "context_fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Context Fields",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "context_fields"
+        ],
+        "title": "PublicConnectorConfig",
+        "type": "object"
+      },
       "PublicEvaluationDashboard": {
         "properties": {
           "completed_at": {
@@ -556,6 +582,438 @@
           "note"
         ],
         "title": "PublicHypothesisAssessment",
+        "type": "object"
+      },
+      "PublicPlaygroundConfig": {
+        "properties": {
+          "concurrency_limit": {
+            "title": "Concurrency Limit",
+            "type": "integer"
+          },
+          "connectors": {
+            "items": {
+              "$ref": "#/components/schemas/PublicConnectorConfig"
+            },
+            "title": "Connectors",
+            "type": "array"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "execution_mode": {
+            "title": "Execution Mode",
+            "type": "string"
+          },
+          "max_message_length": {
+            "default": 2000,
+            "title": "Max Message Length",
+            "type": "integer"
+          },
+          "model_configured": {
+            "title": "Model Configured",
+            "type": "boolean"
+          },
+          "rate_limit_per_hour": {
+            "title": "Rate Limit Per Hour",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "model_configured",
+          "execution_mode",
+          "connectors",
+          "rate_limit_per_hour",
+          "concurrency_limit"
+        ],
+        "title": "PublicPlaygroundConfig",
+        "type": "object"
+      },
+      "PublicRunEvidence": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "mcp_tool_name": {
+            "title": "Mcp Tool Name",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "result": {
+            "additionalProperties": true,
+            "title": "Result",
+            "type": "object"
+          },
+          "status_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Code"
+          },
+          "tool_alias": {
+            "title": "Tool Alias",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "tool_alias",
+          "mcp_tool_name",
+          "result",
+          "outcome",
+          "status_code",
+          "truncated"
+        ],
+        "title": "PublicRunEvidence",
+        "type": "object"
+      },
+      "PublicRunMetrics": {
+        "properties": {
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "model_calls": {
+            "title": "Model Calls",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "termination_reason": {
+            "title": "Termination Reason",
+            "type": "string"
+          },
+          "tool_calls": {
+            "title": "Tool Calls",
+            "type": "integer"
+          },
+          "total_tokens": {
+            "title": "Total Tokens",
+            "type": "integer"
+          },
+          "truncations": {
+            "title": "Truncations",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model",
+          "model_calls",
+          "tool_calls",
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
+          "latency_ms",
+          "termination_reason",
+          "truncations"
+        ],
+        "title": "PublicRunMetrics",
+        "type": "object"
+      },
+      "PublicRunPolicyDecision": {
+        "properties": {
+          "confirmation_required": {
+            "title": "Confirmation Required",
+            "type": "boolean"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reason Codes",
+            "type": "array"
+          },
+          "required_permission": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Permission"
+          },
+          "required_scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Required Scopes",
+            "type": "array"
+          },
+          "risk": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk"
+          },
+          "tool_sequence": {
+            "title": "Tool Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tool_sequence",
+          "operation_id",
+          "outcome",
+          "reason_codes",
+          "risk",
+          "required_permission",
+          "required_scopes",
+          "confirmation_required"
+        ],
+        "title": "PublicRunPolicyDecision",
+        "type": "object"
+      },
+      "PublicRunRequest": {
+        "additionalProperties": false,
+        "description": "Única entrada controlada pelo navegador; claims confiáveis são campos proibidos.",
+        "properties": {
+          "connector_id": {
+            "pattern": "^[a-z][a-z0-9_-]*$",
+            "title": "Connector Id",
+            "type": "string"
+          },
+          "context": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                }
+              ]
+            },
+            "title": "Context",
+            "type": "object"
+          },
+          "direct_request": {
+            "default": false,
+            "title": "Direct Request",
+            "type": "boolean"
+          },
+          "message": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "seed": {
+            "default": 42,
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Seed",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "connector_id",
+          "message"
+        ],
+        "title": "PublicRunRequest",
+        "type": "object"
+      },
+      "PublicRunResult": {
+        "description": "Projeção autenticada sem prompt interno, credenciais ou digest de confirmação.",
+        "properties": {
+          "answer": {
+            "title": "Answer",
+            "type": "string"
+          },
+          "connector_id": {
+            "title": "Connector Id",
+            "type": "string"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/PublicRunEvidence"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "intent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intent Id"
+          },
+          "metrics": {
+            "$ref": "#/components/schemas/PublicRunMetrics"
+          },
+          "observability": {
+            "additionalProperties": true,
+            "title": "Observability",
+            "type": "object"
+          },
+          "policy_decisions": {
+            "items": {
+              "$ref": "#/components/schemas/PublicRunPolicyDecision"
+            },
+            "title": "Policy Decisions",
+            "type": "array"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tool_calls": {
+            "items": {
+              "$ref": "#/components/schemas/PublicRunToolCall"
+            },
+            "title": "Tool Calls",
+            "type": "array"
+          },
+          "uncertainties": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Uncertainties",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_id",
+          "connector_id",
+          "status",
+          "intent_id",
+          "decision",
+          "answer",
+          "evidence_ids",
+          "evidence",
+          "uncertainties",
+          "tool_calls",
+          "policy_decisions",
+          "metrics",
+          "observability"
+        ],
+        "title": "PublicRunResult",
+        "type": "object"
+      },
+      "PublicRunToolCall": {
+        "properties": {
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "evidence_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Id"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "mcp_tool_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mcp Tool Name"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tool_alias": {
+            "title": "Tool Alias",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sequence",
+          "tool_alias",
+          "mcp_tool_name",
+          "arguments",
+          "evidence_id",
+          "status",
+          "outcome",
+          "latency_ms"
+        ],
+        "title": "PublicRunToolCall",
         "type": "object"
       },
       "PublicRunTrace": {
@@ -966,11 +1424,21 @@
         "type": "object"
       },
       "ReadyResponse": {
-        "description": "Contrato do endpoint de readiness após validação dos conectores.",
+        "description": "Contrato do readiness após catálogo, banco e host público serem verificados.",
         "properties": {
           "connector_count": {
             "title": "Connector Count",
             "type": "integer"
+          },
+          "database_ready": {
+            "default": true,
+            "title": "Database Ready",
+            "type": "boolean"
+          },
+          "public_run_host_ready": {
+            "default": true,
+            "title": "Public Run Host Ready",
+            "type": "boolean"
           },
           "status": {
             "const": "ready",
@@ -1190,9 +1658,31 @@
         ]
       }
     },
+    "/api/v1/playground/config": {
+      "get": {
+        "description": "Expõe capacidades públicas sem token, chave do modelo ou configuração interna.",
+        "operationId": "playground_config_api_v1_playground_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicPlaygroundConfig"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Playground Config",
+        "tags": [
+          "playground"
+        ]
+      }
+    },
     "/api/v1/ready": {
       "get": {
-        "description": "Readiness: confirma que o startup terminou e informa quantos conectores carregaram.",
+        "description": "Confirma catálogo, banco migrado e host público quando ele está habilitado.",
         "operationId": "ready_api_v1_ready_get",
         "responses": {
           "200": {
@@ -1209,6 +1699,48 @@
         "summary": "Ready",
         "tags": [
           "system"
+        ]
+      }
+    },
+    "/api/v1/runs": {
+      "post": {
+        "description": "Entrega uma solicitação ao host profundo sem construir claims na camada HTTP.",
+        "operationId": "create_public_run_api_v1_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicRunResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Public Run",
+        "tags": [
+          "playground"
         ]
       }
     },

@@ -84,6 +84,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/playground/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Playground Config
+         * @description Expõe capacidades públicas sem token, chave do modelo ou configuração interna.
+         */
+        get: operations["playground_config_api_v1_playground_config_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/ready": {
         parameters: {
             query?: never;
@@ -93,11 +113,31 @@ export interface paths {
         };
         /**
          * Ready
-         * @description Readiness: confirma que o startup terminou e informa quantos conectores carregaram.
+         * @description Confirma catálogo, banco migrado e host público quando ele está habilitado.
          */
         get: operations["ready_api_v1_ready_get"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Public Run
+         * @description Entrega uma solicitação ao host profundo sem construir claims na camada HTTP.
+         */
+        post: operations["create_public_run_api_v1_runs_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -263,6 +303,15 @@ export interface components {
             /** Status */
             status: string;
         };
+        /** PublicConnectorConfig */
+        PublicConnectorConfig: {
+            /** Context Fields */
+            context_fields: string[];
+            /** Id */
+            id: string;
+            /** Name */
+            name: string;
+        };
         /** PublicEvaluationDashboard */
         PublicEvaluationDashboard: {
             /** Completed At */
@@ -362,6 +411,163 @@ export interface components {
             note: string;
             /** Supported */
             supported: boolean;
+        };
+        /** PublicPlaygroundConfig */
+        PublicPlaygroundConfig: {
+            /** Concurrency Limit */
+            concurrency_limit: number;
+            /** Connectors */
+            connectors: components["schemas"]["PublicConnectorConfig"][];
+            /** Enabled */
+            enabled: boolean;
+            /** Execution Mode */
+            execution_mode: string;
+            /**
+             * Max Message Length
+             * @default 2000
+             */
+            max_message_length: number;
+            /** Model Configured */
+            model_configured: boolean;
+            /** Rate Limit Per Hour */
+            rate_limit_per_hour: number;
+        };
+        /** PublicRunEvidence */
+        PublicRunEvidence: {
+            /** Id */
+            id: string;
+            /** Mcp Tool Name */
+            mcp_tool_name: string;
+            /** Outcome */
+            outcome: string;
+            /** Result */
+            result: {
+                [key: string]: unknown;
+            };
+            /** Status Code */
+            status_code: number | null;
+            /** Tool Alias */
+            tool_alias: string;
+            /** Truncated */
+            truncated: boolean;
+        };
+        /** PublicRunMetrics */
+        PublicRunMetrics: {
+            /** Input Tokens */
+            input_tokens: number;
+            /** Latency Ms */
+            latency_ms: number;
+            /** Model */
+            model: string;
+            /** Model Calls */
+            model_calls: number;
+            /** Output Tokens */
+            output_tokens: number;
+            /** Termination Reason */
+            termination_reason: string;
+            /** Tool Calls */
+            tool_calls: number;
+            /** Total Tokens */
+            total_tokens: number;
+            /** Truncations */
+            truncations: number;
+        };
+        /** PublicRunPolicyDecision */
+        PublicRunPolicyDecision: {
+            /** Confirmation Required */
+            confirmation_required: boolean;
+            /** Operation Id */
+            operation_id: string;
+            /** Outcome */
+            outcome: string;
+            /** Reason Codes */
+            reason_codes: string[];
+            /** Required Permission */
+            required_permission: string | null;
+            /** Required Scopes */
+            required_scopes: string[];
+            /** Risk */
+            risk: string | null;
+            /** Tool Sequence */
+            tool_sequence: number;
+        };
+        /**
+         * PublicRunRequest
+         * @description Única entrada controlada pelo navegador; claims confiáveis são campos proibidos.
+         */
+        PublicRunRequest: {
+            /** Connector Id */
+            connector_id: string;
+            /** Context */
+            context?: {
+                [key: string]: string | number | boolean;
+            };
+            /**
+             * Direct Request
+             * @default false
+             */
+            direct_request: boolean;
+            /** Message */
+            message: string;
+            /**
+             * Seed
+             * @default 42
+             */
+            seed: number;
+        };
+        /**
+         * PublicRunResult
+         * @description Projeção autenticada sem prompt interno, credenciais ou digest de confirmação.
+         */
+        PublicRunResult: {
+            /** Answer */
+            answer: string;
+            /** Connector Id */
+            connector_id: string;
+            /** Decision */
+            decision: string;
+            /** Evidence */
+            evidence: components["schemas"]["PublicRunEvidence"][];
+            /** Evidence Ids */
+            evidence_ids: string[];
+            /** Intent Id */
+            intent_id: string | null;
+            metrics: components["schemas"]["PublicRunMetrics"];
+            /** Observability */
+            observability: {
+                [key: string]: unknown;
+            };
+            /** Policy Decisions */
+            policy_decisions: components["schemas"]["PublicRunPolicyDecision"][];
+            /** Run Id */
+            run_id: string;
+            /** Status */
+            status: string;
+            /** Tool Calls */
+            tool_calls: components["schemas"]["PublicRunToolCall"][];
+            /** Uncertainties */
+            uncertainties: string[];
+        };
+        /** PublicRunToolCall */
+        PublicRunToolCall: {
+            /** Arguments */
+            arguments: {
+                [key: string]: unknown;
+            };
+            /** Evidence Id */
+            evidence_id: string | null;
+            /** Latency Ms */
+            latency_ms: number;
+            /** Mcp Tool Name */
+            mcp_tool_name: string | null;
+            /** Outcome */
+            outcome: string;
+            /** Sequence */
+            sequence: number;
+            /** Status */
+            status: string;
+            /** Tool Alias */
+            tool_alias: string;
         };
         /**
          * PublicRunTrace
@@ -506,11 +712,21 @@ export interface components {
         };
         /**
          * ReadyResponse
-         * @description Contrato do endpoint de readiness após validação dos conectores.
+         * @description Contrato do readiness após catálogo, banco e host público serem verificados.
          */
         ReadyResponse: {
             /** Connector Count */
             connector_count: number;
+            /**
+             * Database Ready
+             * @default true
+             */
+            database_ready: boolean;
+            /**
+             * Public Run Host Ready
+             * @default true
+             */
+            public_run_host_ready: boolean;
             /**
              * Status
              * @default ready
@@ -652,6 +868,26 @@ export interface operations {
             };
         };
     };
+    playground_config_api_v1_playground_config_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicPlaygroundConfig"];
+                };
+            };
+        };
+    };
     ready_api_v1_ready_get: {
         parameters: {
             query?: never;
@@ -668,6 +904,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReadyResponse"];
+                };
+            };
+        };
+    };
+    create_public_run_api_v1_runs_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicRunResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

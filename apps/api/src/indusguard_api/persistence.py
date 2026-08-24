@@ -46,6 +46,8 @@ from indusguard_api.agent import (
 )
 from indusguard_api.redaction import redact_text, redact_value
 
+LATEST_MIGRATION_REVISION = "20260824_0003"
+
 
 class Base(DeclarativeBase):
     """Metadata única usada pelo runtime, testes e Alembic."""
@@ -166,6 +168,16 @@ class PolicyDecisionRow(Base):
     action_digest: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     run: Mapped[AgentRunRow] = relationship(back_populates="policy_decisions")
+
+
+class PublicRunQuotaRow(Base):
+    """Janela persistente do proprietário; não armazena token, IP ou conteúdo da run."""
+
+    __tablename__ = "public_run_quota"
+
+    subject: Mapped[str] = mapped_column(String(128), primary_key=True)
+    window_started_at: Mapped[Any] = mapped_column(DateTime(timezone=True))
+    accepted_runs: Mapped[int] = mapped_column(Integer)
 
 
 class EvaluationRunRow(Base):

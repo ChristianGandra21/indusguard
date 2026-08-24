@@ -255,10 +255,12 @@ class StubDashboardReader:
         evaluation: PublicEvaluationDashboard | None = None,
         trace: PublicRunTrace | None = None,
         error: SQLAlchemyError | None = None,
+        ready: bool = True,
     ) -> None:
         self.evaluation = evaluation
         self.run_trace = trace
         self.error = error
+        self.is_ready = ready
 
     async def latest_evaluation(self) -> PublicEvaluationDashboard | None:
         if self.error:
@@ -270,6 +272,11 @@ class StubDashboardReader:
         if self.error:
             raise self.error
         return self.run_trace
+
+    async def ready(self) -> bool:
+        if self.error:
+            raise self.error
+        return self.is_ready
 
 
 def _client(reader: StubDashboardReader, **settings_overrides: Any) -> ASGITestClient:
@@ -322,6 +329,36 @@ def test_cors_allows_only_configured_frontend() -> None:
     assert "access-control-allow-origin" not in denied.headers
 
 
+def test_cors_preflight_allows_post_and_authorization_only_for_allowlist() -> None:
+    client = _client(
+        StubDashboardReader(),
+        cors_allowed_origins=["https://dashboard.example"],
+    )
+
+    response = client.options(
+        "/api/v1/runs",
+        headers={
+            "Origin": "https://dashboard.example",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "Authorization, Content-Type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://dashboard.example"
+    assert "POST" in response.headers["access-control-allow-methods"]
+    assert "Authorization" in response.headers["access-control-allow-headers"]
+
+
 def test_settings_reject_wildcard_cors() -> None:
     with pytest.raises(ValidationError, match="não aceita wildcard"):
         Settings(cors_allowed_origins=["*"])
+
+
+def test_ready_returns_503_when_database_migration_is_not_current() -> None:
+    client = _client(StubDashboardReader(ready=False))
+
+    response = client.get("/api/v1/ready")
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "SERVICE_NOT_READY"

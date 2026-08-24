@@ -31,10 +31,16 @@ observabilidade internas.
 23. entrega a resposta com `OBSERVABILITY_DEGRADED` quando a auditoria falha.
 24. consulta avaliações e traces por uma projeção pública que não carrega conteúdo livre;
 25. expõe essas projeções em duas rotas GET para o dashboard estático.
+26. autentica o proprietário com Bearer comparado em tempo constante;
+27. limita o playground a três runs por hora e duas runs simultâneas;
+28. sobrescreve identidade e injeta permissões fora do request controlado pelo cliente;
+29. executa somente o conector `synthetic` por um upstream ASGI interno;
+30. publica respostas redigidas sem token, confirmação ou digest da ação.
 
-Agente, MCP e executor não possuem rota pública. Os testes usam modelo fake, cliente MCP real em
-memória e API externa simulada. A Groq real só é acessada pelo teste manual marcado como `live`.
-As novas rotas de dashboard são exclusivamente de leitura e não invocam nenhuma dessas camadas.
+O MCP continua interno e não abre porta. A única rota do agente é o `POST /runs` protegido do
+proprietário; ela aceita apenas `synthetic` e continua simulando toda escrita. Os testes usam
+modelo fake e cliente MCP real em memória. A composição real só cria o adapter Groq quando
+`GROQ_API_KEY` está configurada.
 
 ## Arquivos
 
@@ -52,6 +58,8 @@ As novas rotas de dashboard são exclusivamente de leitura e não invocam nenhum
 | `observability.py` | Configura spans, JSONL local, saúde dos exporters e OTLP opcional. |
 | `runtime_factory.py` | Monta todas as camadas com banco e telemetria coerentes. |
 | `dashboard.py` | Consulta somente colunas permitidas e monta projeções públicas. |
+| `public_runs.py` | Esconde auth, quota, contexto confiável, runtime e projeção pública. |
+| `synthetic_upstream.py` | Exercita GET em ASGI sem fixture industrial ou rede externa. |
 | `main.py` | Cria a aplicação FastAPI e suas rotas. |
 | `tests/` | Protege os contratos e as decisões de segurança. |
 
@@ -84,12 +92,14 @@ Depois de `make setup`:
 | Método e path | Significado |
 |---|---|
 | `GET /api/v1/health` | Processo HTTP está vivo. |
-| `GET /api/v1/ready` | Startup terminou e catálogo foi carregado. |
+| `GET /api/v1/ready` | Catálogo, migração, banco e host habilitado estão prontos. |
 | `GET /api/v1/version` | Versão, ambiente e modo de execução. |
 | `GET /api/v1/connectors` | Resumo das integrações. |
 | `GET /api/v1/connectors/{id}/operations` | Operações e políticas consolidadas. |
 | `GET /api/v1/evaluations/latest` | Resumo e runs da avaliação mais recente. |
 | `GET /api/v1/runs/{run_id}/trace` | Timeline operacional sem conteúdo livre. |
+| `GET /api/v1/playground/config` | Limites e campos públicos, sem segredos. |
+| `POST /api/v1/runs` | Run stateless autenticada, apenas no conector synthetic. |
 
 Swagger UI: `http://127.0.0.1:8000/docs`.
 
@@ -160,7 +170,28 @@ PolicyEvaluationRequest
 
 Permissões e escopos são claims confiáveis do runtime. O LLM propõe argumentos, mas não pode
 fabricar `principal`, `resource_scopes` ou confirmação. Escritas reais ainda terminam em
-`REAL_WRITE_DISABLED`, e nenhuma rota pública foi adicionada.
+`REAL_WRITE_DISABLED`; no playground, o processo roda em `simulate` e nenhuma escrita chega ao
+transporte ASGI.
+
+## Host público protegido
+
+`PublicRunHost.execute()` é a interface única da rota de execução. A camada FastAPI não conhece
+Groq, MCP, policy ou permissões: ela apenas entrega o Bearer e o `PublicRunRequest` ao host. O host
+segue esta ordem para evitar consumo indevido de recursos:
+
+```text
+enabled -> autenticação -> conector/contexto -> concorrência -> quota -> AgentRuntime -> projeção
+```
+
+O request aceita somente `connector_id`, mensagem de até 2.000 caracteres, seed, campos de
+contexto do `domain.yaml` e `direct_request`. Mesmo se o navegador enviar `user_id`, o backend o
+substitui pelo principal fixo do proprietário. `principal`, permissões, escopos, confirmação e
+digest são propriedades proibidas. Respostas usam `Cache-Control: no-store`.
+
+A quota é persistida na tabela `public_run_quota`; reiniciar o processo não zera a janela de uma
+hora. O limite de duas runs simultâneas é local ao processo e uma recusa por concorrência não
+consome quota. O upstream `synthetic` executa GET em memória com `ASGITransport`; PATCH é
+interrompido pela simulação antes desse transporte.
 
 ## Servidor MCP interno
 

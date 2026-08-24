@@ -18,7 +18,12 @@ def test_ready_reports_loaded_connectors(client: ASGITestClient) -> None:
     response = client.get("/api/v1/ready")
 
     assert response.status_code == 200
-    assert response.json() == {"status": "ready", "connector_count": 2}
+    assert response.json() == {
+        "status": "ready",
+        "connector_count": 2,
+        "database_ready": True,
+        "public_run_host_ready": True,
+    }
 
 
 def test_version_defaults_to_safe_simulation(client: ASGITestClient) -> None:

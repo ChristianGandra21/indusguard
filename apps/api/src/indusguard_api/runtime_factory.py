@@ -28,13 +28,16 @@ class InternalAgentHost:
     runtime: AgentRuntime
     telemetry: Telemetry
     recorder: SqlAlchemyAgentRunRecorder | None
+    owns_telemetry: bool = True
+    owns_recorder: bool = True
 
     async def close(self) -> None:
         """Entrega spans pendentes e encerra pools sem ocultar a resposta de uma run."""
 
-        self.telemetry.force_flush()
-        self.telemetry.shutdown()
-        if self.recorder is not None:
+        if self.owns_telemetry:
+            self.telemetry.force_flush()
+            self.telemetry.shutdown()
+        if self.recorder is not None and self.owns_recorder:
             await self.recorder.dispose()
 
 
@@ -46,38 +49,46 @@ def create_internal_agent_host(
     http_client: httpx.AsyncClient | None = None,
     environment: Mapping[str, str] | None = None,
     runtime_config: AgentRuntimeConfig | None = None,
+    telemetry: Telemetry | None = None,
+    recorder: SqlAlchemyAgentRunRecorder | None = None,
 ) -> InternalAgentHost:
     """Monta o caminho obrigatório LangGraph → MCP → policy → executor observado."""
 
-    telemetry = telemetry_from_settings(settings)
-    recorder = (
-        SqlAlchemyAgentRunRecorder.from_url(settings.database_url)
-        if settings.persist_runs
-        else None
-    )
+    owns_telemetry = telemetry is None
+    current_telemetry = telemetry or telemetry_from_settings(settings)
+    owns_recorder = recorder is None
+    current_recorder = recorder
+    if current_recorder is None and settings.persist_runs:
+        current_recorder = SqlAlchemyAgentRunRecorder.from_url(settings.database_url)
     http_executor = HttpExecutor(
         catalog,
         environment=environment,
         client=http_client,
         execution_mode=settings.execution_mode,
-        telemetry=telemetry,
+        telemetry=current_telemetry,
     )
     policy_engine = PolicyEngine(
         catalog,
         execution_mode=settings.execution_mode,
-        telemetry=telemetry,
+        telemetry=current_telemetry,
     )
     guarded_executor = GuardedExecutor(
         policy_engine,
         http_executor,
-        telemetry=telemetry,
+        telemetry=current_telemetry,
     )
     runtime = AgentRuntime(
         catalog,
         guarded_executor,
         model_gateway,
         runtime_config,
-        recorder=recorder,
-        telemetry=telemetry,
+        recorder=current_recorder,
+        telemetry=current_telemetry,
     )
-    return InternalAgentHost(runtime=runtime, telemetry=telemetry, recorder=recorder)
+    return InternalAgentHost(
+        runtime=runtime,
+        telemetry=current_telemetry,
+        recorder=current_recorder,
+        owns_telemetry=owns_telemetry,
+        owns_recorder=owns_recorder,
+    )

@@ -13,7 +13,8 @@ APIs externas depois de atravessar validação, contexto confiável e políticas
 
 ## Estado do projeto
 
-O repositório concluiu o nono corte vertical: dashboard fullstack seguro e somente leitura.
+O repositório está no décimo corte vertical: o backend do playground protegido já está pronto;
+a interface visual será o próximo corte do mesmo incremento.
 
 | Capacidade | Situação |
 |---|---|
@@ -36,9 +37,11 @@ O repositório concluiu o nono corte vertical: dashboard fullstack seguro e some
 | Frontend Next.js estático | Pronto: sistema, conectores, avaliações e trace |
 | Benchmark `prompt_only × guarded` | Runner offline pronto; passe Groq aguarda autorização |
 | Dashboard de avaliações | Pronto; diferencia smoke fake de benchmark científico |
+| `POST /runs` do proprietário | Pronto; Bearer, quota, concorrência e synthetic apenas |
+| Escritas pelo playground | Sempre simuladas, com zero rede |
 
-Importante: agente e MCP são objetos internos, sem rota, porta ou subprocesso. Os testes usam um
-modelo fake determinístico, cliente MCP real e transporte HTTP simulado; por isso a suíte padrão
+Importante: o MCP continua interno, sem porta ou subprocesso. O agente possui uma única rota
+protegida, exclusiva do proprietário e do conector `synthetic`. A suíte padrão usa modelo fake e
 não acessa Groq nem APIs externas. Mesmo uma confirmação válida recebe `REAL_WRITE_DISABLED`.
 
 ## Por que começar pelo catálogo?
@@ -211,7 +214,9 @@ Exemplo de readiness:
 ```json
 {
   "status": "ready",
-  "connector_count": 2
+  "connector_count": 2,
+  "database_ready": true,
+  "public_run_host_ready": true
 }
 ```
 
@@ -244,6 +249,8 @@ integração parcialmente carregada como saudável.
 | `GET /api/v1/connectors/{id}/operations` | Lista operações e políticas consolidadas. |
 | `GET /api/v1/evaluations/latest` | Último resumo e runs, sem golden ou corpus. |
 | `GET /api/v1/runs/{run_id}/trace` | Timeline sem mensagens, argumentos ou payloads. |
+| `GET /api/v1/playground/config` | Conectores e limites públicos, nunca o token. |
+| `POST /api/v1/runs` | Run stateless do proprietário no conector `synthetic`. |
 
 `health` e `ready` não são sinônimos. O primeiro diz que o processo responde; o segundo depende do
 startup bem-sucedido do catálogo.
@@ -495,9 +502,9 @@ make eval-validate
 make eval-pilot-fake
 ```
 
-O passe Groq e o judge 120B permanecem bloqueados: ambos transmitiriam tickets, respostas,
-evidências e possivelmente IDs de contexto a um provedor externo. É necessária autorização
-explícita antes de implementar esse envio. O dashboard não chama Groq e escrita real continua fora.
+O passe completo Groq e o judge 120B permanecem bloqueados. Este incremento autoriza somente o
+piloto de 12 runs, que será habilitado em um commit separado e sempre exigirá consentimento
+explícito no comando. O dashboard não chama Groq e escrita real continua fora.
 
 ## Dashboard fullstack seguro
 
@@ -579,7 +586,7 @@ mudança no contrato externo.
 
 ### A API Tractian não respondeu
 
-Ainda não existe rota pública nem dependência da fixture real em testes. O caso
+A rota pública aceita somente o conector `synthetic` e não carrega a fixture real. O caso
 `test_executes_tractian_get_with_ref_query_and_context_auth` comprova em memória que o executor
 monta path, `seed` e `x-user-id` corretamente. A conexão real só deve ser feita em ambiente local
 controlado, configurando `TRACTIAN_API_URL` com um destino presente na allowlist.
