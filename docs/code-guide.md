@@ -184,10 +184,12 @@ fake e `MockTransport` para provar o fluxo completo sem Groq ou rede externa.
 [`test_persistence.py`](../apps/api/tests/test_persistence.py) prova transação, reconstrução,
 redaction e degradação segura. [`test_observability.py`](../apps/api/tests/test_observability.py)
 confere hierarquia, correlação e falha do JSONL sem backend externo.
+[`test_dashboard.py`](../apps/api/tests/test_dashboard.py) comprova que as projeções SQL não
+carregam conteúdo livre, escolhem a avaliação mais recente e redigem falhas do banco.
 
 ## 9. O que ainda não procurar no código
 
-Banco e OpenTelemetry agora existem como interfaces internas, mas ainda não há rota pública do
-agente, MCP ou executor, frontend nem escrita real. `runtime_factory.py` monta o mesmo recorder e
-telemetria para todas as camadas; a Groq continua isolada em `groq_gateway.py`, e somente o teste
+Ainda não há rota pública do agente, MCP ou executor nem escrita real. O frontend existe, mas chama
+somente as rotas GET de catálogo e `DashboardReader`. `runtime_factory.py` monta o mesmo recorder e
+telemetria para as camadas internas; a Groq continua isolada em `groq_gateway.py`, e somente o teste
 `live` pode acessá-la.

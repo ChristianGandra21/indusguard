@@ -21,6 +21,14 @@ class EvaluationPhase(StrEnum):
     FULL = "full"
 
 
+class EvaluationExecutionKind(StrEnum):
+    """Distingue prova científica de um smoke que usa modelo fake."""
+
+    OFFLINE_SMOKE = "offline_smoke"
+    GROQ_BENCHMARK = "groq_benchmark"
+    UNKNOWN = "unknown"
+
+
 class StakeholderCase(BaseModel):
     """Entrada original entregue ao agente, sem trajetória ou resposta esperada."""
 

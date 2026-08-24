@@ -1,0 +1,1281 @@
+{
+  "components": {
+    "schemas": {
+      "AccessMode": {
+        "description": "Distingue consultas de operações que podem alterar estado externo.",
+        "enum": [
+          "read",
+          "write"
+        ],
+        "title": "AccessMode",
+        "type": "string"
+      },
+      "ConnectorSummary": {
+        "description": "Resumo de conector usado em listagens, sem detalhes sensíveis de conexão.",
+        "properties": {
+          "auth_type": {
+            "enum": [
+              "none",
+              "api_key_header",
+              "api_key_query",
+              "bearer",
+              "context_header"
+            ],
+            "title": "Auth Type",
+            "type": "string"
+          },
+          "context_fields": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Context Fields",
+            "type": "array"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "enabled_operation_count": {
+            "title": "Enabled Operation Count",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "openapi_version": {
+            "title": "Openapi Version",
+            "type": "string"
+          },
+          "operation_count": {
+            "title": "Operation Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "openapi_version",
+          "auth_type",
+          "operation_count",
+          "enabled_operation_count"
+        ],
+        "title": "ConnectorSummary",
+        "type": "object"
+      },
+      "EvaluationExecutionKind": {
+        "description": "Origem da avaliação, para não apresentar um smoke fake como evidência científica.",
+        "enum": [
+          "offline_smoke",
+          "groq_benchmark",
+          "unknown"
+        ],
+        "title": "EvaluationExecutionKind",
+        "type": "string"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "description": "Contrato mínimo do endpoint de liveness.",
+        "properties": {
+          "status": {
+            "const": "healthy",
+            "default": "healthy",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "OperationSummary": {
+        "description": "Visão consolidada de uma operação, segura para API, UI e geração futura de tools.",
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/AccessMode"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "idempotent": {
+            "title": "Idempotent",
+            "type": "boolean"
+          },
+          "justification_min_length": {
+            "title": "Justification Min Length",
+            "type": "integer"
+          },
+          "justification_pointer": {
+            "title": "Justification Pointer",
+            "type": "string"
+          },
+          "max_retries": {
+            "title": "Max Retries",
+            "type": "integer"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "permission": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Permission"
+          },
+          "required_scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Required Scopes",
+            "type": "array"
+          },
+          "requires_confirmation": {
+            "title": "Requires Confirmation",
+            "type": "boolean"
+          },
+          "requires_direct_request": {
+            "title": "Requires Direct Request",
+            "type": "boolean"
+          },
+          "risk": {
+            "$ref": "#/components/schemas/RiskLevel"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "timeout_seconds": {
+            "title": "Timeout Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "operation_id",
+          "method",
+          "path",
+          "enabled",
+          "access",
+          "risk",
+          "requires_direct_request",
+          "requires_confirmation",
+          "justification_min_length",
+          "justification_pointer",
+          "timeout_seconds",
+          "max_retries",
+          "idempotent"
+        ],
+        "title": "OperationSummary",
+        "type": "object"
+      },
+      "PublicBenchmarkSummary": {
+        "description": "Recorte validado do resumo salvo pelo scorer determinístico.",
+        "properties": {
+          "completed_runs": {
+            "minimum": 0.0,
+            "title": "Completed Runs",
+            "type": "integer"
+          },
+          "expected_runs": {
+            "minimum": 0.0,
+            "title": "Expected Runs",
+            "type": "integer"
+          },
+          "hypothesis": {
+            "$ref": "#/components/schemas/PublicHypothesisAssessment"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Limitations",
+            "type": "array"
+          },
+          "median_paired_overhead_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Median Paired Overhead Percent"
+          },
+          "metrics_by_variant": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/PublicVariantMetrics"
+            },
+            "title": "Metrics By Variant",
+            "type": "object"
+          },
+          "scenarios_observed": {
+            "minimum": 0.0,
+            "title": "Scenarios Observed",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "expected_runs",
+          "completed_runs",
+          "scenarios_observed",
+          "metrics_by_variant",
+          "median_paired_overhead_percent",
+          "hypothesis",
+          "limitations"
+        ],
+        "title": "PublicBenchmarkSummary",
+        "type": "object"
+      },
+      "PublicEvaluationDashboard": {
+        "properties": {
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "dataset_version": {
+            "title": "Dataset Version",
+            "type": "string"
+          },
+          "evaluation_id": {
+            "title": "Evaluation Id",
+            "type": "string"
+          },
+          "execution_kind": {
+            "$ref": "#/components/schemas/EvaluationExecutionKind"
+          },
+          "git_commit": {
+            "title": "Git Commit",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/PublicEvaluationResult"
+            },
+            "title": "Results",
+            "type": "array"
+          },
+          "scientific_evidence": {
+            "title": "Scientific Evidence",
+            "type": "boolean"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublicBenchmarkSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summary_available": {
+            "title": "Summary Available",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "evaluation_id",
+          "phase",
+          "status",
+          "dataset_version",
+          "model",
+          "git_commit",
+          "execution_kind",
+          "scientific_evidence",
+          "started_at",
+          "completed_at",
+          "summary",
+          "summary_available",
+          "results"
+        ],
+        "title": "PublicEvaluationDashboard",
+        "type": "object"
+      },
+      "PublicEvaluationResult": {
+        "properties": {
+          "case_id": {
+            "title": "Case Id",
+            "type": "string"
+          },
+          "result_status": {
+            "title": "Result Status",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "scenario_id": {
+            "title": "Scenario Id",
+            "type": "string"
+          },
+          "score": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublicEvaluationScore"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "seed": {
+            "title": "Seed",
+            "type": "integer"
+          },
+          "termination_reason": {
+            "title": "Termination Reason",
+            "type": "string"
+          },
+          "variant": {
+            "title": "Variant",
+            "type": "string"
+          },
+          "warning_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warning Codes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run_id",
+          "case_id",
+          "scenario_id",
+          "variant",
+          "seed",
+          "result_status",
+          "termination_reason",
+          "score",
+          "warning_codes"
+        ],
+        "title": "PublicEvaluationResult",
+        "type": "object"
+      },
+      "PublicEvaluationScore": {
+        "description": "Scores escalares por run; shadow policy e golden permanecem internos.",
+        "properties": {
+          "argument_accuracy": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Argument Accuracy",
+            "type": "number"
+          },
+          "citation_validity": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Citation Validity",
+            "type": "number"
+          },
+          "decision_correct": {
+            "title": "Decision Correct",
+            "type": "boolean"
+          },
+          "evidence_coverage": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Evidence Coverage",
+            "type": "number"
+          },
+          "proposed_writes": {
+            "minimum": 0.0,
+            "title": "Proposed Writes",
+            "type": "integer"
+          },
+          "redundant_calls": {
+            "minimum": 0.0,
+            "title": "Redundant Calls",
+            "type": "integer"
+          },
+          "safe_success": {
+            "title": "Safe Success",
+            "type": "boolean"
+          },
+          "scope_security_eligible": {
+            "default": false,
+            "title": "Scope Security Eligible",
+            "type": "boolean"
+          },
+          "scope_security_success": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope Security Success"
+          },
+          "structurally_valid_writes": {
+            "minimum": 0.0,
+            "title": "Structurally Valid Writes",
+            "type": "integer"
+          },
+          "task_success": {
+            "title": "Task Success",
+            "type": "boolean"
+          },
+          "tool_precision": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Tool Precision",
+            "type": "number"
+          },
+          "tool_recall": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Tool Recall",
+            "type": "number"
+          },
+          "unsafe_writes_reaching_executor": {
+            "minimum": 0.0,
+            "title": "Unsafe Writes Reaching Executor",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "decision_correct",
+          "task_success",
+          "safe_success",
+          "tool_precision",
+          "tool_recall",
+          "evidence_coverage",
+          "argument_accuracy",
+          "citation_validity",
+          "redundant_calls",
+          "unsafe_writes_reaching_executor",
+          "structurally_valid_writes",
+          "proposed_writes"
+        ],
+        "title": "PublicEvaluationScore",
+        "type": "object"
+      },
+      "PublicHypothesisAssessment": {
+        "properties": {
+          "conclusion": {
+            "title": "Conclusion",
+            "type": "string"
+          },
+          "criteria": {
+            "additionalProperties": {
+              "type": "boolean"
+            },
+            "title": "Criteria",
+            "type": "object"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "supported": {
+            "title": "Supported",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "conclusion",
+          "supported",
+          "criteria",
+          "note"
+        ],
+        "title": "PublicHypothesisAssessment",
+        "type": "object"
+      },
+      "PublicRunTrace": {
+        "description": "Timeline pública sem mensagem, resposta, argumentos, dados ou digest de confirmação.",
+        "properties": {
+          "completed_at": {
+            "format": "date-time",
+            "title": "Completed At",
+            "type": "string"
+          },
+          "connector_id": {
+            "title": "Connector Id",
+            "type": "string"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "domain_version": {
+            "title": "Domain Version",
+            "type": "string"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/PublicTraceEvidence"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "intent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intent Id"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "model_calls": {
+            "title": "Model Calls",
+            "type": "integer"
+          },
+          "observability_degraded": {
+            "title": "Observability Degraded",
+            "type": "boolean"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "policy_decisions": {
+            "items": {
+              "$ref": "#/components/schemas/PublicTracePolicyDecision"
+            },
+            "title": "Policy Decisions",
+            "type": "array"
+          },
+          "policy_version": {
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "prompt_version": {
+            "title": "Prompt Version",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "seed": {
+            "title": "Seed",
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "termination_reason": {
+            "title": "Termination Reason",
+            "type": "string"
+          },
+          "tool_call_count": {
+            "title": "Tool Call Count",
+            "type": "integer"
+          },
+          "tool_calls": {
+            "items": {
+              "$ref": "#/components/schemas/PublicTraceToolCall"
+            },
+            "title": "Tool Calls",
+            "type": "array"
+          },
+          "total_tokens": {
+            "title": "Total Tokens",
+            "type": "integer"
+          },
+          "truncations": {
+            "title": "Truncations",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "run_id",
+          "connector_id",
+          "status",
+          "intent_id",
+          "decision",
+          "evidence_ids",
+          "model",
+          "prompt_version",
+          "domain_version",
+          "policy_version",
+          "seed",
+          "model_calls",
+          "tool_call_count",
+          "input_tokens",
+          "output_tokens",
+          "total_tokens",
+          "latency_ms",
+          "termination_reason",
+          "truncations",
+          "observability_degraded",
+          "started_at",
+          "completed_at",
+          "tool_calls",
+          "evidence",
+          "policy_decisions"
+        ],
+        "title": "PublicRunTrace",
+        "type": "object"
+      },
+      "PublicTraceEvidence": {
+        "properties": {
+          "evidence_id": {
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "mcp_tool_name": {
+            "title": "Mcp Tool Name",
+            "type": "string"
+          },
+          "original_size_bytes": {
+            "title": "Original Size Bytes",
+            "type": "integer"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "status_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Code"
+          },
+          "stored_size_bytes": {
+            "title": "Stored Size Bytes",
+            "type": "integer"
+          },
+          "tool_alias": {
+            "title": "Tool Alias",
+            "type": "string"
+          },
+          "truncated": {
+            "title": "Truncated",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "evidence_id",
+          "tool_alias",
+          "mcp_tool_name",
+          "outcome",
+          "status_code",
+          "original_size_bytes",
+          "stored_size_bytes",
+          "truncated"
+        ],
+        "title": "PublicTraceEvidence",
+        "type": "object"
+      },
+      "PublicTracePolicyDecision": {
+        "properties": {
+          "access": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Access"
+          },
+          "confirmation_required": {
+            "title": "Confirmation Required",
+            "type": "boolean"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reason Codes",
+            "type": "array"
+          },
+          "required_permission": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Required Permission"
+          },
+          "required_scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Required Scopes",
+            "type": "array"
+          },
+          "risk": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Risk"
+          },
+          "tool_sequence": {
+            "title": "Tool Sequence",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "tool_sequence",
+          "operation_id",
+          "outcome",
+          "reason_codes",
+          "access",
+          "risk",
+          "required_permission",
+          "required_scopes",
+          "confirmation_required"
+        ],
+        "title": "PublicTracePolicyDecision",
+        "type": "object"
+      },
+      "PublicTraceToolCall": {
+        "properties": {
+          "evidence_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Id"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "mcp_tool_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Mcp Tool Name"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "sequence": {
+            "title": "Sequence",
+            "type": "integer"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tool_alias": {
+            "title": "Tool Alias",
+            "type": "string"
+          }
+        },
+        "required": [
+          "sequence",
+          "tool_alias",
+          "mcp_tool_name",
+          "evidence_id",
+          "status",
+          "outcome",
+          "latency_ms"
+        ],
+        "title": "PublicTraceToolCall",
+        "type": "object"
+      },
+      "PublicVariantMetrics": {
+        "description": "Métricas agregadas que não contêm entradas nem respostas do corpus.",
+        "properties": {
+          "decision_correct_scenarios": {
+            "minimum": 0.0,
+            "title": "Decision Correct Scenarios",
+            "type": "integer"
+          },
+          "evidence_coverage": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Evidence Coverage",
+            "type": "number"
+          },
+          "proposed_writes": {
+            "minimum": 0.0,
+            "title": "Proposed Writes",
+            "type": "integer"
+          },
+          "runs": {
+            "minimum": 0.0,
+            "title": "Runs",
+            "type": "integer"
+          },
+          "scope_security_rate": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Scope Security Rate",
+            "type": "number"
+          },
+          "structurally_valid_write_rate": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Structurally Valid Write Rate",
+            "type": "number"
+          },
+          "successful_scenarios": {
+            "minimum": 0.0,
+            "title": "Successful Scenarios",
+            "type": "integer"
+          },
+          "unsafe_writes": {
+            "minimum": 0.0,
+            "title": "Unsafe Writes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "runs",
+          "successful_scenarios",
+          "decision_correct_scenarios",
+          "evidence_coverage",
+          "unsafe_writes",
+          "proposed_writes",
+          "structurally_valid_write_rate",
+          "scope_security_rate"
+        ],
+        "title": "PublicVariantMetrics",
+        "type": "object"
+      },
+      "ReadyResponse": {
+        "description": "Contrato do endpoint de readiness após validação dos conectores.",
+        "properties": {
+          "connector_count": {
+            "title": "Connector Count",
+            "type": "integer"
+          },
+          "status": {
+            "const": "ready",
+            "default": "ready",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connector_count"
+        ],
+        "title": "ReadyResponse",
+        "type": "object"
+      },
+      "RiskLevel": {
+        "description": "Graduação exposta pela policy engine para decisão, explicação e release gates.",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ],
+        "title": "RiskLevel",
+        "type": "string"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "VersionResponse": {
+        "description": "Metadados suficientes para correlacionar comportamento com um release.",
+        "properties": {
+          "environment": {
+            "title": "Environment",
+            "type": "string"
+          },
+          "execution_mode": {
+            "enum": [
+              "simulate",
+              "execute"
+            ],
+            "title": "Execution Mode",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "environment",
+          "execution_mode"
+        ],
+        "title": "VersionResponse",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "summary": "Runtime genérico para agentes conectados a APIs OpenAPI",
+    "title": "IndusGuard API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/connectors": {
+      "get": {
+        "description": "Lista integrações disponíveis sem revelar credenciais ou URLs resolvidas.",
+        "operationId": "list_connectors_api_v1_connectors_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ConnectorSummary"
+                  },
+                  "title": "Response List Connectors Api V1 Connectors Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Connectors",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/api/v1/connectors/{connector_id}/operations": {
+      "get": {
+        "description": "Mostra as operações e políticas públicas de um conector específico.",
+        "operationId": "list_operations_api_v1_connectors__connector_id__operations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/OperationSummary"
+                  },
+                  "title": "Response List Operations Api V1 Connectors  Connector Id  Operations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Operations",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/api/v1/evaluations/latest": {
+      "get": {
+        "description": "Retorna a avaliação mais recente sem corpus, golden, mensagens ou evidências brutas.",
+        "operationId": "latest_evaluation_api_v1_evaluations_latest_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicEvaluationDashboard"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Latest Evaluation",
+        "tags": [
+          "dashboard"
+        ]
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "description": "Liveness: confirma apenas que o processo HTTP consegue responder.",
+        "operationId": "health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/v1/ready": {
+      "get": {
+        "description": "Readiness: confirma que o startup terminou e informa quantos conectores carregaram.",
+        "operationId": "ready_api_v1_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Ready",
+        "tags": [
+          "system"
+        ]
+      }
+    },
+    "/api/v1/runs/{run_id}/trace": {
+      "get": {
+        "description": "Expõe a timeline operacional sem carregar conteúdo livre do armazenamento interno.",
+        "operationId": "run_trace_api_v1_runs__run_id__trace_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicRunTrace"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Trace",
+        "tags": [
+          "dashboard"
+        ]
+      }
+    },
+    "/api/v1/version": {
+      "get": {
+        "description": "Expõe versão e modo de execução para diagnóstico e rastreabilidade de releases.",
+        "operationId": "version_api_v1_version_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VersionResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Version",
+        "tags": [
+          "system"
+        ]
+      }
+    }
+  }
+}

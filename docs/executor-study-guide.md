@@ -52,15 +52,16 @@ O IndusGuard coloca uma camada determinística entre o futuro agente e a API ext
 
 ```mermaid
 flowchart LR
-    P[Pessoa] -. futuro .-> A[Agente/LLM]
+    P[Pessoa] --> A[Agente/LLM]
     A -. pedido estruturado .-> I[IndusGuard]
     I --> C[Catálogo validado]
     I --> E[Executor HTTP protegido]
     E --> T[API externa]
 ```
 
-Hoje, catálogo, executor GET, simulação de escritas e policy engine interna existem. Agente, MCP e
-frontend ainda não existem. Este guia continua concentrado na camada HTTP.
+Hoje, catálogo, executor GET, simulação de escritas, policy engine, MCP, agente e dashboard
+fullstack já existem. Este guia continua concentrado na camada HTTP: os componentes posteriores
+aparecem apenas para mostrar onde o executor se encaixa.
 
 ## 2. O que é uma API?
 

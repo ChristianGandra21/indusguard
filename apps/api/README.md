@@ -29,9 +29,12 @@ observabilidade internas.
 21. correlaciona modelo, tools, policy e HTTP por `run_id` em spans OpenTelemetry;
 22. exporta JSONL local e OTLP opcional;
 23. entrega a resposta com `OBSERVABILITY_DEGRADED` quando a auditoria falha.
+24. consulta avaliações e traces por uma projeção pública que não carrega conteúdo livre;
+25. expõe essas projeções em duas rotas GET para o dashboard estático.
 
 Agente, MCP e executor não possuem rota pública. Os testes usam modelo fake, cliente MCP real em
 memória e API externa simulada. A Groq real só é acessada pelo teste manual marcado como `live`.
+As novas rotas de dashboard são exclusivamente de leitura e não invocam nenhuma dessas camadas.
 
 ## Arquivos
 
@@ -48,6 +51,7 @@ memória e API externa simulada. A Groq real só é acessada pelo teste manual m
 | `persistence.py` | Grava e reconstrói runs redigidas usando SQLAlchemy assíncrono. |
 | `observability.py` | Configura spans, JSONL local, saúde dos exporters e OTLP opcional. |
 | `runtime_factory.py` | Monta todas as camadas com banco e telemetria coerentes. |
+| `dashboard.py` | Consulta somente colunas permitidas e monta projeções públicas. |
 | `main.py` | Cria a aplicação FastAPI e suas rotas. |
 | `tests/` | Protege os contratos e as decisões de segurança. |
 
@@ -84,8 +88,16 @@ Depois de `make setup`:
 | `GET /api/v1/version` | Versão, ambiente e modo de execução. |
 | `GET /api/v1/connectors` | Resumo das integrações. |
 | `GET /api/v1/connectors/{id}/operations` | Operações e políticas consolidadas. |
+| `GET /api/v1/evaluations/latest` | Resumo e runs da avaliação mais recente. |
+| `GET /api/v1/runs/{run_id}/trace` | Timeline operacional sem conteúdo livre. |
 
 Swagger UI: `http://127.0.0.1:8000/docs`.
+
+As rotas de dashboard retornam `404` quando não há registro e `503/DATASTORE_UNAVAILABLE` quando
+o banco falha. O trace omite mensagem, resposta, argumentos, resultados, incertezas e digest. A
+consulta usa `load_only`, portanto esses campos não são carregados para depois serem redigidos.
+CORS aceita somente origens configuradas em `INDUSGUARD_CORS_ALLOWED_ORIGINS`; isso habilita o
+navegador, mas não é tratado como autenticação.
 
 ## Testar somente o executor
 

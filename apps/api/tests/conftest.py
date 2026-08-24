@@ -23,7 +23,7 @@ class ASGITestClient:
     def __init__(self, app: FastAPI) -> None:
         self.app = app
 
-    def get(self, path: str) -> httpx.Response:
+    def get(self, path: str, *, headers: dict[str, str] | None = None) -> httpx.Response:
         """Executa um GET ASGI e devolve a resposta HTTP normal do httpx."""
 
         async def request() -> httpx.Response:
@@ -33,7 +33,7 @@ class ASGITestClient:
                     transport=transport,
                     base_url="http://testserver",
                 ) as client:
-                    return await client.get(path)
+                    return await client.get(path, headers=headers)
 
         return asyncio.run(request())
 

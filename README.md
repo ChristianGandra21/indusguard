@@ -13,7 +13,7 @@ APIs externas depois de atravessar validação, contexto confiável e políticas
 
 ## Estado do projeto
 
-O repositório concluiu o oitavo corte vertical: infraestrutura Eval-Driven Development isolada.
+O repositório concluiu o nono corte vertical: dashboard fullstack seguro e somente leitura.
 
 | Capacidade | Situação |
 |---|---|
@@ -33,9 +33,9 @@ O repositório concluiu o oitavo corte vertical: infraestrutura Eval-Driven Deve
 | Adapter Groq Free (`openai/gpt-oss-20b`) | Pronto; smoke real é manual |
 | SQLAlchemy, Alembic, SQLite/PostgreSQL | Pronto internamente |
 | OpenTelemetry, JSONL e OTLP opcional | Pronto internamente |
-| Frontend Next.js | Planejado |
+| Frontend Next.js estático | Pronto: sistema, conectores, avaliações e trace |
 | Benchmark `prompt_only × guarded` | Runner offline pronto; passe Groq aguarda autorização |
-| Dashboard de avaliações | Planejado |
+| Dashboard de avaliações | Pronto; diferencia smoke fake de benchmark científico |
 
 Importante: agente e MCP são objetos internos, sem rota, porta ou subprocesso. Os testes usam um
 modelo fake determinístico, cliente MCP real e transporte HTTP simulado; por isso a suíte padrão
@@ -91,7 +91,7 @@ indusguard/
 │   │   │   └── observability.py   # spans JSONL e OTLP opcional
 │   │   ├── migrations/            # histórico Alembic do schema
 │   │   └── tests/                 # catálogo, execução, agente, banco e traces
-│   └── web/                       # placeholder do frontend
+│   └── web/                       # dashboard Next.js estático e contratos TypeScript
 ├── connectors/
 │   ├── tractian/                  # contrato industrial e suas políticas
 │   └── synthetic/                 # segunda API, sem código Python específico
@@ -108,6 +108,7 @@ indusguard/
 
 - Git;
 - Python 3.12;
+- Node.js 20 e npm;
 - acesso à internet na primeira instalação das dependências.
 
 Confirme o Python:
@@ -135,7 +136,8 @@ Esse comando:
 
 1. cria `.venv/`;
 2. atualiza o `pip` dentro do ambiente;
-3. instala o backend e as dependências de desenvolvimento.
+3. instala o backend e as dependências de desenvolvimento;
+4. instala o frontend e fixa as dependências em `package-lock.json`.
 
 Não é necessário ativar o virtualenv: o Makefile chama `.venv/bin/...` diretamente.
 
@@ -173,6 +175,24 @@ Acesse:
 - Swagger UI: `http://127.0.0.1:8000/docs`;
 - OpenAPI do próprio backend: `http://127.0.0.1:8000/openapi.json`;
 - readiness: `http://127.0.0.1:8000/api/v1/ready`.
+
+Antes de consultar avaliações e traces, aplique as migrações:
+
+```bash
+make migrate
+```
+
+### 7. Iniciar o dashboard
+
+Em outro terminal:
+
+```bash
+make dev-web
+```
+
+Acesse `http://localhost:3000`. O frontend é exportável como arquivos estáticos e consome o
+FastAPI diretamente do navegador. A origem precisa estar na allowlist
+`INDUSGUARD_CORS_ALLOWED_ORIGINS`.
 
 ## Experimentar pelo terminal
 
@@ -222,6 +242,8 @@ integração parcialmente carregada como saudável.
 | `GET /api/v1/version` | Versão, ambiente e `simulate|execute`. |
 | `GET /api/v1/connectors` | Lista integrações sem segredos. |
 | `GET /api/v1/connectors/{id}/operations` | Lista operações e políticas consolidadas. |
+| `GET /api/v1/evaluations/latest` | Último resumo e runs, sem golden ou corpus. |
+| `GET /api/v1/runs/{run_id}/trace` | Timeline sem mensagens, argumentos ou payloads. |
 
 `health` e `ready` não são sinônimos. O primeiro diz que o processo responde; o segundo depende do
 startup bem-sucedido do catálogo.
@@ -230,11 +252,15 @@ startup bem-sucedido do catálogo.
 
 | Comando | O que faz |
 |---|---|
-| `make setup` | Cria ambiente e instala API + ferramentas de desenvolvimento. |
+| `make setup` | Cria ambiente e instala backend, avaliações e frontend. |
 | `make dev-api` | Inicia Uvicorn com reload. |
+| `make dev-web` | Inicia Next.js em `localhost:3000`. |
 | `make validate` | Carrega todos os conectores e falha se houver inconsistência. |
 | `make test` | Executa API e benchmark com cobertura mínima de 90%. |
+| `make test-web` | Executa Vitest e a tipagem do frontend. |
 | `make lint` | Verifica regras Ruff e formatação. |
+| `make lint-web` | Executa ESLint no frontend. |
+| `make contracts` | Regenera snapshot OpenAPI e tipos TypeScript. |
 | `make format` | Corrige imports/estilo suportados e formata Python. |
 | `make eval-validate` | Valida os 17 tickets, 16 cenários e digests do corpus. |
 | `make eval-pilot-fake` | Executa 12 runs de infraestrutura sem Groq; não mede qualidade. |
@@ -303,9 +329,9 @@ A hipótese planejada é:
 Ela ainda não foi testada com a Groq. Runner, scorer e checkpoints já existem, mas o smoke fake
 serve apenas para CI. Métricas só serão publicadas depois de um piloto real autorizado.
 
-## Stack planejada
+## Stack tecnológica
 
-- Web: Next.js, TypeScript, Tailwind, shadcn/ui, TanStack Query e Recharts;
+- Web: Next.js, TypeScript, Tailwind, shadcn/ui, TanStack Query, Zod e Recharts;
 - API: Python 3.12, FastAPI e Pydantic v2;
 - Protocolo de tools: SDK Python MCP v2, já implementado internamente;
 - Agente: LangGraph implementado e Groq Free disponível somente por adapter explícito;
@@ -315,7 +341,8 @@ serve apenas para CI. Métricas só serão publicadas depois de um piloto real a
 - Qualidade: pytest, respx, Schemathesis, Vitest e Playwright;
 - Entrega: Docker e GitHub Actions.
 
-“Planejada” significa que parte dessa stack ainda não está no código.
+Docker e o deployment público continuam como próximos incrementos; as demais camadas listadas já
+possuem implementação no repositório.
 
 ## Executor HTTP implementado
 
@@ -470,7 +497,25 @@ make eval-pilot-fake
 
 O passe Groq e o judge 120B permanecem bloqueados: ambos transmitiriam tickets, respostas,
 evidências e possivelmente IDs de contexto a um provedor externo. É necessária autorização
-explícita antes de implementar esse envio. Rota pública, frontend e escrita real continuam fora.
+explícita antes de implementar esse envio. O dashboard não chama Groq e escrita real continua fora.
+
+## Dashboard fullstack seguro
+
+O frontend em [apps/web](apps/web/README.md) apresenta quatro rotas estáticas:
+
+- `/`: saúde, versão, modo e arquitetura do sistema;
+- `/connectors`: operações e regras carregadas de OpenAPI + profile;
+- `/evaluations`: comparação, gates e limitações persistidas;
+- `/trace?run_id=...`: tools, policies, evidências e métricas operacionais.
+
+`dashboard.py` não chama o recorder de auditoria. Suas queries SQL usam `load_only` para não
+carregar `request_message`, `answer`, argumentos, resultados de evidência, observações shadow ou
+digests. A validação Zod do navegador também rejeita propriedades que não pertencem ao contrato
+público. CORS é allowlist, não autenticação; por isso nenhum conteúdo livre aparece nessas rotas.
+
+O OpenAPI do FastAPI gera os tipos TypeScript com `openapi-typescript`. O CI regenera snapshot e
+tipos, roda Vitest, build estático e Playwright contra FastAPI + SQLite sintético, e verifica que
+`out/` não contém corpus, Parquet ou golden set.
 
 ## Roteiro de estudo recomendado
 

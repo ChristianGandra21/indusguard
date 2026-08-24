@@ -14,7 +14,8 @@ flowchart LR
     L --> V[Validação fail-fast]
     V --> C[Catálogo em memória]
     C --> API[FastAPI]
-    API --> UI[UI futura]
+    API --> Q[DashboardReader: projeção mínima]
+    Q --> UI[Next.js estático]
     C --> A[Runtime LangGraph stateless]
     A --> MCP[Cliente + servidor MCP em memória]
     A --> DB[(SQLite ou PostgreSQL)]
@@ -29,7 +30,8 @@ flowchart LR
 ```
 
 Todas as linhas representam componentes implementados. Runtime, MCP, policy engine e executor são
-interfaces internas: nenhuma rota do FastAPI os chama e o MCP não abre porta.
+interfaces internas: nenhuma rota do FastAPI os chama e o MCP não abre porta. As rotas novas usam
+somente `DashboardReader`, que lê metadados persistidos sem iniciar uma run.
 
 ## Responsabilidade de cada arquivo do conector
 
@@ -242,6 +244,29 @@ Os dois sinais têm propósitos diferentes:
 Em deployment, o balanceador poderá reiniciar um processo que falhou e evitar enviar tráfego a uma
 instância cujo catálogo ainda não esteja pronto.
 
+## Dashboard público read-only
+
+```mermaid
+flowchart LR
+    W[Next.js estático] -->|GET + Zod| F[FastAPI]
+    F --> D[DashboardReader]
+    D -->|load_only| R[(agent_runs + filhos)]
+    D -->|load_only| E[(evaluation_runs + results)]
+    F -. não acessa .-> A[AgentRuntime / Groq]
+    D -. não carrega .-> S[Mensagens, respostas, argumentos e payloads]
+```
+
+`GET /evaluations/latest` publica agregados, scores escalares e IDs de runs. `GET
+/runs/{run_id}/trace` publica sequência, outcomes, reason codes, evidências e métricas. O leitor
+não reutiliza o recorder interno porque esse recorder precisa reconstruir conteúdo para auditoria.
+Aqui a segurança vem da seleção das colunas antes da materialização, não de uma máscara aplicada
+depois.
+
+O frontend usa o OpenAPI do próprio FastAPI como contrato de compilação e Zod como verificação em
+runtime. Um smoke marcado `offline_smoke` aparece como infraestrutura sem valor científico;
+somente `groq_benchmark` pode receber o selo de evidência científica. CORS usa allowlist explícita
+e o build permanece estático, sem servidor Next.js ou segredo no navegador.
+
 ## Estado atual e roadmap
 
 | Capacidade | Estado |
@@ -262,7 +287,7 @@ instância cujo catálogo ainda não esteja pronto.
 | Persistência SQLAlchemy + Alembic | Implementada internamente |
 | OpenTelemetry JSONL + OTLP opcional | Implementado internamente |
 | Benchmark `prompt_only` × `guarded` | Implementado offline; passe Groq bloqueado |
-| Frontend Next.js | Planejado |
+| Frontend Next.js read-only | Implementado e exportado estaticamente |
 
 ## Fluxo de avaliação isolado
 

@@ -24,7 +24,11 @@ from indusguard_api.settings import Settings
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from indusguard_evals.baseline import PromptOnlyExecutor
-from indusguard_evals.contracts import EvaluationPhase, EvaluationVariant
+from indusguard_evals.contracts import (
+    EvaluationExecutionKind,
+    EvaluationPhase,
+    EvaluationVariant,
+)
 from indusguard_evals.corpus import OfficialCorpus
 from indusguard_evals.execution import create_variant_runtime
 from indusguard_evals.human_review import export_human_review
@@ -143,6 +147,7 @@ async def _run_offline(args: argparse.Namespace, phase: EvaluationPhase) -> int:
             phase=phase,
             model="scripted-eval-smoke",
             git_commit=_git_commit(root),
+            execution_kind=EvaluationExecutionKind.OFFLINE_SMOKE,
         )
         summary = await runner.execute(evaluation_id)
     finally:

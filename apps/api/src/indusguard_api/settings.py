@@ -7,7 +7,7 @@ devolvida nos endpoints de catálogo.
 
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from indusguard_api.schemas import ExecutionMode
@@ -37,6 +37,15 @@ class Settings(BaseSettings):
     connectors_dir: Path = Field(default_factory=default_connectors_dir)
     api_prefix: str = "/api/v1"
 
+    # O frontend estático roda em outra origem durante desenvolvimento. Uma allowlist explícita
+    # permite leitura pelo navegador sem transformar CORS em uma falsa camada de autenticação.
+    cors_allowed_origins: list[str] = Field(
+        default_factory=lambda: [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+        ]
+    )
+
     # SQLite mantém o desenvolvimento autônomo. Em produção, a mesma interface recebe uma URL
     # PostgreSQL/Neon sem espalhar detalhes do banco pelo runtime do agente.
     database_url: str = "sqlite+aiosqlite:///./.data/indusguard.db"
@@ -50,3 +59,13 @@ class Settings(BaseSettings):
     otlp_endpoint: str | None = None
     otlp_headers: str | None = None
     telemetry_service_name: str = "indusguard-api"
+
+    @field_validator("cors_allowed_origins")
+    @classmethod
+    def reject_wildcard_cors(cls, value: list[str]) -> list[str]:
+        """Recusa wildcard porque CORS não substitui uma política explícita de acesso."""
+
+        normalized = [origin.rstrip("/") for origin in value]
+        if "*" in normalized:
+            raise ValueError("cors_allowed_origins não aceita wildcard")
+        return normalized

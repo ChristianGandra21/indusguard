@@ -7,7 +7,11 @@ from collections.abc import Mapping
 from indusguard_api.agent import AgentTerminationReason
 from indusguard_api.connectors import ConnectorCatalog
 
-from indusguard_evals.contracts import EvaluationPhase, EvaluationVariant
+from indusguard_evals.contracts import (
+    EvaluationExecutionKind,
+    EvaluationPhase,
+    EvaluationVariant,
+)
 from indusguard_evals.corpus import OfficialCorpus
 from indusguard_evals.execution import VariantRuntime
 from indusguard_evals.report import BenchmarkSummary, build_summary
@@ -40,6 +44,7 @@ class BenchmarkRunner:
         phase: EvaluationPhase,
         model: str,
         git_commit: str,
+        execution_kind: EvaluationExecutionKind = EvaluationExecutionKind.UNKNOWN,
     ) -> str:
         inputs = self._corpus.load_inputs()
         seeds = PILOT_SEEDS if phase is EvaluationPhase.PILOT else FULL_SEEDS
@@ -53,6 +58,7 @@ class BenchmarkRunner:
                 "seeds": list(seeds),
                 "variants": [item.value for item in EvaluationVariant],
                 "counterbalanced": True,
+                "execution_kind": execution_kind.value,
             },
         )
 

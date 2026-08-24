@@ -114,16 +114,14 @@ O projeto está sendo construído por camadas.
 ### Ainda não implementado
 
 - execução real de escritas;
-- chat;
-- frontend Next.js;
-- banco de dados;
-- OpenTelemetry com JSONL local e OTLP opcional;
-- benchmark `prompt_only` × `guarded`;
+- chat e rota pública de runs;
+- autenticação de usuários do dashboard;
+- benchmark real autorizado na Groq;
 - deployment público.
 
-Portanto, se você iniciar apenas o FastAPI, ele ainda não exporá chat ou rota de runs. O agente já
-existe como interface Python interna. A suíte o executa com modelo fake e MCP real em memória; a
-Groq só é chamada pelo smoke manual quando `GROQ_API_KEY` está configurada.
+Portanto, se você iniciar apenas o FastAPI, ele exporá catálogo e projeções read-only do dashboard,
+mas não chat ou rota de runs. O agente permanece uma interface Python interna. A suíte o executa
+com modelo fake e MCP real em memória; o dashboard nunca chama Groq.
 
 Isso é intencional. Estamos construindo primeiro a fundação previsível.
 
@@ -328,11 +326,11 @@ indusguard/
 
 - `apps/api/src/indusguard_api`: código executado;
 - `apps/api/tests`: regras protegidas pelos testes;
+- `apps/web`: dashboard Next.js estático;
 - `connectors`: APIs e políticas carregadas.
 
 ### Pastas que podem ser ignoradas por enquanto
 
-- `apps/web`: frontend ainda não iniciado;
 - `deploy`: infraestrutura ainda não criada;
 - `evals`: corpus oficial isolado, fixture Parquet, baseline, runner, scorer e revisão humana.
 
@@ -348,7 +346,9 @@ flowchart LR
     C --> V[Validação]
     V --> M[Catálogo em memória]
     M --> F[FastAPI]
-    F --> R[Endpoints de inspeção]
+    F --> R[Catálogo + dashboard read-only]
+    R --> W[Next.js estático]
+    R --> DB[(SQLite ou PostgreSQL)]
 
     M --> A[Runtime LangGraph interno]
     A --> MCP[Cliente e servidor MCP em memória]
@@ -358,7 +358,8 @@ flowchart LR
     G --> E[Executor HTTP protegido]
 ```
 
-Todas as linhas representam o que existe hoje. Agente, MCP e executor não possuem rota pública.
+Todas as linhas representam o que existe hoje. Agente, MCP e executor não possuem rota pública;
+o frontend consulta somente metadados já persistidos.
 
 ---
 
@@ -1924,8 +1925,9 @@ Se banco ou exporter falhar, a resposta continua disponível com um bloco destac
 }
 ```
 
-O oitavo corte adiciona o runner `prompt_only` × `guarded`. Rota pública, frontend e escrita real
-continuam fora até existirem novos gates explícitos.
+O oitavo corte adiciona o runner `prompt_only` × `guarded`. O nono adiciona o dashboard Next.js e
+duas rotas GET que carregam somente colunas públicas. Rota de execução e escrita real continuam
+fora até existirem novos gates explícitos.
 
 ---
 
@@ -1993,16 +1995,14 @@ O smoke offline usa fake e prova infraestrutura, não a hipótese. O passe real 
 permanecem bloqueados até autorização explícita para enviar tickets, evidências e IDs sintéticos à
 Groq. Enquanto isso, a revisão humana pode ser exportada em CSV cegado.
 
-### Etapa 8: frontend
+### Etapa 8: frontend read-only
 
-Telas planejadas:
+Concluída no nono corte com visão do sistema, conectores, avaliações e trace de metadados. O
+frontend usa Next.js estático, TanStack Query, Zod, Recharts e componentes shadcn/ui. O contrato
+TypeScript é gerado do OpenAPI do FastAPI e verificado contra drift no CI.
 
-- visão do sistema;
-- playground;
-- trace;
-- conectores;
-- avaliações;
-- system card.
+Playground, chat e system card interativo permanecem para um incremento que inclua autenticação,
+rate limit e autorização explícita de envio à Groq.
 
 ### Etapa 9: deployment
 
@@ -2223,13 +2223,19 @@ O núcleo atual:
 37. emite spans de modelo, tool, policy, ação e HTTP sem conteúdo sensível;
 38. exporta JSONL local e OTLP opcional;
 39. preserva a resposta com ressalva explícita quando a auditoria falha.
+40. executa um benchmark pareado com golden isolado e checkpoints retomáveis;
+41. consulta avaliações e traces sem carregar conteúdo livre do banco;
+42. gera tipos TypeScript a partir do FastAPI e valida respostas com Zod;
+43. exporta quatro páginas Next.js estáticas com estados de loading, vazio e erro;
+44. prova o caminho navegador → FastAPI → SQLite com Playwright.
 
 O sistema já possui agente interno, catálogo, MCP, policy engine e executor autenticado. Ele impede
 que o modelo opere sobre uma lista ambígua, prova o caminho seguro até APIs com diferentes
 autenticações e permite visualizar uma mutação sem executá-la.
 
-O próximo passo é avaliação: executar os mesmos cenários em `prompt_only` e `guarded`, registrar
-decisão, ferramentas, evidências, segurança, tokens e latência e então testar a hipótese do projeto.
+O próximo passo é deployment: empacotar backend e frontend, executar migrações no ambiente,
+configurar CORS e banco gratuitos e publicar somente depois dos gates de CI. O playground ficará
+para depois de autenticação, rate limit e autorização explícita de transmissão à Groq.
 
 Se você guardar apenas três ideias, guarde estas:
 
