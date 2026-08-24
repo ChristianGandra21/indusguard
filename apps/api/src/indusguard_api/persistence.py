@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import (
@@ -256,12 +257,31 @@ class PersistedAgentRun(BaseModel):
 
 
 def normalize_database_url(url: str) -> str:
-    """Adiciona o driver async quando o Neon fornece uma URL PostgreSQL convencional."""
+    """Seleciona Psycopg assíncrono e exige a proteção das URLs atuais do Neon.
 
-    if url.startswith("postgresql://"):
-        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
-    if url.startswith("postgres://"):
-        return url.replace("postgres://", "postgresql+asyncpg://", 1)
+    O console do Neon fornece parâmetros libpq como ``sslmode`` e ``channel_binding``. Psycopg 3
+    os preserva integralmente, enquanto o SQLAlchemy seleciona automaticamente sua implementação
+    assíncrona quando a URL usa ``postgresql+psycopg``.
+    """
+
+    parsed = urlsplit(url)
+    hostname = (parsed.hostname or "").lower()
+    if hostname.endswith(".neon.tech"):
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        secure_ssl_modes = {"require", "verify-ca", "verify-full"}
+        if set(query.get("sslmode", [])) - secure_ssl_modes or not query.get("sslmode"):
+            raise ValueError("URLs Neon exigem sslmode=require, verify-ca ou verify-full")
+        if query.get("channel_binding") != ["require"]:
+            raise ValueError("URLs Neon exigem channel_binding=require")
+
+    for prefix in (
+        "postgresql+asyncpg://",
+        "postgresql+psycopg_async://",
+        "postgresql://",
+        "postgres://",
+    ):
+        if url.startswith(prefix):
+            return url.replace(prefix, "postgresql+psycopg://", 1)
     return url
 
 

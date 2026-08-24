@@ -1,0 +1,51 @@
+services:
+  - type: web
+    name: indusguard-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./deploy/api.Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/v1/health
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: INDUSGUARD_ENVIRONMENT
+        value: production
+      - key: INDUSGUARD_EXECUTION_MODE
+        value: simulate
+      - key: INDUSGUARD_CONNECTORS_DIR
+        value: /app/connectors
+      - key: INDUSGUARD_PUBLIC_RUNS_ENABLED
+        value: "true"
+      - key: INDUSGUARD_PUBLIC_CONNECTOR_IDS
+        value: '["synthetic"]'
+      - key: INDUSGUARD_PUBLIC_RUN_RATE_LIMIT_PER_HOUR
+        value: "3"
+      - key: INDUSGUARD_PUBLIC_RUN_CONCURRENCY
+        value: "2"
+      - key: INDUSGUARD_PERSIST_RUNS
+        value: "true"
+      - key: INDUSGUARD_TRACE_JSONL_ENABLED
+        value: "false"
+      - key: INDUSGUARD_OTLP_ENABLED
+        value: "false"
+      - key: INDUSGUARD_DATABASE_URL
+        sync: false
+      - key: INDUSGUARD_OWNER_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: INDUSGUARD_CORS_ALLOWED_ORIGINS
+        sync: false
+
+  - type: web
+    name: indusguard-web
+    runtime: static
+    rootDir: apps/web
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./out
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: NEXT_PUBLIC_INDUSGUARD_API_URL
+        sync: false

@@ -27,7 +27,8 @@ dependencies = [
   "sqlalchemy[asyncio]>=2.0,<3.0",
   "alembic>=1.14,<2.0",
   "aiosqlite>=0.20,<1.0",
-  "asyncpg>=0.30,<1.0",
+  # Psycopg 3 preserva sslmode e channel_binding das URLs atuais do Neon e oferece asyncio nativo.
+  "psycopg[binary]>=3.2,<4.0",
   # OpenTelemetry produz traces locais JSONL e permite OTLP opcional sem prender o núcleo ao Grafana.
   "opentelemetry-api>=1.29,<2.0",
   "opentelemetry-sdk>=1.29,<2.0",

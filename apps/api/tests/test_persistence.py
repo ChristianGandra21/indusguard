@@ -24,7 +24,11 @@ from indusguard_api.agent import (
 from indusguard_api.connectors import ConnectorCatalog
 from indusguard_api.executor import HttpExecutor
 from indusguard_api.observability import NoOpTelemetry, OpenTelemetryRuntime, Telemetry
-from indusguard_api.persistence import PolicyDecisionRow, SqlAlchemyAgentRunRecorder
+from indusguard_api.persistence import (
+    PolicyDecisionRow,
+    SqlAlchemyAgentRunRecorder,
+    normalize_database_url,
+)
 from indusguard_api.policy import GuardedExecutor, PolicyEngine
 from indusguard_api.schemas import PolicyPrincipal
 
@@ -34,6 +38,45 @@ class FailingRecorder:
 
     async def record(self, **_: Any) -> None:
         raise RuntimeError("postgresql://user:secret@database.internal")
+
+
+def test_standard_postgres_and_current_neon_urls_use_async_psycopg() -> None:
+    local = "postgresql://user:password@localhost:5432/indusguard"
+    neon = (
+        "postgresql://user:p%40ss@ep-example-pooler.us-east-2.aws.neon.tech/indusguard"
+        "?sslmode=require&channel_binding=require"
+    )
+
+    assert normalize_database_url(local) == local.replace(
+        "postgresql://", "postgresql+psycopg://", 1
+    )
+    assert normalize_database_url(neon) == neon.replace("postgresql://", "postgresql+psycopg://", 1)
+    assert normalize_database_url("postgres://user:password@localhost/db").startswith(
+        "postgresql+psycopg://"
+    )
+    assert normalize_database_url("postgresql+asyncpg://user:password@localhost/db").startswith(
+        "postgresql+psycopg://"
+    )
+
+
+@pytest.mark.parametrize(
+    ("query", "message"),
+    [
+        ("channel_binding=require", "sslmode"),
+        ("sslmode=require", "channel_binding"),
+        ("sslmode=disable&channel_binding=require", "sslmode"),
+    ],
+)
+def test_neon_database_url_requires_tls_and_channel_binding(query: str, message: str) -> None:
+    url = f"postgresql://user:password@ep-example.neon.tech/db?{query}"
+
+    with pytest.raises(ValueError, match=message):
+        normalize_database_url(url)
+
+
+def test_sqlite_database_url_is_unchanged() -> None:
+    url = "sqlite+aiosqlite:///./.data/indusguard.db"
+    assert normalize_database_url(url) == url
 
 
 def _gateway(*, answer: str = "A alteração foi simulada [ev-001].") -> ScriptedAgentModelGateway:

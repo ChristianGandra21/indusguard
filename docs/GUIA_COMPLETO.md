@@ -109,20 +109,25 @@ O projeto está sendo construído por camadas.
 - modelo fake determinístico para testes e CI;
 - adapter opcional da Groq Free com `openai/gpt-oss-20b`, sem fallback pago ou Ollama;
 - testes automatizados;
-- CI com Ruff, pytest e cobertura.
+- CI com Ruff, pytest e cobertura;
 - `PublicRunHost` como única interface HTTP do agente;
 - Bearer exclusivo do proprietário com comparação em tempo constante;
 - quota persistente de três runs por hora e limite de duas simultâneas;
 - conector público `synthetic` executado por ASGI interno, sem fixture industrial;
 - `POST /api/v1/runs` stateless com escritas sempre simuladas;
 - projeção autenticada sem token, confirmação ou digest.
+- piloto Groq limitado a 12 runs, com consentimento explícito e resume idempotente;
+- imagem Docker multi-stage não-root, migração antes do Uvicorn e smoke de readiness;
+- Blueprint Render para backend Docker e frontend estático;
+- URL Neon atual validada com TLS e channel binding via Psycopg 3;
+- SBOM SPDX e scan de vulnerabilidades altas/críticas no CI.
 
 ### Ainda não implementado
 
 - execução real de escritas;
 - contas multiusuário e OAuth;
-- benchmark real autorizado na Groq;
-- deployment público.
+- execução efetiva do piloto Groq com a chave do proprietário;
+- recursos públicos provisionados no Render, Neon ou Grafana.
 
 Ao iniciar o FastAPI, o catálogo e o dashboard continuam públicos e read-only. A única execução do
 agente é `POST /runs`, restrita ao token do proprietário e ao conector `synthetic`. A suíte usa
@@ -336,7 +341,7 @@ indusguard/
 
 ### Pastas que podem ser ignoradas por enquanto
 
-- `deploy`: infraestrutura ainda não criada;
+- `deploy`: imagem e configuração declarativa; nenhum recurso externo criado;
 - `evals`: corpus oficial isolado, fixture Parquet, baseline, runner, scorer e revisão humana.
 
 ---
@@ -2015,11 +2020,11 @@ quota persistida, concorrência limitada e escritas apenas simuladas.
 
 ### Etapa 9: deployment
 
-- frontend estático;
-- backend Docker;
-- banco gratuito;
-- OpenTelemetry;
-- CI/CD com gates de avaliação.
+Preparada, mas não provisionada. O backend possui imagem Docker multi-stage, roda como UID `10001`,
+aplica migrações antes do Uvicorn e inclui somente API, Alembic e conectores. O `render.yaml`
+descreve backend Free e frontend estático com deploy após checks verdes. Neon usa Psycopg 3 e exige
+`sslmode=require&channel_binding=require`; Grafana permanece OTLP opcional. O CI constrói a imagem,
+testa readiness, verifica isolamento, gera SBOM SPDX e bloqueia vulnerabilidades altas/críticas.
 
 ---
 
@@ -2251,8 +2256,8 @@ O sistema já possui agente interno, catálogo, MCP, policy engine e executor au
 que o modelo opere sobre uma lista ambígua, prova o caminho seguro até APIs com diferentes
 autenticações e permite visualizar uma mutação sem executá-la.
 
-O próximo corte habilita exclusivamente o piloto Groq autorizado. Depois entram os artefatos de
-deployment, sem provisionar serviços externos.
+O código do piloto e os artefatos de deployment estão prontos. Ainda não houve transmissão real à
+Groq nem provisionamento externo: ambos dependem das chaves e da ação explícita do proprietário.
 
 Se você guardar apenas três ideias, guarde estas:
 

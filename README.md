@@ -40,6 +40,7 @@ prontos, incluindo um E2E inteiramente offline.
 | `POST /runs` do proprietário | Pronto; Bearer, quota, concorrência e synthetic apenas |
 | Página `/playground` | Pronta; token somente em `sessionStorage` |
 | Escritas pelo playground | Sempre simuladas, com zero rede |
+| Docker/Render/Neon/Grafana | Artefatos prontos; nenhum recurso provisionado |
 
 Importante: o MCP continua interno, sem porta ou subprocesso. O agente possui uma única rota
 protegida, exclusiva do proprietário e do conector `synthetic`. A suíte padrão usa modelo fake e
@@ -349,8 +350,9 @@ serve apenas para CI. Métricas só serão publicadas depois de um piloto real a
 - Qualidade: pytest, respx, Schemathesis, Vitest e Playwright;
 - Entrega: Docker e GitHub Actions.
 
-Docker e o deployment público continuam como próximos incrementos; as demais camadas listadas já
-possuem implementação no repositório.
+O runtime Docker multi-stage, o Blueprint Render e a configuração Neon/Grafana estão preparados.
+Nenhum recurso externo foi criado: o provisionamento e a inserção dos secrets continuam sendo uma
+etapa manual do proprietário. Consulte [deploy/README.md](deploy/README.md).
 
 ## Executor HTTP implementado
 

@@ -313,6 +313,18 @@ no `sessionStorage`; não faz parte do bundle ou de query keys.
 | Benchmark `prompt_only` × `guarded` | Smoke offline e piloto Groq consentido; passe completo bloqueado |
 | Frontend Next.js read-only | Implementado e exportado estaticamente |
 | Playground owner-only | Implementado; synthetic e simulate apenas |
+| Deployment | Docker/Render/Neon/Grafana preparados; nada provisionado |
+
+## Fronteira da imagem de produção
+
+O build usa dois estágios. O builder recebe somente o pacote da API e produz wheels. O runtime
+recebe essas wheels, migrações Alembic e `connectors/`; `evals/`, fixture industrial, Parquet,
+goldens, frontend, testes, `.env` e `.data` ficam fora do contexto útil. O processo roda como UID
+`10001`, aplica a migração e depois inicia o Uvicorn.
+
+O Blueprint mantém o backend em `simulate`, usa secrets `sync: false` e só faz deploy após CI
+verde. PostgreSQL convencional é normalizado para Psycopg 3 assíncrono; host Neon exige TLS e
+channel binding. JSONL fica desligado no filesystem efêmero do Render e OTLP continua opt-in.
 
 ## Fluxo de avaliação isolado
 

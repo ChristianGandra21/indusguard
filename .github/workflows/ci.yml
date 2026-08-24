@@ -32,10 +32,10 @@ jobs:
       INDUSGUARD_TEST_POSTGRES_URL: postgresql://indusguard:indusguard@localhost:5432/indusguard_test
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
           cache: pip
@@ -86,17 +86,17 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Node 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
       - name: Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
           cache: pip
@@ -129,3 +129,74 @@ jobs:
         env:
           CI: "1"
         run: npm run test:e2e
+
+  runtime-image:
+    name: Runtime · imagem, SBOM e vulnerabilidades
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Preparar Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Construir imagem local
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: deploy/api.Dockerfile
+          load: true
+          tags: indusguard-api:ci
+
+      - name: Smoke de migração, usuário e readiness
+        run: |
+          docker run --detach --name indusguard-smoke --publish 18000:10000 \
+            --env PORT=10000 \
+            --env INDUSGUARD_DATABASE_URL=sqlite+aiosqlite:////tmp/indusguard.db \
+            --env INDUSGUARD_PUBLIC_RUNS_ENABLED=false \
+            --env INDUSGUARD_TRACE_JSONL_ENABLED=false \
+            indusguard-api:ci
+          trap 'docker logs indusguard-smoke; docker rm --force indusguard-smoke' EXIT
+          for attempt in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:18000/api/v1/ready > /tmp/ready.json; then
+              break
+            fi
+            sleep 1
+          done
+          python -c 'import json; assert json.load(open("/tmp/ready.json"))["status"] == "ready"'
+          test "$(docker inspect indusguard-smoke --format '{{.Config.User}}')" = "10001:10001"
+
+      - name: Verificar isolamento do runtime
+        run: |
+          docker run --rm --entrypoint /bin/sh indusguard-api:ci -c '
+            test ! -e /app/evals &&
+            test ! -e /app/apps/web &&
+            test ! -e /app/.env &&
+            test -z "$(find /app -type f \( -iname "*.parquet" -o -iname "*golden*" \) -print -quit)"
+          '
+
+      - name: Gerar SBOM SPDX
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: indusguard-api:ci
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Publicar SBOM do workflow
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: indusguard-api-sbom
+          path: sbom.spdx.json
+
+      - name: Bloquear vulnerabilidades altas ou críticas
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: indusguard-api:ci
+          format: table
+          exit-code: "1"
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL

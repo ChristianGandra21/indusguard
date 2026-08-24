@@ -24,7 +24,8 @@ Comandos principais:
 - `npm run test:e2e`: smoke Playwright contra servidores já iniciados.
 
 O dashboard mostra honestamente quando ainda não existe avaliação. `offline_smoke` é sempre
-rotulado como teste de infraestrutura sem valor científico.
+rotulado como teste de infraestrutura; `groq_pilot` é real, mas experimental; somente
+`groq_benchmark` pode aparecer como evidência científica.
 
 ## Playground protegido
 
