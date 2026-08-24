@@ -32,6 +32,7 @@ class EvaluationExecutionKind(StrEnum):
     """Origem da avaliação, para não apresentar um smoke fake como evidência científica."""
 
     OFFLINE_SMOKE = "offline_smoke"
+    GROQ_PILOT = "groq_pilot"
     GROQ_BENCHMARK = "groq_benchmark"
     UNKNOWN = "unknown"
 

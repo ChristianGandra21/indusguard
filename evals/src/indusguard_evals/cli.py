@@ -1,4 +1,4 @@
-"""CLI do benchmark; execuções externas permanecem manuais e explicitamente bloqueadas."""
+"""CLI do benchmark com consentimento explícito para o piloto Groq autorizado."""
 
 from __future__ import annotations
 
@@ -10,14 +10,17 @@ from pathlib import Path
 from typing import Any
 
 from indusguard_api.agent import (
+    AgentConfigurationError,
     AgentDecision,
     AgentFinalAnswer,
     AgentIntentDecision,
+    AgentModelGateway,
     AgentPlanStep,
     ScriptedAgentModelGateway,
 )
 from indusguard_api.connectors import ConnectorCatalog
 from indusguard_api.executor import HttpExecutor
+from indusguard_api.groq_gateway import GroqAgentModelGateway, GroqAgentSettings
 from indusguard_api.persistence import SqlAlchemyAgentRunRecorder, normalize_database_url
 from indusguard_api.policy import GuardedExecutor, PolicyEngine
 from indusguard_api.settings import Settings
@@ -70,11 +73,12 @@ def _fake_gateway() -> ScriptedAgentModelGateway:
     )
 
 
-async def _offline_runner(
+async def _runner(
     root: Path,
     database_url: str,
+    model_gateway: AgentModelGateway,
 ) -> tuple[BenchmarkRunner, Any, Any]:
-    """Monta as duas variantes com fixture ASGI; nenhuma chamada sai da máquina."""
+    """Monta variantes equivalentes; somente o gateway decide se haverá tráfego à Groq."""
 
     import httpx
 
@@ -110,7 +114,7 @@ async def _offline_runner(
             catalog=catalog,
             executor=GuardedExecutor(shadow, guarded_http),
             shadow_policy=shadow,
-            model_gateway=_fake_gateway(),
+            model_gateway=model_gateway,
             recorder=recorder,
         ),
         EvaluationVariant.PROMPT_ONLY: create_variant_runtime(
@@ -118,7 +122,7 @@ async def _offline_runner(
             catalog=catalog,
             executor=PromptOnlyExecutor(catalog, baseline_http),
             shadow_policy=shadow,
-            model_gateway=_fake_gateway(),
+            model_gateway=model_gateway,
             recorder=recorder,
         ),
     }
@@ -134,20 +138,55 @@ async def _offline_runner(
     )
 
 
-async def _run_offline(args: argparse.Namespace, phase: EvaluationPhase) -> int:
-    if not args.fake:
+def _requested_execution_kind(
+    args: argparse.Namespace,
+    *,
+    command: str,
+) -> EvaluationExecutionKind:
+    """Valida autorização antes de ler chave ou construir qualquer cliente externo."""
+
+    if args.fake and args.groq:
+        raise SystemExit("EVALUATION_MODE_CONFLICT: escolha somente --fake ou --groq")
+    if args.groq:
+        if command == "run":
+            raise SystemExit(
+                "FULL_BENCHMARK_NOT_AUTHORIZED: somente o piloto CEN-01/CEN-14 pode usar Groq"
+            )
+        if not args.confirm_external_transmission:
+            raise SystemExit(
+                "EXTERNAL_TRANSMISSION_CONSENT_REQUIRED: acrescente "
+                "--confirm-external-transmission para autorizar o envio à Groq"
+            )
+        return EvaluationExecutionKind.GROQ_PILOT
+    if args.confirm_external_transmission:
         raise SystemExit(
-            "Execução Groq pausada: tickets, contexto e evidências seriam enviados a um provedor "
-            "externo. Use --fake para smoke local até haver autorização explícita documentada."
+            "EXTERNAL_TRANSMISSION_MODE_REQUIRED: o consentimento só é válido junto de --groq"
         )
+    if args.fake:
+        return EvaluationExecutionKind.OFFLINE_SMOKE
+    raise SystemExit("EVALUATION_MODE_REQUIRED: escolha --fake ou --groq")
+
+
+def _gateway(kind: EvaluationExecutionKind) -> AgentModelGateway:
+    if kind is EvaluationExecutionKind.OFFLINE_SMOKE:
+        return _fake_gateway()
+    try:
+        return GroqAgentModelGateway(GroqAgentSettings())
+    except AgentConfigurationError as exc:
+        raise SystemExit(f"MODEL_NOT_CONFIGURED: {exc}") from exc
+
+
+async def _run_phase(args: argparse.Namespace, phase: EvaluationPhase) -> int:
+    kind = _requested_execution_kind(args, command=args.command)
     root = _repository_root()
-    runner, client, engine = await _offline_runner(root, args.database_url)
+    gateway = _gateway(kind)
+    runner, client, engine = await _runner(root, args.database_url, gateway)
     try:
         evaluation_id = await runner.start(
             phase=phase,
-            model="scripted-eval-smoke",
+            model=gateway.model_name,
             git_commit=_git_commit(root),
-            execution_kind=EvaluationExecutionKind.OFFLINE_SMOKE,
+            execution_kind=kind,
         )
         summary = await runner.execute(evaluation_id)
     finally:
@@ -155,20 +194,46 @@ async def _run_offline(args: argparse.Namespace, phase: EvaluationPhase) -> int:
         await engine.dispose()
     print(evaluation_id)
     print(summary.model_dump_json(indent=2))
+    if kind is EvaluationExecutionKind.GROQ_PILOT and summary.status == "partial":
+        print(
+            "Retome sem duplicar runs concluídas: "
+            f"indusguard-eval resume {evaluation_id} --groq "
+            "--confirm-external-transmission"
+        )
     return 0
 
 
-async def _resume_offline(args: argparse.Namespace) -> int:
-    if not args.fake:
-        raise SystemExit("Resume Groq permanece bloqueado; use --fake somente para smoke local.")
+async def _resume(args: argparse.Namespace) -> int:
+    kind = _requested_execution_kind(args, command=args.command)
     root = _repository_root()
-    runner, client, engine = await _offline_runner(root, args.database_url)
+    inspection_engine = create_async_engine(normalize_database_url(args.database_url))
+    try:
+        persisted = await EvaluationRepository(inspection_engine).get(args.evaluation_id)
+    finally:
+        await inspection_engine.dispose()
+    if persisted is None:
+        raise SystemExit(f"EVALUATION_NOT_FOUND: {args.evaluation_id}")
+    persisted_kind = persisted.config.get("execution_kind", EvaluationExecutionKind.UNKNOWN.value)
+    if persisted_kind != kind.value:
+        raise SystemExit(
+            f"EVALUATION_MODE_MISMATCH: use o mesmo modo que iniciou a avaliação ({persisted_kind})"
+        )
+    if kind is EvaluationExecutionKind.GROQ_PILOT and persisted.phase is not EvaluationPhase.PILOT:
+        raise SystemExit("FULL_BENCHMARK_NOT_AUTHORIZED: uma avaliação full não pode usar Groq")
+
+    gateway = _gateway(kind)
+    runner, client, engine = await _runner(root, args.database_url, gateway)
     try:
         summary = await runner.execute(args.evaluation_id)
     finally:
         await client.aclose()
         await engine.dispose()
     print(summary.model_dump_json(indent=2))
+    if kind is EvaluationExecutionKind.GROQ_PILOT and summary.status == "partial":
+        print(
+            "A cota continua indisponível; repita este mesmo comando mais tarde. "
+            "Checkpoints concluídos não serão duplicados."
+        )
     return 0
 
 
@@ -214,9 +279,17 @@ def _parser() -> argparse.ArgumentParser:
     for command in ("pilot", "run"):
         child = subparsers.add_parser(command)
         child.add_argument("--fake", action="store_true", help="smoke local, sem valor científico")
+        child.add_argument("--groq", action="store_true", help="usa a Groq Free")
+        child.add_argument(
+            "--confirm-external-transmission",
+            action="store_true",
+            help="confirma o envio de entradas e evidências à Groq",
+        )
     resume = subparsers.add_parser("resume")
     resume.add_argument("evaluation_id")
     resume.add_argument("--fake", action="store_true")
+    resume.add_argument("--groq", action="store_true")
+    resume.add_argument("--confirm-external-transmission", action="store_true")
     report = subparsers.add_parser("report")
     report.add_argument("evaluation_id")
     report.add_argument("--output", type=Path)
@@ -239,11 +312,11 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.command == "pilot":
-        return asyncio.run(_run_offline(args, EvaluationPhase.PILOT))
+        return asyncio.run(_run_phase(args, EvaluationPhase.PILOT))
     if args.command == "run":
-        return asyncio.run(_run_offline(args, EvaluationPhase.FULL))
+        return asyncio.run(_run_phase(args, EvaluationPhase.FULL))
     if args.command == "resume":
-        return asyncio.run(_resume_offline(args))
+        return asyncio.run(_resume(args))
     if args.command == "report":
         return asyncio.run(_report(args))
     if args.command == "review":

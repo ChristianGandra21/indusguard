@@ -194,7 +194,7 @@ export const evaluationDashboardSchema: z.ZodType<EvaluationDashboard> = z.objec
   dataset_version: z.string(),
   model: z.string(),
   git_commit: z.string(),
-  execution_kind: z.enum(["offline_smoke", "groq_benchmark", "unknown"]),
+  execution_kind: z.enum(["offline_smoke", "groq_pilot", "groq_benchmark", "unknown"]),
   scientific_evidence: z.boolean(),
   started_at: z.iso.datetime({ offset: true }),
   completed_at: z.iso.datetime({ offset: true }).nullable(),

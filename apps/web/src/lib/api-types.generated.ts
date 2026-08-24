@@ -224,7 +224,7 @@ export interface components {
          * @description Origem da avaliação, para não apresentar um smoke fake como evidência científica.
          * @enum {string}
          */
-        EvaluationExecutionKind: "offline_smoke" | "groq_benchmark" | "unknown";
+        EvaluationExecutionKind: "offline_smoke" | "groq_pilot" | "groq_benchmark" | "unknown";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */

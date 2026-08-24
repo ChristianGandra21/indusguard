@@ -87,7 +87,11 @@ def _score() -> dict[str, Any]:
     }
 
 
-async def _seed_dashboard(path: Path) -> SqlAlchemyDashboardReader:
+async def _seed_dashboard(
+    path: Path,
+    *,
+    execution_kind: str = "offline_smoke",
+) -> SqlAlchemyDashboardReader:
     engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -182,7 +186,7 @@ async def _seed_dashboard(path: Path) -> SqlAlchemyDashboardReader:
         golden_digest="d" * 64,
         model="scripted-eval-smoke",
         git_commit="abc123",
-        config={"execution_kind": "offline_smoke", "private": "CONFIG_SECRET"},
+        config={"execution_kind": execution_kind, "private": "CONFIG_SECRET"},
         summary=_summary(),
         started_at=started,
         completed_at=started + timedelta(seconds=1),
@@ -246,6 +250,21 @@ def test_sql_reader_returns_latest_safe_projections(tmp_path: Path) -> None:
         "d" * 64,
     ):
         assert private_value not in serialized
+
+
+def test_groq_pilot_is_real_but_not_full_scientific_evidence(tmp_path: Path) -> None:
+    async def scenario() -> PublicEvaluationDashboard | None:
+        reader = await _seed_dashboard(tmp_path / "pilot.db", execution_kind="groq_pilot")
+        try:
+            return await reader.latest_evaluation()
+        finally:
+            await reader.close()
+
+    evaluation = asyncio.run(scenario())
+
+    assert evaluation is not None
+    assert evaluation.execution_kind is EvaluationExecutionKind.GROQ_PILOT
+    assert evaluation.scientific_evidence is False
 
 
 class StubDashboardReader:

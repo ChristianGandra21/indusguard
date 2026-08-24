@@ -285,8 +285,9 @@ Aqui a segurança vem da seleção das colunas antes da materialização, não d
 depois.
 
 O frontend usa o OpenAPI do próprio FastAPI como contrato de compilação e Zod como verificação em
-runtime. Um smoke marcado `offline_smoke` aparece como infraestrutura sem valor científico;
-somente `groq_benchmark` pode receber o selo de evidência científica. CORS usa allowlist explícita
+runtime. Um smoke `offline_smoke` prova apenas infraestrutura; `groq_pilot` contém observações
+reais de dois cenários, mas continua experimental; somente `groq_benchmark` pode receber o selo
+de evidência científica. CORS usa allowlist explícita
 e o build permanece estático. O único segredo do playground é informado pela pessoa e vive apenas
 no `sessionStorage`; não faz parte do bundle ou de query keys.
 
@@ -309,7 +310,7 @@ no `sessionStorage`; não faz parte do bundle ou de query keys.
 | Groq Free `openai/gpt-oss-20b` | Adapter implementado; smoke manual |
 | Persistência SQLAlchemy + Alembic | Implementada internamente |
 | OpenTelemetry JSONL + OTLP opcional | Implementado internamente |
-| Benchmark `prompt_only` × `guarded` | Implementado offline; passe Groq bloqueado |
+| Benchmark `prompt_only` × `guarded` | Smoke offline e piloto Groq consentido; passe completo bloqueado |
 | Frontend Next.js read-only | Implementado e exportado estaticamente |
 | Playground owner-only | Implementado; synthetic e simulate apenas |
 

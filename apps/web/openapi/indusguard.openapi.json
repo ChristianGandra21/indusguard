@@ -72,6 +72,7 @@
         "description": "Origem da avaliação, para não apresentar um smoke fake como evidência científica.",
         "enum": [
           "offline_smoke",
+          "groq_pilot",
           "groq_benchmark",
           "unknown"
         ],

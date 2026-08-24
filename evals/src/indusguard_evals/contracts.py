@@ -25,6 +25,7 @@ class EvaluationExecutionKind(StrEnum):
     """Distingue prova científica de um smoke que usa modelo fake."""
 
     OFFLINE_SMOKE = "offline_smoke"
+    GROQ_PILOT = "groq_pilot"
     GROQ_BENCHMARK = "groq_benchmark"
     UNKNOWN = "unknown"
 

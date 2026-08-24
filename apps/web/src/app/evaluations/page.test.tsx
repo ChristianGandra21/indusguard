@@ -98,6 +98,19 @@ describe("página de avaliações", () => {
     expect(screen.queryByText("Este resultado não sustenta a hipótese.")).not.toBeInTheDocument();
   });
 
+  it("marca o piloto Groq real como experimental", async () => {
+    vi.spyOn(api, "latestEvaluation").mockResolvedValue({
+      ...evaluation,
+      execution_kind: "groq_pilot",
+      scientific_evidence: false,
+    });
+
+    renderPage();
+
+    expect(await screen.findByText("piloto Groq experimental")).toBeInTheDocument();
+    expect(screen.getByText("Este resultado não sustenta a hipótese.")).toBeInTheDocument();
+  });
+
   it("explica quando a avaliação existe mas ainda não possui resumo", async () => {
     vi.spyOn(api, "latestEvaluation").mockResolvedValue({
       ...evaluation,

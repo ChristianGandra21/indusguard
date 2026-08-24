@@ -103,12 +103,28 @@ Depois de uma avaliação persistida:
 O CSV de revisão humana omite os nomes das variantes e embaralha as respostas. A chave de
 reconciliação é salva em outro arquivo; não a entregue à pessoa revisora antes da anotação.
 
-## Ressalva de privacidade do benchmark real
+## Piloto Groq autorizado e ressalva de privacidade
 
-O comando sem `--fake` está bloqueado de propósito. Um passe real enviaria à Groq a mensagem do
-ticket e resultados de tools; o contexto de planejamento também pode conter IDs sintéticos de
-pessoa, empresa e ativo. Mesmo sendo uma fixture acadêmica, esse destino externo precisa de
-autorização explícita e documentada antes de ser habilitado.
+Somente o piloto de 12 runs pode usar a Groq. O comando exige duas flags para tornar o destino e o
+consentimento inequívocos:
+
+```bash
+export GROQ_API_KEY="sua-chave-local"
+.venv/bin/indusguard-eval pilot --groq --confirm-external-transmission
+```
+
+Esse comando envia à Groq mensagens dos tickets, resultados redigidos das tools e IDs sintéticos
+permitidos pelo contexto de planejamento. Não envia golden, credenciais, confirmação ou digest.
+`run --groq` responde `FULL_BENCHMARK_NOT_AUTHORIZED`, mesmo com a flag de consentimento.
+
+Se a cota gratuita interromper o piloto, o status ficará `partial` e o próprio CLI imprimirá:
+
+```bash
+.venv/bin/indusguard-eval resume UUID --groq --confirm-external-transmission
+```
+
+A identidade `case_id × variant × seed` impede duplicar checkpoints concluídos. O piloto Groq é
+uma observação experimental de dois cenários, não evidência suficiente para a hipótese global.
 
 Pelo mesmo motivo, `DisabledExternalJudgeGateway` não envia mensagem, resposta ou evidências ao
 modelo `openai/gpt-oss-120b`. As rubricas estão prontas em `rubrics/judge.yaml`, mas DeepEval não

@@ -1998,9 +1998,11 @@ simulada e a policy roda depois, em shadow. `GuardedExecutor` continua sendo a i
 produção. Checkpoints em `evaluation_runs` e `evaluation_results` permitem retomar uma cota Groq
 sem duplicar `case × variant × seed`.
 
-O smoke offline usa fake e prova infraestrutura, não a hipótese. O passe real e o judge 120B
-permanecem bloqueados até autorização explícita para enviar tickets, evidências e IDs sintéticos à
-Groq. Enquanto isso, a revisão humana pode ser exportada em CSV cegado.
+O smoke offline usa fake e prova infraestrutura, não a hipótese. O piloto real de 12 runs exige
+`--groq --confirm-external-transmission`: ele envia tickets, evidências redigidas e IDs sintéticos
+permitidos à Groq, mas nunca abre o golden antes das runs. Se houver rate limit, `resume` continua
+do checkpoint sem duplicar identidades. O passe completo Groq e o judge 120B permanecem bloqueados;
+a revisão humana pode ser exportada em CSV cegado.
 
 ### Etapa 8: frontend read-only
 
@@ -2008,8 +2010,8 @@ Concluída no nono corte com visão do sistema, conectores, avaliações e trace
 frontend usa Next.js estático, TanStack Query, Zod, Recharts e componentes shadcn/ui. O contrato
 TypeScript é gerado do OpenAPI do FastAPI e verificado contra drift no CI.
 
-Playground, chat e system card interativo permanecem para um incremento que inclua autenticação,
-rate limit e autorização explícita de envio à Groq.
+O playground owner-only já está implementado para o conector synthetic, com token de sessão,
+quota persistida, concorrência limitada e escritas apenas simuladas.
 
 ### Etapa 9: deployment
 

@@ -35,7 +35,7 @@ prontos, incluindo um E2E inteiramente offline.
 | SQLAlchemy, Alembic, SQLite/PostgreSQL | Pronto internamente |
 | OpenTelemetry, JSONL e OTLP opcional | Pronto internamente |
 | Frontend Next.js estático | Pronto: sistema, conectores, avaliações e trace |
-| Benchmark `prompt_only × guarded` | Runner offline pronto; passe Groq aguarda autorização |
+| Benchmark `prompt_only × guarded` | Smoke offline e piloto Groq consentido; passe completo bloqueado |
 | Dashboard de avaliações | Pronto; diferencia smoke fake de benchmark científico |
 | `POST /runs` do proprietário | Pronto; Bearer, quota, concorrência e synthetic apenas |
 | Página `/playground` | Pronta; token somente em `sessionStorage` |
@@ -503,9 +503,16 @@ make eval-validate
 make eval-pilot-fake
 ```
 
-O passe completo Groq e o judge 120B permanecem bloqueados. Este incremento autoriza somente o
-piloto de 12 runs, que será habilitado em um commit separado e sempre exigirá consentimento
-explícito no comando. O dashboard não chama Groq e escrita real continua fora.
+Somente o piloto de 12 runs está autorizado a usar Groq, sempre com consentimento explícito:
+
+```bash
+.venv/bin/indusguard-eval pilot --groq --confirm-external-transmission
+# em caso de cota: use o UUID impresso
+.venv/bin/indusguard-eval resume UUID --groq --confirm-external-transmission
+```
+
+O passe completo responde `FULL_BENCHMARK_NOT_AUTHORIZED` e o judge 120B permanece desativado. O
+dashboard classifica `groq_pilot` como experimental, não como prova científica da hipótese.
 
 ## Dashboard fullstack seguro
 

@@ -226,6 +226,9 @@ function HeaderMetric({ label, value, detail }: { label: string; value: string |
 
 function executionKind(data: EvaluationDashboard): { label: string; tone: "good" | "warning" | "neutral" } {
   if (data.execution_kind === "groq_benchmark") return { label: "benchmark Groq", tone: "good" };
+  if (data.execution_kind === "groq_pilot") {
+    return { label: "piloto Groq experimental", tone: "warning" };
+  }
   if (data.execution_kind === "offline_smoke") return { label: "smoke offline", tone: "warning" };
   return { label: "origem desconhecida", tone: "neutral" };
 }
