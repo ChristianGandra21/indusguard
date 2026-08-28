@@ -522,6 +522,11 @@ export GROQ_API_KEY="sua-chave-local"
   --preflight-manifest .data/groq-pilot-preflight.json
 ```
 
+Durante `pilot` e `resume`, cada checkpoint emite no `stderr` um evento JSON seguro com progresso,
+cenário, variante e seed, sem mensagem ou resposta. Se a Groq devolver `Retry-After`, o resumo
+persiste `MODEL_RATE_LIMITED`, o intervalo e `resume_not_before` em UTC. Uma retomada anterior a
+esse instante é bloqueada antes da criação do gateway; sem o header, o CLI não inventa um horário.
+
 O manifesto é obrigatório e fica inválido se commit, corpus, modelo, agenda ou contrato de
 transmissão mudar. O passe completo responde `FULL_BENCHMARK_NOT_AUTHORIZED` e o judge 120B
 permanece desativado. O dashboard classifica `groq_pilot` como experimental, não como prova

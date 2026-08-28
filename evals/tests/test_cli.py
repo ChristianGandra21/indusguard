@@ -1,16 +1,27 @@
 """O CLI valida o snapshot sem banco, Groq ou rede externa."""
 
+import asyncio
 import json
 import subprocess
 from argparse import Namespace
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from indusguard_api.persistence import Base
+from sqlalchemy.ext.asyncio import create_async_engine
 
 import indusguard_evals.cli as eval_cli
-from indusguard_evals.cli import _requested_execution_kind, main
-from indusguard_evals.contracts import EvaluationExecutionKind
+from indusguard_evals.cli import _print_progress, _requested_execution_kind, _resume, main
+from indusguard_evals.contracts import (
+    EvaluationExecutionKind,
+    EvaluationPhase,
+    EvaluationVariant,
+)
 from indusguard_evals.corpus import OfficialCorpus
+from indusguard_evals.report import BenchmarkInterruption, build_summary
+from indusguard_evals.repository import EvaluationRepository
+from indusguard_evals.runner import EvaluationProgress
 
 
 def test_preflight_writes_auditable_metadata_without_payloads(
@@ -134,3 +145,106 @@ def test_fake_smoke_does_not_accept_external_transmission_consent() -> None:
 
     kind = _requested_execution_kind(_args(fake=True), command="pilot")
     assert kind is EvaluationExecutionKind.OFFLINE_SMOKE
+
+
+def test_progress_is_safe_json_on_stderr(capsys: pytest.CaptureFixture[str]) -> None:
+    _print_progress(
+        EvaluationProgress(
+            evaluation_id="evaluation-1",
+            completed_runs=5,
+            expected_runs=12,
+            checkpoint_status="completed",
+            case_id="case_tkt_inv_04",
+            scenario_id="CEN-01",
+            variant=EvaluationVariant.GUARDED,
+            seed=42,
+        )
+    )
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.err)
+    assert captured.out == ""
+    assert payload == {
+        "event": "evaluation_progress",
+        "evaluation_id": "evaluation-1",
+        "completed_runs": 5,
+        "expected_runs": 12,
+        "checkpoint_status": "completed",
+        "case_id": "case_tkt_inv_04",
+        "scenario_id": "CEN-01",
+        "variant": "guarded",
+        "seed": 42,
+    }
+    assert "message" not in payload
+    assert "answer" not in payload
+
+
+def test_resume_before_retry_after_stops_before_gateway(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'resume-window.db'}"
+    resume_at = datetime.now(UTC) + timedelta(minutes=5)
+    summary = build_summary(
+        [],
+        [],
+        expected_runs=12,
+        completed=False,
+        interruption=BenchmarkInterruption(
+            retry_after_seconds=300,
+            resume_not_before=resume_at,
+        ),
+    )
+
+    async def seed() -> str:
+        engine = create_async_engine(database_url)
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        repository = EvaluationRepository(engine)
+        evaluation_id = await repository.start(
+            phase=EvaluationPhase.PILOT,
+            dataset_version="official-v1",
+            input_digest="a" * 64,
+            model="openai/gpt-oss-20b",
+            git_commit="b" * 40,
+            config={
+                "execution_kind": EvaluationExecutionKind.GROQ_PILOT.value,
+                "preflight_manifest_digest": "c" * 64,
+            },
+        )
+        await repository.finish(
+            evaluation_id,
+            status="partial",
+            summary=summary.model_dump(mode="json"),
+        )
+        await engine.dispose()
+        return evaluation_id
+
+    evaluation_id = asyncio.run(seed())
+    monkeypatch.setattr(eval_cli, "_validated_preflight", lambda *args: (None, object()))
+    monkeypatch.setattr(eval_cli, "require_persisted_preflight_digest", lambda *args: None)
+    monkeypatch.setattr(
+        eval_cli,
+        "_gateway",
+        lambda *args: (_ for _ in ()).throw(AssertionError("gateway não deve ser criado")),
+    )
+    args = Namespace(
+        command="resume",
+        fake=False,
+        groq=True,
+        confirm_external_transmission=True,
+        preflight_manifest=Path("preflight.json"),
+        database_url=database_url,
+        evaluation_id=evaluation_id,
+    )
+
+    with pytest.raises(SystemExit, match="MODEL_RATE_LIMITED: retomada disponível após"):
+        asyncio.run(_resume(args))
+
+    eval_cli._enforce_resume_window(
+        summary.model_dump(mode="json"),
+        now=resume_at,
+    )
+    assert "Retry-After=300s" in eval_cli._rate_limit_guidance(summary)
+    unknown_window = summary.model_copy(update={"interruption": BenchmarkInterruption()})
+    assert "não informou Retry-After" in eval_cli._rate_limit_guidance(unknown_window)

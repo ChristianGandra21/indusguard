@@ -6,6 +6,9 @@ import argparse
 import asyncio
 import json
 import subprocess
+import sys
+from datetime import UTC, datetime
+from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -42,8 +45,9 @@ from indusguard_evals.preflight import (
     require_persisted_preflight_digest,
     write_groq_pilot_preflight,
 )
+from indusguard_evals.report import BenchmarkSummary
 from indusguard_evals.repository import EvaluationRepository
-from indusguard_evals.runner import BenchmarkRunner
+from indusguard_evals.runner import BenchmarkRunner, EvaluationProgress
 from indusguard_evals.tractian_fixture import store
 
 
@@ -77,6 +81,56 @@ def _fake_gateway() -> ScriptedAgentModelGateway:
             uncertainties=["OFFLINE_FAKE_NOT_A_BENCHMARK_RESULT"],
         ),
         model_name="scripted-eval-smoke",
+    )
+
+
+def _print_progress(progress: EvaluationProgress) -> None:
+    """Mantém eventos incrementais fora do stdout reservado ao resultado final."""
+
+    print(progress.model_dump_json(), file=sys.stderr, flush=True)
+
+
+def _enforce_resume_window(
+    summary_payload: dict[str, Any] | None,
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Evita construir gateway enquanto o Retry-After persistido ainda está ativo."""
+
+    if summary_payload is None:
+        return
+    try:
+        summary = BenchmarkSummary.model_validate(summary_payload)
+    except ValueError:
+        # Resumos legados ou incompletos não ganham uma restrição que não registraram.
+        return
+    interruption = summary.interruption
+    if interruption is None or interruption.resume_not_before is None:
+        return
+    current = now or datetime.now(UTC)
+    resume_at = interruption.resume_not_before.astimezone(UTC)
+    if current >= resume_at:
+        return
+    remaining = ceil((resume_at - current).total_seconds())
+    timestamp = resume_at.isoformat().replace("+00:00", "Z")
+    raise SystemExit(
+        f"MODEL_RATE_LIMITED: retomada disponível após {timestamp} ({remaining} segundos restantes)"
+    )
+
+
+def _rate_limit_guidance(summary: BenchmarkSummary) -> str:
+    interruption = summary.interruption
+    if interruption is None:
+        return "A avaliação ficou parcial; use resume para continuar os checkpoints pendentes."
+    if interruption.resume_not_before is None:
+        return (
+            "MODEL_RATE_LIMITED: a Groq não informou Retry-After; "
+            "não é possível indicar um horário seguro de retomada."
+        )
+    timestamp = interruption.resume_not_before.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    return (
+        "MODEL_RATE_LIMITED: Retry-After="
+        f"{interruption.retry_after_seconds}s; retome a partir de {timestamp}."
     )
 
 
@@ -139,6 +193,7 @@ async def _runner(
             catalog=catalog,
             repository=repository,
             runtimes=runtimes,
+            on_progress=_print_progress,
         ),
         client,
         engine,
@@ -230,6 +285,7 @@ async def _run_phase(args: argparse.Namespace, phase: EvaluationPhase) -> int:
     print(evaluation_id)
     print(summary.model_dump_json(indent=2))
     if kind is EvaluationExecutionKind.GROQ_PILOT and summary.status == "partial":
+        print(_rate_limit_guidance(summary))
         print(
             "Retome sem duplicar runs concluídas: "
             f"indusguard-eval resume {evaluation_id} --groq "
@@ -262,6 +318,8 @@ async def _resume(args: argparse.Namespace) -> int:
             require_persisted_preflight_digest(manifest, persisted.config)
         except PreflightError as exc:
             raise SystemExit(str(exc)) from exc
+    if kind is EvaluationExecutionKind.GROQ_PILOT:
+        _enforce_resume_window(persisted.summary)
 
     gateway = _gateway(kind, groq_settings)
     runner, client, engine = await _runner(root, args.database_url, gateway)
@@ -272,8 +330,8 @@ async def _resume(args: argparse.Namespace) -> int:
         await engine.dispose()
     print(summary.model_dump_json(indent=2))
     if kind is EvaluationExecutionKind.GROQ_PILOT and summary.status == "partial":
+        print(_rate_limit_guidance(summary))
         print(
-            "A cota continua indisponível; repita este mesmo comando mais tarde. "
             "Checkpoints concluídos não serão duplicados. "
             f"Manifesto autorizado: {args.preflight_manifest}."
         )

@@ -353,6 +353,10 @@ Produção injeta `GuardedExecutor`; somente o pacote `evals` possui `PromptOnly
 preserva OpenAPI, autenticação e simulação de escrita, removendo apenas o gate para observar o
 contrafactual. A wheel de produção não contém esse pacote.
 
+O runner emite progresso redigido depois de cada checkpoint. Uma interrupção Groq conserva apenas
+o código `MODEL_RATE_LIMITED` e o `Retry-After` normalizado; o resumo calcula
+`resume_not_before` em UTC para impedir tentativas antecipadas sem reconstruir o gateway.
+
 `AgentPlanningContext` é uma allowlist derivada de `TrustedRunContext`: IDs de contexto declarados
 no domínio, permissões, escopos e pedido direto. Confirmação, digest, headers e credenciais nunca
 entram nela. O fake recebe esse contrato nos testes. A serialização desse contexto para a Groq e

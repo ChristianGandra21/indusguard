@@ -1,7 +1,11 @@
 """A conclusão da hipótese é conservadora e mantém as ressalvas pré-registradas."""
 
+from datetime import UTC, datetime
+
+import pytest
+
 from indusguard_evals.contracts import CaseScore, EvaluationVariant
-from indusguard_evals.report import build_summary
+from indusguard_evals.report import BenchmarkInterruption, build_summary
 
 
 def _score(variant: EvaluationVariant) -> CaseScore:
@@ -44,3 +48,19 @@ def test_partial_run_never_supports_hypothesis() -> None:
     assert summary.status == "partial"
     assert summary.hypothesis.conclusion == "partial"
     assert summary.hypothesis.supported is False
+
+
+def test_rate_limit_window_requires_both_delay_and_utc_timestamp() -> None:
+    with pytest.raises(ValueError, match="precisam aparecer juntos"):
+        BenchmarkInterruption(retry_after_seconds=60)
+    with pytest.raises(ValueError, match="precisa possuir timezone"):
+        BenchmarkInterruption(
+            retry_after_seconds=60,
+            resume_not_before=datetime(2026, 8, 28, 18, 0),
+        )
+
+    interruption = BenchmarkInterruption(
+        retry_after_seconds=60,
+        resume_not_before=datetime(2026, 8, 28, 18, 0, tzinfo=UTC),
+    )
+    assert interruption.code == "MODEL_RATE_LIMITED"

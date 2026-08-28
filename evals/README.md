@@ -133,13 +133,23 @@ recalcula o manifesto antes de construir gateway ou banco e responde `PREFLIGHT_
 corpus, modelo, agenda ou contrato de transmissão mudou. `run --groq` continua respondendo
 `FULL_BENCHMARK_NOT_AUTHORIZED`, mesmo com consentimento e manifesto.
 
-Se a cota gratuita interromper o piloto, o status ficará `partial` e o próprio CLI imprimirá:
+Durante o piloto, cada checkpoint imprime no `stderr` um evento JSON `evaluation_progress` com
+`completed_runs/expected_runs`, identidade, variante e seed. Mensagem, resposta, evidência e
+segredos não entram nesse evento; o resumo final continua no `stdout`.
+
+Se a cota gratuita interromper o piloto, o status ficará `partial`, a categoria estável será
+`MODEL_RATE_LIMITED` e o próprio CLI imprimirá:
 
 ```bash
 .venv/bin/indusguard-eval resume UUID --groq \
   --confirm-external-transmission \
   --preflight-manifest .data/groq-pilot-preflight.json
 ```
+
+A resposta `Retry-After` da Groq é aceita como segundos ou data HTTP quando aponta para até 24
+horas, e convertida em `resume_not_before` UTC no resumo persistido. Antes desse instante, `resume`
+falha localmente sem criar gateway ou cliente externo. Se o provedor não informar um valor válido,
+o CLI registra a categoria, mas declara que não pode sugerir um horário seguro.
 
 A retomada exige o mesmo digest persistido em `evaluation_runs.config`. A identidade
 `case_id × variant × seed` impede duplicar checkpoints concluídos. O piloto Groq é uma observação

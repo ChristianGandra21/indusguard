@@ -2009,9 +2009,12 @@ O smoke offline usa fake e prova infraestrutura, não a hipótese. Antes do pilo
 manifesto sem payloads ou segredos. O `pilot --groq --confirm-external-transmission` exige esse
 arquivo em `--preflight-manifest` e o vincula ao registro da avaliação. Ele envia tickets, prompts
 fixos, descrições de domínio/tools, evidências redigidas e IDs sintéticos à Groq, mas nunca abre o
-golden antes das runs. Se houver rate limit, `resume` exige o mesmo manifesto e continua do
-checkpoint sem duplicar identidades. O passe completo Groq e o judge 120B permanecem bloqueados; a
-revisão humana pode ser exportada em CSV cegado.
+golden antes das runs. Cada checkpoint publica progresso seguro no `stderr`, sem conteúdo de
+ticket ou resposta. Se houver rate limit, o resumo registra `MODEL_RATE_LIMITED`; quando a Groq
+fornece `Retry-After`, também persiste o intervalo e o instante UTC `resume_not_before`. O CLI
+bloqueia uma retomada antecipada antes de criar o gateway. Depois da janela, `resume` exige o mesmo
+manifesto e continua do checkpoint sem duplicar identidades. O passe completo Groq e o judge 120B
+permanecem bloqueados; a revisão humana pode ser exportada em CSV cegado.
 
 ### Etapa 8: frontend read-only
 

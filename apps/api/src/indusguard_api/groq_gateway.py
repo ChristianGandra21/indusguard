@@ -8,6 +8,9 @@ carregado de ``GROQ_API_KEY`` e nunca faz parte de prompts, métricas ou mensage
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from math import ceil
 
 import groq
 from langchain_core.language_models import BaseChatModel
@@ -65,6 +68,30 @@ class GroqAgentSettings(BaseSettings):
     )
 
 
+def _parse_retry_after(value: str | None, *, now: datetime | None = None) -> int | None:
+    """Normaliza delay-seconds ou HTTP-date sem confiar cegamente no header externo."""
+
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    try:
+        seconds = int(normalized)
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(normalized)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None or retry_at.utcoffset() is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        delta = retry_at.astimezone(UTC) - (now or datetime.now(UTC))
+        seconds = max(0, ceil(delta.total_seconds()))
+    if seconds < 0 or seconds > 86_400:
+        return None
+    return seconds
+
+
 def _usage(message: AIMessage | None) -> TokenUsage:
     """Normaliza metadados de token sem depender do formato cru do provedor."""
 
@@ -81,7 +108,11 @@ def _raise_gateway_error(exc: Exception) -> None:
     """Converte exceções externas em categorias estáveis e mensagens redigidas."""
 
     if isinstance(exc, groq.RateLimitError):
-        raise ModelRateLimitedError("A cota gratuita da Groq está temporariamente indisponível.")
+        retry_after = _parse_retry_after(exc.response.headers.get("retry-after"))
+        raise ModelRateLimitedError(
+            "A cota gratuita da Groq está temporariamente indisponível.",
+            retry_after_seconds=retry_after,
+        )
     if isinstance(exc, (groq.APIConnectionError, groq.APITimeoutError, groq.APIStatusError)):
         raise ModelUnavailableError("A Groq não retornou uma resposta utilizável.")
     raise ModelUnavailableError("O modelo não pôde concluir a chamada.")

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import UTC, datetime
 from statistics import median
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from indusguard_evals.contracts import CaseScore, EvaluationSample, EvaluationVariant
 
@@ -20,6 +21,31 @@ class HypothesisAssessment(BaseModel):
     note: str
 
 
+class BenchmarkInterruption(BaseModel):
+    """Motivo retomável sem copiar resposta, headers ou detalhes do provedor."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: Literal["MODEL_RATE_LIMITED"] = "MODEL_RATE_LIMITED"
+    retry_after_seconds: int | None = Field(default=None, ge=0, le=86_400)
+    resume_not_before: datetime | None = None
+
+    @field_validator("resume_not_before")
+    @classmethod
+    def normalize_resume_not_before(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("resume_not_before precisa possuir timezone")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def require_complete_window(self) -> BenchmarkInterruption:
+        if (self.retry_after_seconds is None) != (self.resume_not_before is None):
+            raise ValueError("retry_after_seconds e resume_not_before precisam aparecer juntos")
+        return self
+
+
 class BenchmarkSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -31,6 +57,7 @@ class BenchmarkSummary(BaseModel):
     median_paired_overhead_percent: float | None
     hypothesis: HypothesisAssessment
     limitations: list[str]
+    interruption: BenchmarkInterruption | None = None
 
 
 def _scenario_success(scores: list[CaseScore], variant: EvaluationVariant) -> dict[str, bool]:
@@ -88,6 +115,7 @@ def build_summary(
     *,
     expected_runs: int,
     completed: bool,
+    interruption: BenchmarkInterruption | None = None,
 ) -> BenchmarkSummary:
     """Aplica os gates fechados no plano e destaca quando o efeito é inconclusivo."""
 
@@ -157,6 +185,7 @@ def build_summary(
             note=note,
         ),
         limitations=limitations,
+        interruption=interruption,
     )
 
 

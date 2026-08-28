@@ -3,6 +3,8 @@
 import asyncio
 from collections import deque
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from pathlib import Path
 from textwrap import dedent
 from typing import Any
@@ -35,7 +37,11 @@ from indusguard_api.agent import (
 )
 from indusguard_api.connectors import ConnectorCatalog
 from indusguard_api.executor import HttpExecutor
-from indusguard_api.groq_gateway import GroqAgentModelGateway, GroqAgentSettings
+from indusguard_api.groq_gateway import (
+    GroqAgentModelGateway,
+    GroqAgentSettings,
+    _parse_retry_after,
+)
 from indusguard_api.policy import GuardedExecutor, PolicyEngine
 from indusguard_api.schemas import PolicyConfirmation, PolicyPrincipal
 
@@ -879,7 +885,10 @@ def test_groq_free_rate_limit_returns_controlled_failure_without_fallback() -> N
     """A cota gratuita encerra a run; o sistema não tenta Ollama nem outro modelo."""
 
     gateway = ScriptedAgentModelGateway(
-        classification=ModelRateLimitedError("mensagem externa sensível"),
+        classification=ModelRateLimitedError(
+            "mensagem externa sensível",
+            retry_after_seconds=75,
+        ),
         plans=[],
         final_answer=AgentFinalAnswer(
             answer="não deve ser chamada",
@@ -896,6 +905,7 @@ def test_groq_free_rate_limit_returns_controlled_failure_without_fallback() -> N
     assert result.status == "failed"
     assert result.metrics.model == "openai/gpt-oss-20b"
     assert result.metrics.termination_reason == "MODEL_RATE_LIMITED"
+    assert result.metrics.retry_after_seconds == 75
     assert result.metrics.model_calls == 1
     assert len(gateway.finalize_messages) == 0
     assert "mensagem externa sensível" not in result.model_dump_json()
@@ -1125,7 +1135,7 @@ def test_groq_adapter_maps_free_quota_response_to_rate_limit() -> None:
     http_request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
     error = groq.RateLimitError(
         "quota com detalhe sensível",
-        response=httpx.Response(429, request=http_request),
+        response=httpx.Response(429, request=http_request, headers={"Retry-After": "120"}),
         body={"secret": "não expor"},
     )
     chat = RecordingChatModel(structured=[error], planned=[])
@@ -1146,6 +1156,19 @@ def test_groq_adapter_maps_free_quota_response_to_rate_limit() -> None:
 
     assert "detalhe sensível" not in str(captured.value)
     assert "cota gratuita" in str(captured.value)
+    assert captured.value.retry_after_seconds == 120
+
+
+def test_retry_after_accepts_seconds_and_http_date_without_trusting_invalid_values() -> None:
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    retry_at = format_datetime(now + timedelta(seconds=45), usegmt=True)
+
+    assert _parse_retry_after("30", now=now) == 30
+    assert _parse_retry_after(retry_at, now=now) == 45
+    assert _parse_retry_after("not-a-date", now=now) is None
+    assert _parse_retry_after("-1", now=now) is None
+    assert _parse_retry_after("999999", now=now) is None
+    assert ModelRateLimitedError("redigida", retry_after_seconds=999999).retry_after_seconds is None
 
 
 def test_groq_adapter_rejects_invalid_structured_output() -> None:
