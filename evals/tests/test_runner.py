@@ -107,3 +107,34 @@ def test_rate_limit_creates_partial_checkpoint_and_resume_finishes_12_runs(
     assert completed.status == "completed"
     assert completed.completed_runs == 12
     assert identity_count == 12
+
+
+def test_evaluation_persists_the_authorized_preflight_digest(tmp_path: Path) -> None:
+    async def exercise() -> str | None:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'preflight.db'}")
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        repository = EvaluationRepository(engine)
+        recorder = SqlAlchemyAgentRunRecorder(engine)
+        catalog = ConnectorCatalog(REPOSITORY_ROOT / "connectors")
+        catalog.load()
+        runner = BenchmarkRunner(
+            corpus=OfficialCorpus(CORPUS_ROOT),
+            catalog=catalog,
+            repository=repository,
+            runtimes={
+                variant: FakeVariantRuntime(variant, recorder) for variant in EvaluationVariant
+            },
+        )
+        evaluation_id = await runner.start(
+            phase=EvaluationPhase.PILOT,
+            model="openai/gpt-oss-20b",
+            git_commit="a" * 40,
+            preflight_manifest_digest="b" * 64,
+        )
+        persisted = await repository.get(evaluation_id)
+        await engine.dispose()
+        assert persisted is not None
+        return persisted.config.get("preflight_manifest_digest")
+
+    assert asyncio.run(exercise()) == "b" * 64

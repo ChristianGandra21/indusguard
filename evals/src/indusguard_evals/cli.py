@@ -35,6 +35,13 @@ from indusguard_evals.contracts import (
 from indusguard_evals.corpus import OfficialCorpus
 from indusguard_evals.execution import create_variant_runtime
 from indusguard_evals.human_review import export_human_review
+from indusguard_evals.preflight import (
+    GroqPilotPreflightManifest,
+    PreflightError,
+    load_and_validate_groq_pilot_preflight,
+    require_persisted_preflight_digest,
+    write_groq_pilot_preflight,
+)
 from indusguard_evals.repository import EvaluationRepository
 from indusguard_evals.runner import BenchmarkRunner
 from indusguard_evals.tractian_fixture import store
@@ -167,11 +174,37 @@ def _requested_execution_kind(
     raise SystemExit("EVALUATION_MODE_REQUIRED: escolha --fake ou --groq")
 
 
-def _gateway(kind: EvaluationExecutionKind) -> AgentModelGateway:
+def _validated_preflight(
+    args: argparse.Namespace,
+    kind: EvaluationExecutionKind,
+    root: Path,
+) -> tuple[GroqAgentSettings | None, GroqPilotPreflightManifest | None]:
+    path = args.preflight_manifest
+    if kind is EvaluationExecutionKind.OFFLINE_SMOKE:
+        if path is not None:
+            raise SystemExit(
+                "PREFLIGHT_MODE_MISMATCH: manifesto do piloto Groq não pode ser usado com --fake"
+            )
+        return None, None
+    if path is None:
+        raise SystemExit(
+            "PILOT_PREFLIGHT_REQUIRED: informe --preflight-manifest para autorizar esta execução"
+        )
+    settings = GroqAgentSettings()
+    try:
+        return settings, load_and_validate_groq_pilot_preflight(root, path, settings)
+    except PreflightError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def _gateway(
+    kind: EvaluationExecutionKind,
+    groq_settings: GroqAgentSettings | None = None,
+) -> AgentModelGateway:
     if kind is EvaluationExecutionKind.OFFLINE_SMOKE:
         return _fake_gateway()
     try:
-        return GroqAgentModelGateway(GroqAgentSettings())
+        return GroqAgentModelGateway(groq_settings or GroqAgentSettings())
     except AgentConfigurationError as exc:
         raise SystemExit(f"MODEL_NOT_CONFIGURED: {exc}") from exc
 
@@ -179,7 +212,8 @@ def _gateway(kind: EvaluationExecutionKind) -> AgentModelGateway:
 async def _run_phase(args: argparse.Namespace, phase: EvaluationPhase) -> int:
     kind = _requested_execution_kind(args, command=args.command)
     root = _repository_root()
-    gateway = _gateway(kind)
+    groq_settings, manifest = _validated_preflight(args, kind, root)
+    gateway = _gateway(kind, groq_settings)
     runner, client, engine = await _runner(root, args.database_url, gateway)
     try:
         evaluation_id = await runner.start(
@@ -187,6 +221,7 @@ async def _run_phase(args: argparse.Namespace, phase: EvaluationPhase) -> int:
             model=gateway.model_name,
             git_commit=_git_commit(root),
             execution_kind=kind,
+            preflight_manifest_digest=(manifest.manifest_digest if manifest else None),
         )
         summary = await runner.execute(evaluation_id)
     finally:
@@ -198,7 +233,8 @@ async def _run_phase(args: argparse.Namespace, phase: EvaluationPhase) -> int:
         print(
             "Retome sem duplicar runs concluídas: "
             f"indusguard-eval resume {evaluation_id} --groq "
-            "--confirm-external-transmission"
+            "--confirm-external-transmission "
+            f"--preflight-manifest {args.preflight_manifest}"
         )
     return 0
 
@@ -206,6 +242,7 @@ async def _run_phase(args: argparse.Namespace, phase: EvaluationPhase) -> int:
 async def _resume(args: argparse.Namespace) -> int:
     kind = _requested_execution_kind(args, command=args.command)
     root = _repository_root()
+    groq_settings, manifest = _validated_preflight(args, kind, root)
     inspection_engine = create_async_engine(normalize_database_url(args.database_url))
     try:
         persisted = await EvaluationRepository(inspection_engine).get(args.evaluation_id)
@@ -220,8 +257,13 @@ async def _resume(args: argparse.Namespace) -> int:
         )
     if kind is EvaluationExecutionKind.GROQ_PILOT and persisted.phase is not EvaluationPhase.PILOT:
         raise SystemExit("FULL_BENCHMARK_NOT_AUTHORIZED: uma avaliação full não pode usar Groq")
+    if manifest is not None:
+        try:
+            require_persisted_preflight_digest(manifest, persisted.config)
+        except PreflightError as exc:
+            raise SystemExit(str(exc)) from exc
 
-    gateway = _gateway(kind)
+    gateway = _gateway(kind, groq_settings)
     runner, client, engine = await _runner(root, args.database_url, gateway)
     try:
         summary = await runner.execute(args.evaluation_id)
@@ -232,7 +274,8 @@ async def _resume(args: argparse.Namespace) -> int:
     if kind is EvaluationExecutionKind.GROQ_PILOT and summary.status == "partial":
         print(
             "A cota continua indisponível; repita este mesmo comando mais tarde. "
-            "Checkpoints concluídos não serão duplicados."
+            "Checkpoints concluídos não serão duplicados. "
+            f"Manifesto autorizado: {args.preflight_manifest}."
         )
     return 0
 
@@ -276,6 +319,9 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--database-url", default=settings.database_url)
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("validate", help="valida entradas, golden e digests")
+    preflight = subparsers.add_parser("preflight", help="gera manifesto local do piloto Groq")
+    preflight.add_argument("--groq", action="store_true", help="prepara o piloto Groq autorizado")
+    preflight.add_argument("--output", type=Path, required=True)
     for command in ("pilot", "run"):
         child = subparsers.add_parser(command)
         child.add_argument("--fake", action="store_true", help="smoke local, sem valor científico")
@@ -285,11 +331,13 @@ def _parser() -> argparse.ArgumentParser:
             action="store_true",
             help="confirma o envio de entradas e evidências à Groq",
         )
+        child.add_argument("--preflight-manifest", type=Path)
     resume = subparsers.add_parser("resume")
     resume.add_argument("evaluation_id")
     resume.add_argument("--fake", action="store_true")
     resume.add_argument("--groq", action="store_true")
     resume.add_argument("--confirm-external-transmission", action="store_true")
+    resume.add_argument("--preflight-manifest", type=Path)
     report = subparsers.add_parser("report")
     report.add_argument("evaluation_id")
     report.add_argument("--output", type=Path)
@@ -310,6 +358,20 @@ def main(argv: list[str] | None = None) -> int:
             f"{len({case.scenario_id for case in inputs.cases})} cenários, "
             f"inputs={inputs.digest}, goldens={goldens.digest}"
         )
+        return 0
+    if args.command == "preflight":
+        if not args.groq:
+            raise SystemExit("PREFLIGHT_MODE_MISMATCH: o preflight disponível exige --groq")
+        try:
+            manifest = write_groq_pilot_preflight(
+                _repository_root(),
+                args.output,
+                GroqAgentSettings(),
+            )
+        except PreflightError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(args.output)
+        print(manifest.manifest_digest)
         return 0
     if args.command == "pilot":
         return asyncio.run(_run_phase(args, EvaluationPhase.PILOT))

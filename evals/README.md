@@ -105,26 +105,45 @@ reconciliação é salva em outro arquivo; não a entregue à pessoa revisora an
 
 ## Piloto Groq autorizado e ressalva de privacidade
 
-Somente o piloto de 12 runs pode usar a Groq. O comando exige duas flags para tornar o destino e o
-consentimento inequívocos:
+Somente o piloto de 12 runs pode usar a Groq. Primeiro gere o manifesto em um checkout limpo. Esse
+comando valida localmente chave configurada, catálogo, inputs, modelo e as 12 identidades; não abre
+banco, fixture HTTP, golden ou cliente Groq:
 
 ```bash
 export GROQ_API_KEY="sua-chave-local"
-.venv/bin/indusguard-eval pilot --groq --confirm-external-transmission
+.venv/bin/indusguard-eval preflight --groq \
+  --output .data/groq-pilot-preflight.json
 ```
 
-Esse comando envia à Groq mensagens dos tickets, resultados redigidos das tools e IDs sintéticos
-permitidos pelo contexto de planejamento. Não envia golden, credenciais, confirmação ou digest.
-`run --groq` responde `FULL_BENCHMARK_NOT_AUTHORIZED`, mesmo com a flag de consentimento.
+O manifesto `groq-pilot-preflight-v1` contém commit, digest dos inputs, configuração não secreta do
+modelo, agenda contrabalanceada, tamanhos e hashes das mensagens e listas de categorias incluídas e
+excluídas. Ele não duplica texto de ticket, evidência, payload de tool ou chave. Depois de revisar o
+arquivo, autorize a transmissão vinculada àquele manifesto:
+
+```bash
+.venv/bin/indusguard-eval pilot --groq \
+  --confirm-external-transmission \
+  --preflight-manifest .data/groq-pilot-preflight.json
+```
+
+Esse comando envia à Groq mensagens dos tickets, prompts fixos, descrições de domínio/tools,
+resultados redigidos das tools e IDs sintéticos de evidência. Não envia golden, credenciais,
+headers de autenticação, confirmação, digest, payload não redigido ou chain of thought. O CLI
+recalcula o manifesto antes de construir gateway ou banco e responde `PREFLIGHT_STALE` se commit,
+corpus, modelo, agenda ou contrato de transmissão mudou. `run --groq` continua respondendo
+`FULL_BENCHMARK_NOT_AUTHORIZED`, mesmo com consentimento e manifesto.
 
 Se a cota gratuita interromper o piloto, o status ficará `partial` e o próprio CLI imprimirá:
 
 ```bash
-.venv/bin/indusguard-eval resume UUID --groq --confirm-external-transmission
+.venv/bin/indusguard-eval resume UUID --groq \
+  --confirm-external-transmission \
+  --preflight-manifest .data/groq-pilot-preflight.json
 ```
 
-A identidade `case_id × variant × seed` impede duplicar checkpoints concluídos. O piloto Groq é
-uma observação experimental de dois cenários, não evidência suficiente para a hipótese global.
+A retomada exige o mesmo digest persistido em `evaluation_runs.config`. A identidade
+`case_id × variant × seed` impede duplicar checkpoints concluídos. O piloto Groq é uma observação
+experimental de dois cenários, não evidência suficiente para a hipótese global.
 
 Pelo mesmo motivo, `DisabledExternalJudgeGateway` não envia mensagem, resposta ou evidências ao
 modelo `openai/gpt-oss-120b`. As rubricas estão prontas em `rubrics/judge.yaml`, mas DeepEval não

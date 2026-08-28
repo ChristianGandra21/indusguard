@@ -505,16 +505,27 @@ make eval-validate
 make eval-pilot-fake
 ```
 
-Somente o piloto de 12 runs está autorizado a usar Groq, sempre com consentimento explícito:
+Somente o piloto de 12 runs está autorizado a usar Groq. Antes de qualquer cliente externo, gere
+um manifesto auditável em um checkout limpo. Ele registra commit, corpus, modelo, agenda, hashes
+das mensagens e fronteiras de transmissão, mas não copia tickets, evidências ou segredos:
 
 ```bash
-.venv/bin/indusguard-eval pilot --groq --confirm-external-transmission
+export GROQ_API_KEY="sua-chave-local"
+.venv/bin/indusguard-eval preflight --groq \
+  --output .data/groq-pilot-preflight.json
+.venv/bin/indusguard-eval pilot --groq \
+  --confirm-external-transmission \
+  --preflight-manifest .data/groq-pilot-preflight.json
 # em caso de cota: use o UUID impresso
-.venv/bin/indusguard-eval resume UUID --groq --confirm-external-transmission
+.venv/bin/indusguard-eval resume UUID --groq \
+  --confirm-external-transmission \
+  --preflight-manifest .data/groq-pilot-preflight.json
 ```
 
-O passe completo responde `FULL_BENCHMARK_NOT_AUTHORIZED` e o judge 120B permanece desativado. O
-dashboard classifica `groq_pilot` como experimental, não como prova científica da hipótese.
+O manifesto é obrigatório e fica inválido se commit, corpus, modelo, agenda ou contrato de
+transmissão mudar. O passe completo responde `FULL_BENCHMARK_NOT_AUTHORIZED` e o judge 120B
+permanece desativado. O dashboard classifica `groq_pilot` como experimental, não como prova
+científica da hipótese.
 
 ## Dashboard fullstack seguro
 

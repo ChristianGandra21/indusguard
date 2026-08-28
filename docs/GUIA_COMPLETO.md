@@ -117,6 +117,7 @@ O projeto está sendo construído por camadas.
 - `POST /api/v1/runs` stateless com escritas sempre simuladas;
 - projeção autenticada sem token, confirmação ou digest.
 - piloto Groq limitado a 12 runs, com consentimento explícito e resume idempotente;
+- preflight sem rede com manifesto vinculado a commit, corpus, modelo e agenda;
 - imagem Docker multi-stage não-root, migração antes do Uvicorn e smoke de readiness;
 - Blueprint Render para backend Docker e frontend estático;
 - URL Neon atual validada com TLS e channel binding via Psycopg 3;
@@ -2003,11 +2004,14 @@ simulada e a policy roda depois, em shadow. `GuardedExecutor` continua sendo a i
 produção. Checkpoints em `evaluation_runs` e `evaluation_results` permitem retomar uma cota Groq
 sem duplicar `case × variant × seed`.
 
-O smoke offline usa fake e prova infraestrutura, não a hipótese. O piloto real de 12 runs exige
-`--groq --confirm-external-transmission`: ele envia tickets, evidências redigidas e IDs sintéticos
-permitidos à Groq, mas nunca abre o golden antes das runs. Se houver rate limit, `resume` continua
-do checkpoint sem duplicar identidades. O passe completo Groq e o judge 120B permanecem bloqueados;
-a revisão humana pode ser exportada em CSV cegado.
+O smoke offline usa fake e prova infraestrutura, não a hipótese. Antes do piloto real, o comando
+`preflight --groq --output .data/groq-pilot-preflight.json` valida o checkout limpo e gera um
+manifesto sem payloads ou segredos. O `pilot --groq --confirm-external-transmission` exige esse
+arquivo em `--preflight-manifest` e o vincula ao registro da avaliação. Ele envia tickets, prompts
+fixos, descrições de domínio/tools, evidências redigidas e IDs sintéticos à Groq, mas nunca abre o
+golden antes das runs. Se houver rate limit, `resume` exige o mesmo manifesto e continua do
+checkpoint sem duplicar identidades. O passe completo Groq e o judge 120B permanecem bloqueados; a
+revisão humana pode ser exportada em CSV cegado.
 
 ### Etapa 8: frontend read-only
 

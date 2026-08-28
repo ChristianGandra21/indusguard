@@ -45,21 +45,25 @@ class BenchmarkRunner:
         model: str,
         git_commit: str,
         execution_kind: EvaluationExecutionKind = EvaluationExecutionKind.UNKNOWN,
+        preflight_manifest_digest: str | None = None,
     ) -> str:
         inputs = self._corpus.load_inputs()
         seeds = PILOT_SEEDS if phase is EvaluationPhase.PILOT else FULL_SEEDS
+        config = {
+            "seeds": list(seeds),
+            "variants": [item.value for item in EvaluationVariant],
+            "counterbalanced": True,
+            "execution_kind": execution_kind.value,
+        }
+        if preflight_manifest_digest is not None:
+            config["preflight_manifest_digest"] = preflight_manifest_digest
         return await self._repository.start(
             phase=phase,
             dataset_version=inputs.version,
             input_digest=inputs.digest,
             model=model,
             git_commit=git_commit,
-            config={
-                "seeds": list(seeds),
-                "variants": [item.value for item in EvaluationVariant],
-                "counterbalanced": True,
-                "execution_kind": execution_kind.value,
-            },
+            config=config,
         )
 
     async def execute(self, evaluation_id: str) -> BenchmarkSummary:
