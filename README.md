@@ -527,6 +527,12 @@ cenário, variante e seed, sem mensagem ou resposta. Se a Groq devolver `Retry-A
 persiste `MODEL_RATE_LIMITED`, o intervalo e `resume_not_before` em UTC. Uma retomada anterior a
 esse instante é bloqueada antes da criação do gateway; sem o header, o CLI não inventa um horário.
 
+Para não recriar o limite de tokens dentro da mesma run, o piloto serializa as chamadas Groq e
+mantém por padrão 60 segundos entre seus inícios. O intervalo é configurável por
+`INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS`, aparece no manifesto `v2` e não afeta o
+playground, a API pública ou o smoke fake. Alterá-lo exige gerar outro manifesto e iniciar outra
+avaliação; não misture checkpoints produzidos com configurações diferentes.
+
 O manifesto é obrigatório e fica inválido se commit, corpus, modelo, agenda ou contrato de
 transmissão mudar. O passe completo responde `FULL_BENCHMARK_NOT_AUTHORIZED` e o judge 120B
 permanece desativado. O dashboard classifica `groq_pilot` como experimental, não como prova

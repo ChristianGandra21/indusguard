@@ -38,6 +38,7 @@ from indusguard_evals.contracts import (
 from indusguard_evals.corpus import OfficialCorpus
 from indusguard_evals.execution import create_variant_runtime
 from indusguard_evals.human_review import export_human_review
+from indusguard_evals.pacing import GroqPilotPacingSettings, PacedAgentModelGateway
 from indusguard_evals.preflight import (
     GroqPilotPreflightManifest,
     PreflightError,
@@ -259,7 +260,12 @@ def _gateway(
     if kind is EvaluationExecutionKind.OFFLINE_SMOKE:
         return _fake_gateway()
     try:
-        return GroqAgentModelGateway(groq_settings or GroqAgentSettings())
+        gateway = GroqAgentModelGateway(groq_settings or GroqAgentSettings())
+        pacing = GroqPilotPacingSettings()
+        return PacedAgentModelGateway(
+            gateway,
+            minimum_interval_seconds=pacing.minimum_interval_seconds,
+        )
     except AgentConfigurationError as exc:
         raise SystemExit(f"MODEL_NOT_CONFIGURED: {exc}") from exc
 

@@ -356,6 +356,8 @@ contrafactual. A wheel de produção não contém esse pacote.
 O runner emite progresso redigido depois de cada checkpoint. Uma interrupção Groq conserva apenas
 o código `MODEL_RATE_LIMITED` e o `Retry-After` normalizado; o resumo calcula
 `resume_not_before` em UTC para impedir tentativas antecipadas sem reconstruir o gateway.
+No piloto, um decorator exclusivo da avaliação serializa chamadas de modelo e aplica o intervalo
+monotônico registrado no manifesto `v2`; o gateway usado pela API pública não recebe esse pacing.
 
 `AgentPlanningContext` é uma allowlist derivada de `TrustedRunContext`: IDs de contexto declarados
 no domínio, permissões, escopos e pedido direto. Confirmação, digest, headers e credenciais nunca

@@ -115,10 +115,10 @@ export GROQ_API_KEY="sua-chave-local"
   --output .data/groq-pilot-preflight.json
 ```
 
-O manifesto `groq-pilot-preflight-v1` contém commit, digest dos inputs, configuração não secreta do
-modelo, agenda contrabalanceada, tamanhos e hashes das mensagens e listas de categorias incluídas e
-excluídas. Ele não duplica texto de ticket, evidência, payload de tool ou chave. Depois de revisar o
-arquivo, autorize a transmissão vinculada àquele manifesto:
+O manifesto `groq-pilot-preflight-v2` contém commit, digest dos inputs, configuração não secreta do
+modelo, intervalo mínimo entre chamadas, agenda contrabalanceada, tamanhos e hashes das mensagens e
+listas de categorias incluídas e excluídas. Ele não duplica texto de ticket, evidência, payload de
+tool ou chave. Depois de revisar o arquivo, autorize a transmissão vinculada àquele manifesto:
 
 ```bash
 .venv/bin/indusguard-eval pilot --groq \
@@ -136,6 +136,11 @@ corpus, modelo, agenda ou contrato de transmissão mudou. `run --groq` continua 
 Durante o piloto, cada checkpoint imprime no `stderr` um evento JSON `evaluation_progress` com
 `completed_runs/expected_runs`, identidade, variante e seed. Mensagem, resposta, evidência e
 segredos não entram nesse evento; o resumo final continua no `stdout`.
+
+O gateway do benchmark serializa chamadas e mantém 60 segundos entre seus inícios para não
+reproduzir o teto gratuito de tokens por minuto dentro da mesma identidade. Ajuste somente via
+`INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS`; o valor é validado entre 0 e 300 segundos e
+fica vinculado ao digest do manifesto. O pacing não é aplicado ao runtime da API nem ao fake.
 
 Se a cota gratuita interromper o piloto, o status ficará `partial`, a categoria estável será
 `MODEL_RATE_LIMITED` e o próprio CLI imprimirá:

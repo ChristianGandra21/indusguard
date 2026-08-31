@@ -19,6 +19,7 @@ from indusguard_evals.contracts import (
     EvaluationVariant,
 )
 from indusguard_evals.corpus import OfficialCorpus
+from indusguard_evals.pacing import PacedAgentModelGateway
 from indusguard_evals.report import BenchmarkInterruption, build_summary
 from indusguard_evals.repository import EvaluationRepository
 from indusguard_evals.runner import EvaluationProgress
@@ -60,11 +61,12 @@ def test_preflight_writes_auditable_metadata_without_payloads(
 
     payload = json.loads(output.read_text(encoding="utf-8"))
     serialized = json.dumps(payload, ensure_ascii=False)
-    assert payload["schema_version"] == "groq-pilot-preflight-v1"
+    assert payload["schema_version"] == "groq-pilot-preflight-v2"
     assert payload["repository"] == {"git_commit": commit, "worktree_clean": True}
     assert payload["corpus"]["version"] == "official-v1"
     assert payload["corpus"]["pilot_scenarios"] == ["CEN-01", "CEN-14"]
     assert len(payload["schedule"]) == 12
+    assert payload["model"]["minimum_request_interval_seconds"] == 60
     assert {item["seed"] for item in payload["schedule"]} == {11, 42, 73}
     assert {item["variant"] for item in payload["schedule"]} == {
         "prompt_only",
@@ -102,6 +104,19 @@ def test_groq_pilot_requires_explicit_external_transmission_consent() -> None:
     kind = _requested_execution_kind(_args(groq=True, consent=True), command="pilot")
 
     assert kind is EvaluationExecutionKind.GROQ_PILOT
+
+
+def test_only_the_groq_evaluation_gateway_receives_pacing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS", "45")
+    settings = eval_cli.GroqAgentSettings(GROQ_API_KEY="test-key", _env_file=None)
+
+    gateway = eval_cli._gateway(EvaluationExecutionKind.GROQ_PILOT, settings)
+    fake = eval_cli._gateway(EvaluationExecutionKind.OFFLINE_SMOKE)
+
+    assert isinstance(gateway, PacedAgentModelGateway)
+    assert not isinstance(fake, PacedAgentModelGateway)
 
 
 def test_groq_pilot_and_resume_require_preflight_before_external_dependencies(
