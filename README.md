@@ -529,9 +529,15 @@ esse instante é bloqueada antes da criação do gateway; sem o header, o CLI n�
 
 Para não recriar o limite de tokens dentro da mesma run, o piloto serializa as chamadas Groq e
 mantém por padrão 60 segundos entre seus inícios. O intervalo é configurável por
-`INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS`, aparece no manifesto `v2` e não afeta o
+`INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS`, aparece no manifesto `v3` e não afeta o
 playground, a API pública ou o smoke fake. Alterá-lo exige gerar outro manifesto e iniciar outra
 avaliação; não misture checkpoints produzidos com configurações diferentes.
+
+O runtime do piloto preserva os 60 segundos de orçamento ativo e acrescenta o pior caso de espera
+do pacing compartilhado. Com 8 chamadas máximas e intervalo de 60 segundos, o manifesto registra
+540 segundos de timeout total por run. Falhas de infraestrutura como `TIMEOUT`, indisponibilidade
+do modelo ou erro MCP/upstream interrompem a agenda com `runtime_failed` e tornam o resumo
+`invalid`; falhas atribuíveis à saída do agente continuam sendo medidas como desempenho.
 
 O manifesto é obrigatório e fica inválido se commit, corpus, modelo, agenda ou contrato de
 transmissão mudar. O passe completo responde `FULL_BENCHMARK_NOT_AUTHORIZED` e o judge 120B

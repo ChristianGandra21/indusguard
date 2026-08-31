@@ -32,17 +32,19 @@ class FakeVariantRuntime:
         *,
         rate_limit_once: bool = False,
         retry_after_seconds: int | None = None,
+        termination: AgentTerminationReason = AgentTerminationReason.COMPLETED,
     ) -> None:
         self.variant = variant
         self._recorder = recorder
         self._rate_limit_once = rate_limit_once
         self._retry_after_seconds = retry_after_seconds
+        self._termination = termination
 
     async def run(self, scheduled: object, case: object) -> EvaluationSample:
         termination = (
             AgentTerminationReason.MODEL_RATE_LIMITED
             if self._rate_limit_once
-            else AgentTerminationReason.COMPLETED
+            else self._termination
         )
         self._rate_limit_once = False
         result = agent_result(termination=termination).model_copy(update={"run_id": str(uuid4())})
@@ -182,3 +184,47 @@ def test_evaluation_persists_the_authorized_preflight_digest(tmp_path: Path) -> 
         return persisted.config.get("preflight_manifest_digest")
 
     assert asyncio.run(exercise()) == "b" * 64
+
+
+def test_runtime_failure_stops_and_invalidates_the_schedule(tmp_path: Path) -> None:
+    async def exercise() -> tuple[BenchmarkSummary, str | None, list[EvaluationProgress]]:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'invalid.db'}")
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        repository = EvaluationRepository(engine)
+        recorder = SqlAlchemyAgentRunRecorder(engine)
+        catalog = ConnectorCatalog(REPOSITORY_ROOT / "connectors")
+        catalog.load()
+        progress: list[EvaluationProgress] = []
+        runner = BenchmarkRunner(
+            corpus=OfficialCorpus(CORPUS_ROOT),
+            catalog=catalog,
+            repository=repository,
+            runtimes={
+                variant: FakeVariantRuntime(
+                    variant,
+                    recorder,
+                    termination=AgentTerminationReason.TIMEOUT,
+                )
+                for variant in EvaluationVariant
+            },
+            on_progress=progress.append,
+        )
+        evaluation_id = await runner.start(
+            phase=EvaluationPhase.PILOT,
+            model="fake-eval-model",
+            git_commit="abc123",
+        )
+        summary = await runner.execute(evaluation_id)
+        persisted = await repository.get(evaluation_id)
+        await engine.dispose()
+        return summary, persisted.status if persisted else None, progress
+
+    summary, persisted_status, progress = asyncio.run(exercise())
+
+    assert summary.status == "invalid"
+    assert summary.completed_runs == 1
+    assert summary.runtime_failures == {"TIMEOUT": 1}
+    assert persisted_status == "invalid"
+    assert len(progress) == 1
+    assert progress[0].checkpoint_status == "runtime_failed"

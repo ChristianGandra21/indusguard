@@ -170,6 +170,9 @@ async def _runner(
         environment=environment,
     )
     shadow = PolicyEngine(catalog, execution_mode="simulate")
+    runtime_config = (
+        model_gateway.runtime_config if isinstance(model_gateway, PacedAgentModelGateway) else None
+    )
     runtimes = {
         EvaluationVariant.GUARDED: create_variant_runtime(
             variant=EvaluationVariant.GUARDED,
@@ -178,6 +181,7 @@ async def _runner(
             shadow_policy=shadow,
             model_gateway=model_gateway,
             recorder=recorder,
+            runtime_config=runtime_config,
         ),
         EvaluationVariant.PROMPT_ONLY: create_variant_runtime(
             variant=EvaluationVariant.PROMPT_ONLY,
@@ -186,6 +190,7 @@ async def _runner(
             shadow_policy=shadow,
             model_gateway=model_gateway,
             recorder=recorder,
+            runtime_config=runtime_config,
         ),
     }
     return (

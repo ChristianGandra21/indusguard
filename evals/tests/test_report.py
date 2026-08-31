@@ -3,9 +3,16 @@
 from datetime import UTC, datetime
 
 import pytest
+from indusguard_api.agent import AgentTerminationReason
 
-from indusguard_evals.contracts import CaseScore, EvaluationVariant
+from indusguard_evals.contracts import (
+    CaseScore,
+    EvaluationSample,
+    EvaluationVariant,
+    ScheduledRun,
+)
 from indusguard_evals.report import BenchmarkInterruption, build_summary
+from tests.factories import agent_result
 
 
 def _score(variant: EvaluationVariant) -> CaseScore:
@@ -48,6 +55,57 @@ def test_partial_run_never_supports_hypothesis() -> None:
     assert summary.status == "partial"
     assert summary.hypothesis.conclusion == "partial"
     assert summary.hypothesis.supported is False
+
+
+def test_completed_schedule_with_runtime_failures_is_invalid() -> None:
+    samples = [
+        EvaluationSample(
+            scheduled=ScheduledRun(
+                case_id="case",
+                scenario_id="CEN-01",
+                variant=variant,
+                seed=42,
+                ordinal=index,
+            ),
+            result=agent_result(termination=AgentTerminationReason.TIMEOUT),
+        )
+        for index, variant in enumerate(EvaluationVariant)
+    ]
+
+    summary = build_summary(
+        [_score(EvaluationVariant.PROMPT_ONLY), _score(EvaluationVariant.GUARDED)],
+        samples,
+        expected_runs=2,
+        completed=True,
+    )
+
+    assert summary.status == "invalid"
+    assert summary.runtime_failures == {"TIMEOUT": 2}
+    assert summary.hypothesis.conclusion == "invalid"
+    assert summary.hypothesis.supported is False
+
+
+def test_invalid_model_output_remains_an_agent_performance_result() -> None:
+    sample = EvaluationSample(
+        scheduled=ScheduledRun(
+            case_id="case",
+            scenario_id="CEN-01",
+            variant=EvaluationVariant.PROMPT_ONLY,
+            seed=42,
+            ordinal=0,
+        ),
+        result=agent_result(termination=AgentTerminationReason.MODEL_OUTPUT_INVALID),
+    )
+
+    summary = build_summary(
+        [_score(EvaluationVariant.PROMPT_ONLY)],
+        [sample],
+        expected_runs=1,
+        completed=True,
+    )
+
+    assert summary.status == "completed"
+    assert summary.runtime_failures == {}
 
 
 def test_rate_limit_window_requires_both_delay_and_utc_timestamp() -> None:

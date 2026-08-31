@@ -17,10 +17,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from indusguard_evals.contracts import EvaluationPhase, EvaluationVariant
 from indusguard_evals.corpus import CorpusValidationError, OfficialCorpus
-from indusguard_evals.pacing import GroqPilotPacingSettings
+from indusguard_evals.pacing import (
+    GroqPilotPacingSettings,
+    pacing_aware_runtime_config,
+)
 from indusguard_evals.schedule import build_schedule
 
-PREFLIGHT_SCHEMA_VERSION = "groq-pilot-preflight-v2"
+PREFLIGHT_SCHEMA_VERSION = "groq-pilot-preflight-v3"
 TRANSMITTED_CATEGORIES = [
     "ticket_message",
     "fixed_agent_prompts",
@@ -111,6 +114,9 @@ class PreflightRuntimeBoundaries(BaseModel):
     execution_mode: Literal["simulate"] = "simulate"
     real_writes_enabled: Literal[False] = False
     goldens_loaded: Literal[False] = False
+    active_run_timeout_seconds: float = Field(gt=0)
+    paced_run_timeout_seconds: float = Field(gt=0)
+    max_model_calls: int = Field(ge=2)
 
 
 class GroqPilotPreflightManifest(BaseModel):
@@ -118,7 +124,7 @@ class GroqPilotPreflightManifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["groq-pilot-preflight-v2"] = PREFLIGHT_SCHEMA_VERSION
+    schema_version: Literal["groq-pilot-preflight-v3"] = PREFLIGHT_SCHEMA_VERSION
     created_at: datetime
     phase: Literal["pilot"] = "pilot"
     execution_kind: Literal["groq_pilot"] = "groq_pilot"
@@ -191,6 +197,10 @@ def build_groq_pilot_preflight(
     if settings.api_key is None or not settings.api_key.get_secret_value().strip():
         raise PreflightError("MODEL_NOT_CONFIGURED", "GROQ_API_KEY precisa estar definida")
     pacing = pacing_settings or GroqPilotPacingSettings()
+    runtime_config = pacing_aware_runtime_config(pacing)
+    active_run_timeout_seconds = runtime_config.run_timeout_seconds - (
+        pacing.minimum_interval_seconds * runtime_config.max_model_calls
+    )
     repository = _repository(root)
     try:
         catalog = ConnectorCatalog(root / "connectors")
@@ -247,7 +257,11 @@ def build_groq_pilot_preflight(
             included_categories=TRANSMITTED_CATEGORIES,
             excluded_categories=EXCLUDED_CATEGORIES,
         ).model_dump(mode="json"),
-        "runtime_boundaries": PreflightRuntimeBoundaries().model_dump(mode="json"),
+        "runtime_boundaries": PreflightRuntimeBoundaries(
+            active_run_timeout_seconds=active_run_timeout_seconds,
+            paced_run_timeout_seconds=runtime_config.run_timeout_seconds,
+            max_model_calls=runtime_config.max_model_calls,
+        ).model_dump(mode="json"),
     }
     normalized = GroqPilotPreflightManifest.model_validate(
         {**unsigned, "manifest_digest": "0" * 64}

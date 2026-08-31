@@ -15,6 +15,7 @@ from indusguard_api.agent import (
     AgentPlanningContext,
     AgentPlanStep,
     AgentRunRequest,
+    AgentRuntimeConfig,
     AgentToolDefinition,
     GatewayResult,
 )
@@ -36,6 +37,28 @@ class GroqPilotPacingSettings(BaseSettings):
         ge=0,
         le=300,
         validation_alias="INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS",
+    )
+
+
+def pacing_aware_runtime_config(
+    settings: GroqPilotPacingSettings,
+) -> AgentRuntimeConfig:
+    """Preserva o orçamento ativo e acrescenta toda espera possível do pacing.
+
+    O gateway é compartilhado entre runs. Portanto, uma run pode aguardar antes de sua
+    primeira chamada e entre todas as chamadas seguintes.
+    """
+
+    defaults = AgentRuntimeConfig()
+    pacing_wait_budget = settings.minimum_interval_seconds * defaults.max_model_calls
+    return AgentRuntimeConfig(
+        max_model_calls=defaults.max_model_calls,
+        max_tool_calls=defaults.max_tool_calls,
+        run_timeout_seconds=defaults.run_timeout_seconds + pacing_wait_budget,
+        max_evidence_bytes=defaults.max_evidence_bytes,
+        max_run_evidence_bytes=defaults.max_run_evidence_bytes,
+        prompt_version=defaults.prompt_version,
+        policy_version=defaults.policy_version,
     )
 
 
@@ -62,6 +85,14 @@ class PacedAgentModelGateway:
     @property
     def model_name(self) -> str:
         return self._delegate.model_name
+
+    @property
+    def runtime_config(self) -> AgentRuntimeConfig:
+        settings = GroqPilotPacingSettings(
+            INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS=self._minimum_interval_seconds,
+            _env_file=None,
+        )
+        return pacing_aware_runtime_config(settings)
 
     async def _paced(
         self,

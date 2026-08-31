@@ -17,7 +17,12 @@ from indusguard_evals.contracts import (
 )
 from indusguard_evals.corpus import OfficialCorpus
 from indusguard_evals.execution import VariantRuntime
-from indusguard_evals.report import BenchmarkInterruption, BenchmarkSummary, build_summary
+from indusguard_evals.report import (
+    INVALID_RUNTIME_TERMINATIONS,
+    BenchmarkInterruption,
+    BenchmarkSummary,
+    build_summary,
+)
 from indusguard_evals.repository import EvaluationRepository
 from indusguard_evals.schedule import FULL_SEEDS, PILOT_SEEDS, build_schedule, pending_schedule
 from indusguard_evals.scorer import DeterministicScorer
@@ -32,7 +37,7 @@ class EvaluationProgress(BaseModel):
     evaluation_id: str
     completed_runs: int = Field(ge=0)
     expected_runs: int = Field(ge=0)
-    checkpoint_status: Literal["completed", "rate_limited"]
+    checkpoint_status: Literal["completed", "rate_limited", "runtime_failed"]
     case_id: str
     scenario_id: str
     variant: EvaluationVariant
@@ -143,6 +148,21 @@ class BenchmarkRunner:
                     )
                 )
                 break
+            if sample.result.metrics.termination_reason in INVALID_RUNTIME_TERMINATIONS:
+                completed_runs += 1
+                self._emit_progress(
+                    EvaluationProgress(
+                        evaluation_id=evaluation_id,
+                        completed_runs=completed_runs,
+                        expected_runs=len(schedule),
+                        checkpoint_status="runtime_failed",
+                        case_id=scheduled.case_id,
+                        scenario_id=scheduled.scenario_id,
+                        variant=scheduled.variant,
+                        seed=scheduled.seed,
+                    )
+                )
+                break
             completed_runs += 1
             self._emit_progress(
                 EvaluationProgress(
@@ -174,7 +194,7 @@ class BenchmarkRunner:
         )
         await self._repository.finish(
             evaluation_id,
-            status="completed" if complete else "partial",
+            status=summary.status,
             summary=summary.model_dump(mode="json"),
             golden_digest=goldens.digest,
         )

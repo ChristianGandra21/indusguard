@@ -56,6 +56,9 @@ def test_manifest_rejects_tampering_and_live_configuration_drift(
 
     loaded = load_and_validate_groq_pilot_preflight(REPOSITORY_ROOT, output, _settings())
     assert loaded.manifest_digest == manifest.manifest_digest
+    assert loaded.runtime_boundaries.active_run_timeout_seconds == 60
+    assert loaded.runtime_boundaries.paced_run_timeout_seconds == 540
+    assert loaded.runtime_boundaries.max_model_calls == 8
 
     payload = json.loads(output.read_text(encoding="utf-8"))
     payload["schedule"][0]["seed"] = 999

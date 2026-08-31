@@ -357,7 +357,11 @@ O runner emite progresso redigido depois de cada checkpoint. Uma interrupção G
 o código `MODEL_RATE_LIMITED` e o `Retry-After` normalizado; o resumo calcula
 `resume_not_before` em UTC para impedir tentativas antecipadas sem reconstruir o gateway.
 No piloto, um decorator exclusivo da avaliação serializa chamadas de modelo e aplica o intervalo
-monotônico registrado no manifesto `v2`; o gateway usado pela API pública não recebe esse pacing.
+monotônico registrado no manifesto `v3`; o gateway usado pela API pública não recebe esse pacing.
+O mesmo manifesto registra o orçamento ativo e o timeout total acrescido das esperas possíveis do
+gateway compartilhado. Timeout, indisponibilidade do modelo e erros MCP/upstream emitem
+`runtime_failed`, encerram a agenda e tornam a avaliação `invalid`; falhas atribuíveis ao agente
+continuam sendo pontuadas como desempenho.
 
 `AgentPlanningContext` é uma allowlist derivada de `TrustedRunContext`: IDs de contexto declarados
 no domínio, permissões, escopos e pedido direto. Confirmação, digest, headers e credenciais nunca

@@ -61,12 +61,15 @@ def test_preflight_writes_auditable_metadata_without_payloads(
 
     payload = json.loads(output.read_text(encoding="utf-8"))
     serialized = json.dumps(payload, ensure_ascii=False)
-    assert payload["schema_version"] == "groq-pilot-preflight-v2"
+    assert payload["schema_version"] == "groq-pilot-preflight-v3"
     assert payload["repository"] == {"git_commit": commit, "worktree_clean": True}
     assert payload["corpus"]["version"] == "official-v1"
     assert payload["corpus"]["pilot_scenarios"] == ["CEN-01", "CEN-14"]
     assert len(payload["schedule"]) == 12
     assert payload["model"]["minimum_request_interval_seconds"] == 60
+    assert payload["runtime_boundaries"]["active_run_timeout_seconds"] == 60
+    assert payload["runtime_boundaries"]["paced_run_timeout_seconds"] == 540
+    assert payload["runtime_boundaries"]["max_model_calls"] == 8
     assert {item["seed"] for item in payload["schedule"]} == {11, 42, 73}
     assert {item["variant"] for item in payload["schedule"]} == {
         "prompt_only",
@@ -116,6 +119,8 @@ def test_only_the_groq_evaluation_gateway_receives_pacing(
     fake = eval_cli._gateway(EvaluationExecutionKind.OFFLINE_SMOKE)
 
     assert isinstance(gateway, PacedAgentModelGateway)
+    assert gateway.runtime_config.run_timeout_seconds == 420
+    assert gateway.runtime_config.max_model_calls == 8
     assert not isinstance(fake, PacedAgentModelGateway)
 
 

@@ -115,10 +115,11 @@ export GROQ_API_KEY="sua-chave-local"
   --output .data/groq-pilot-preflight.json
 ```
 
-O manifesto `groq-pilot-preflight-v2` contém commit, digest dos inputs, configuração não secreta do
-modelo, intervalo mínimo entre chamadas, agenda contrabalanceada, tamanhos e hashes das mensagens e
-listas de categorias incluídas e excluídas. Ele não duplica texto de ticket, evidência, payload de
-tool ou chave. Depois de revisar o arquivo, autorize a transmissão vinculada àquele manifesto:
+O manifesto `groq-pilot-preflight-v3` contém commit, digest dos inputs, configuração não secreta do
+modelo, intervalo mínimo entre chamadas, orçamento ativo e timeout pacing-aware, agenda
+contrabalanceada, tamanhos e hashes das mensagens e listas de categorias incluídas e excluídas.
+Ele não duplica texto de ticket, evidência, payload de tool ou chave. Depois de revisar o arquivo,
+autorize a transmissão vinculada àquele manifesto:
 
 ```bash
 .venv/bin/indusguard-eval pilot --groq \
@@ -141,6 +142,12 @@ O gateway do benchmark serializa chamadas e mantém 60 segundos entre seus iníc
 reproduzir o teto gratuito de tokens por minuto dentro da mesma identidade. Ajuste somente via
 `INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS`; o valor é validado entre 0 e 300 segundos e
 fica vinculado ao digest do manifesto. O pacing não é aplicado ao runtime da API nem ao fake.
+O piloto preserva 60 segundos de execução ativa e acrescenta uma janela para cada chamada máxima,
+inclusive a primeira de uma nova run porque o gateway é compartilhado. Nos defaults atuais, o
+timeout total auditado é 540 segundos. Se uma run terminar por `TIMEOUT`, indisponibilidade do
+modelo ou erro MCP/upstream, o runner emite `runtime_failed`, interrompe a agenda e grava o resumo
+como `invalid`. Saída inválida, tool inexistente e falha de finalização continuam sendo resultados
+de desempenho do agente; `MODEL_RATE_LIMITED` permanece `partial` e retomável.
 
 Se a cota gratuita interromper o piloto, o status ficará `partial`, a categoria estável será
 `MODEL_RATE_LIMITED` e o próprio CLI imprimirá:

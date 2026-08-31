@@ -485,7 +485,7 @@ class AgentRuntimeConfig(BaseModel):
 
     max_model_calls: int = Field(default=8, ge=2, le=32)
     max_tool_calls: int = Field(default=12, ge=1, le=64)
-    run_timeout_seconds: float = Field(default=60, gt=0, le=300)
+    run_timeout_seconds: float = Field(default=60, gt=0, le=3600)
     max_evidence_bytes: int = Field(default=32 * 1024, ge=256, le=1024 * 1024)
     max_run_evidence_bytes: int = Field(default=128 * 1024, ge=256, le=4 * 1024 * 1024)
     prompt_version: str = PROMPT_VERSION

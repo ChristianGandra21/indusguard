@@ -9,6 +9,7 @@ from indusguard_api.agent import (
     AgentRunRecorder,
     AgentRunRequest,
     AgentRuntime,
+    AgentRuntimeConfig,
     TrustedRunContext,
 )
 from indusguard_api.connectors import ConnectorCatalog
@@ -129,9 +130,16 @@ def create_variant_runtime(
     shadow_policy: PolicyEngine,
     model_gateway: AgentModelGateway,
     recorder: AgentRunRecorder | None = None,
+    runtime_config: AgentRuntimeConfig | None = None,
 ) -> VariantRuntime:
     """Factory pequena garante que ambas as variantes usam o mesmo AgentRuntime e MCP."""
 
     probe = RecordingProtectedExecutor(executor, shadow_policy)
-    runtime = AgentRuntime(catalog, probe, model_gateway, recorder=recorder)
+    runtime = AgentRuntime(
+        catalog,
+        probe,
+        model_gateway,
+        recorder=recorder,
+        config=runtime_config,
+    )
     return VariantRuntime(variant, runtime, probe)

@@ -10,7 +10,11 @@ from indusguard_api.agent import (
     ModelRateLimitedError,
 )
 
-from indusguard_evals.pacing import PacedAgentModelGateway
+from indusguard_evals.pacing import (
+    GroqPilotPacingSettings,
+    PacedAgentModelGateway,
+    pacing_aware_runtime_config,
+)
 
 
 class VirtualClock:
@@ -56,6 +60,18 @@ class WindowLimitedGateway:
 
 
 REQUEST = AgentRunRequest(connector_id="synthetic", message="Consulte o widget.")
+
+
+def test_pacing_aware_runtime_budget_preserves_the_active_timeout() -> None:
+    settings = GroqPilotPacingSettings(
+        INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS=60,
+        _env_file=None,
+    )
+
+    config = pacing_aware_runtime_config(settings)
+
+    assert config.max_model_calls == 8
+    assert config.run_timeout_seconds == 540
 
 
 def test_pacing_prevents_the_intrarun_rate_limit_reproduction() -> None:
