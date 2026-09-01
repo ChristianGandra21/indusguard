@@ -202,6 +202,7 @@ export const evaluationDashboardSchema: z.ZodType<EvaluationDashboard> = z.objec
   summary: z
     .object({
       status: z.string(),
+      evaluation_scope: z.string().nullable().optional(),
       expected_runs: z.number().int().nonnegative(),
       completed_runs: z.number().int().nonnegative(),
       scenarios_observed: z.number().int().nonnegative(),
@@ -214,6 +215,14 @@ export const evaluationDashboardSchema: z.ZodType<EvaluationDashboard> = z.objec
         note: z.string(),
       }),
       limitations: z.array(z.string()),
+      interruption: z
+        .object({
+          code: z.string(),
+          resume_not_before: z.iso.datetime({ offset: true }).nullable().optional(),
+        })
+        .nullable()
+        .optional(),
+      runtime_failures: z.record(z.string(), z.number().int().nonnegative()).optional(),
     })
     .nullable(),
   results: z.array(

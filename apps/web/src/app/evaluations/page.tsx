@@ -15,6 +15,10 @@ import { formatDate, formatPercent } from "@/lib/utils";
 
 const metricLabels: Record<string, string> = {
   complete_benchmark: "Benchmark completo",
+  pilot_complete: "Piloto concluído",
+  full_benchmark_complete: "Benchmark completo concluído",
+  pilot_security_effect_observed: "Efeito de segurança observado no piloto",
+  pilot_utility_observed: "Utilidade observada no piloto",
   guarded_zero_unsafe_writes: "Zero escritas inseguras no guarded",
   prompt_only_more_unsafe_than_guarded: "Efeito diferencial observado",
   guarded_loses_at_most_one_scenario: "Perda máxima de um cenário",
@@ -55,6 +59,9 @@ export default function EvaluationsPage() {
   const data = evaluation.data;
   const summary = data.summary;
   const kind = executionKind(data);
+  const guidance = evaluationGuidance(data);
+  const safetyObserved = summary?.hypothesis.criteria.guarded_zero_unsafe_writes === true;
+  const utilityObserved = summary?.hypothesis.criteria.pilot_utility_observed === true;
 
   return (
     <>
@@ -65,21 +72,24 @@ export default function EvaluationsPage() {
         actions={<Badge tone={kind.tone}><FlaskConical size={11} /> {kind.label}</Badge>}
       />
 
-      {!data.scientific_evidence ? (
-        <div className="mb-6 flex gap-3 border border-signal/30 bg-signal/[0.06] p-4" role="note">
-          <AlertTriangle className="mt-0.5 shrink-0 text-signal" size={18} />
-          <div>
-            <p className="text-sm font-semibold">Este resultado não sustenta a hipótese.</p>
-            <p className="mt-1 text-xs leading-5 text-muted">É um smoke com modelo fake para provar agendamento, persistência, scoring e relatório. Não mede a qualidade do agente.</p>
-          </div>
+      <div
+        className={`mb-6 flex gap-3 border p-4 ${guidance.tone === "danger" ? "border-danger/30 bg-danger/[0.06]" : guidance.tone === "good" ? "border-ok/30 bg-ok/[0.06]" : "border-signal/30 bg-signal/[0.06]"}`}
+        role={guidance.tone === "danger" ? "alert" : "note"}
+      >
+        <AlertTriangle className="mt-0.5 shrink-0 text-signal" size={18} />
+        <div>
+          <p className="text-sm font-semibold">{guidance.title}</p>
+          <p className="mt-1 text-xs leading-5 text-muted">{guidance.body}</p>
+          <p className="mt-3 font-mono text-[9px] uppercase tracking-[0.14em] text-dim">Próxima ação segura</p>
+          <p className="mt-1 text-xs leading-5 text-muted">{guidance.nextAction}</p>
         </div>
-      ) : null}
+      </div>
 
       <section className="grid gap-px border border-line bg-line sm:grid-cols-2 xl:grid-cols-4">
-        <HeaderMetric label="Estado" value={data.status} detail={data.phase} />
-        <HeaderMetric label="Runs" value={summary ? `${summary.completed_runs}/${summary.expected_runs}` : "—"} detail="concluídas" />
-        <HeaderMetric label="Cenários" value={summary?.scenarios_observed ?? "—"} detail="observados" />
-        <HeaderMetric label="Overhead" value={summary?.median_paired_overhead_percent == null ? "—" : `${summary.median_paired_overhead_percent.toFixed(1)}%`} detail="mediana pareada" />
+        <HeaderMetric label="Saúde do runtime" value={runtimeHealth(data)} detail={runtimeDetail(data)} />
+        <HeaderMetric label="Segurança" value={safetyObserved ? "observada" : "não provada"} detail="gates determinísticos" />
+        <HeaderMetric label="Utilidade" value={utilityObserved ? "observada" : "não provada"} detail="evidência auxiliar" />
+        <HeaderMetric label="Escopo observado" value={summary?.evaluation_scope ?? data.phase} detail={summary ? `${summary.scenarios_observed} cenários` : "sem resumo"} />
       </section>
 
       {!summary ? (
@@ -231,4 +241,88 @@ function executionKind(data: EvaluationDashboard): { label: string; tone: "good"
   }
   if (data.execution_kind === "offline_smoke") return { label: "smoke offline", tone: "warning" };
   return { label: "origem desconhecida", tone: "neutral" };
+}
+
+type EvaluationGuidance = {
+  title: string;
+  body: string;
+  nextAction: string;
+  tone: "danger" | "good" | "warning";
+};
+
+function evaluationGuidance(data: EvaluationDashboard): EvaluationGuidance {
+  const summary = data.summary;
+  const runtimeCodes = Object.keys(summary?.runtime_failures ?? {});
+
+  if (data.execution_kind === "offline_smoke") {
+    return {
+      title: "Smoke de infraestrutura",
+      body: "Execução com modelo fake: valida agendamento, persistência, scoring e relatório, mas não mede a qualidade do agente.",
+      nextAction: "Use o smoke como verificação local; um piloto real futuro exige manifesto novo e consentimento explícito.",
+      tone: "warning",
+    };
+  }
+
+  if (data.status === "invalid" || runtimeCodes.length > 0) {
+    const failures = runtimeCodes.length > 0 ? runtimeCodes.join(", ") : "execução inválida";
+    return {
+      title: "Falha de runtime",
+      body: `${failures}: não use scores desta execução como evidência de qualidade do agente.`,
+      nextAction: "Corrija a causa operacional e valide localmente antes de autorizar qualquer nova transmissão externa.",
+      tone: "danger",
+    };
+  }
+
+  if (data.status === "partial") {
+    const completed = summary?.completed_runs ?? 0;
+    const expected = summary?.expected_runs ?? 0;
+    const interruption = summary?.interruption?.code
+      ? ` Interrupção: ${summary.interruption.code}${summary.interruption.resume_not_before ? `; retomada não antes de ${formatDate(summary.interruption.resume_not_before)}` : ""}.`
+      : "";
+    return {
+      title: data.execution_kind === "groq_pilot" ? "Piloto real interrompido" : "Avaliação parcial",
+      body: `Não interprete ${completed}/${expected} como qualidade do agente.${interruption}`,
+      nextAction: "Congele os checkpoints existentes; só retome com checkout compatível, manifesto revalidado e consentimento explícito.",
+      tone: "warning",
+    };
+  }
+
+  if (data.execution_kind === "groq_pilot") {
+    return {
+      title: "Piloto real, escopo experimental",
+      body: "O piloto concluído permite diagnóstico local, mas não substitui um benchmark completo nem prova ganho de qualidade.",
+      nextAction: `Execute indusguard-eval improve ${data.evaluation_id} --output improvement-plan.md e submeta o plano à revisão humana.`,
+      tone: "warning",
+    };
+  }
+
+  if (data.scientific_evidence && data.execution_kind === "groq_benchmark") {
+    return {
+      title: "Benchmark completo e válido",
+      body: "A execução completou o escopo declarado sem falhas de runtime; os gates abaixo descrevem a evidência observada.",
+      nextAction: "Revise métricas, limitações e artefatos antes de qualquer decisão de release.",
+      tone: "good",
+    };
+  }
+
+  return {
+    title: "Avaliação sem evidência conclusiva",
+    body: "O registro não atende aos requisitos para sustentar uma conclusão sobre a hipótese.",
+    nextAction: "Revise o estado, o escopo e as falhas de runtime antes de planejar uma nova execução.",
+    tone: "warning",
+  };
+}
+
+function runtimeHealth(data: EvaluationDashboard): string {
+  if (data.status === "invalid" || Object.keys(data.summary?.runtime_failures ?? {}).length > 0) return "falhou";
+  if (data.status === "partial") return "interrompido";
+  if (data.status === "completed") return "saudável";
+  return data.status;
+}
+
+function runtimeDetail(data: EvaluationDashboard): string {
+  const failures = Object.keys(data.summary?.runtime_failures ?? {});
+  if (failures.length > 0) return failures.join(", ");
+  if (data.summary) return `${data.summary.completed_runs}/${data.summary.expected_runs} runs`;
+  return data.phase;
 }

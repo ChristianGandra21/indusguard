@@ -43,6 +43,7 @@ const evaluation: EvaluationDashboard = {
   summary_available: true,
   summary: {
     status: "partial",
+    evaluation_scope: "pilot",
     expected_runs: 12,
     completed_runs: 6,
     scenarios_observed: 2,
@@ -51,10 +52,20 @@ const evaluation: EvaluationDashboard = {
     hypothesis: {
       conclusion: "partial",
       supported: false,
-      criteria: { complete_benchmark: false },
+      criteria: {
+        complete_benchmark: false,
+        pilot_complete: false,
+        pilot_utility_observed: false,
+        guarded_zero_unsafe_writes: true,
+      },
       note: "Avaliação parcial.",
     },
     limitations: ["Modelo fake, sem valor científico."],
+    interruption: {
+      code: "MODEL_RATE_LIMITED",
+      resume_not_before: "2026-08-24T13:00:00Z",
+    },
+    runtime_failures: {},
   },
   results: [],
 };
@@ -80,8 +91,10 @@ describe("página de avaliações", () => {
     renderPage();
 
     expect(await screen.findByText("smoke offline")).toBeInTheDocument();
-    expect(screen.getByText("Este resultado não sustenta a hipótese.")).toBeInTheDocument();
-    expect(screen.getAllByText("partial")).toHaveLength(2);
+    expect(screen.getByText("Smoke de infraestrutura")).toBeInTheDocument();
+    expect(screen.getAllByText(/modelo fake/i)).not.toHaveLength(0);
+    expect(screen.getByText("Próxima ação segura")).toBeInTheDocument();
+    expect(screen.getByText("partial")).toBeInTheDocument();
   });
 
   it("distingue um benchmark Groq de um smoke offline", async () => {
@@ -95,7 +108,7 @@ describe("página de avaliações", () => {
     renderPage();
 
     expect(await screen.findByText("benchmark Groq")).toBeInTheDocument();
-    expect(screen.queryByText("Este resultado não sustenta a hipótese.")).not.toBeInTheDocument();
+    expect(screen.getByText("Benchmark completo e válido")).toBeInTheDocument();
   });
 
   it("marca o piloto Groq real como experimental", async () => {
@@ -108,7 +121,56 @@ describe("página de avaliações", () => {
     renderPage();
 
     expect(await screen.findByText("piloto Groq experimental")).toBeInTheDocument();
-    expect(screen.getByText("Este resultado não sustenta a hipótese.")).toBeInTheDocument();
+    expect(screen.getByText("Piloto real interrompido")).toBeInTheDocument();
+    expect(screen.getByText(/Não interprete 6\/12 como qualidade/)).toBeInTheDocument();
+    expect(screen.queryByText(/smoke com modelo fake/i)).not.toBeInTheDocument();
+  });
+
+  it("separa falha de runtime de falha de qualidade", async () => {
+    vi.spyOn(api, "latestEvaluation").mockResolvedValue({
+      ...evaluation,
+      status: "invalid",
+      execution_kind: "groq_pilot",
+      summary: {
+        ...evaluation.summary!,
+        status: "invalid",
+        interruption: null,
+        runtime_failures: { MODEL_UNAVAILABLE: 1 },
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByText("Falha de runtime")).toBeInTheDocument();
+    expect(screen.getAllByText(/MODEL_UNAVAILABLE/)).not.toHaveLength(0);
+    expect(screen.getByText(/não use scores desta execução/)).toBeInTheDocument();
+  });
+
+  it("orienta análise local depois de um piloto Groq concluído", async () => {
+    vi.spyOn(api, "latestEvaluation").mockResolvedValue({
+      ...evaluation,
+      status: "completed",
+      execution_kind: "groq_pilot",
+      summary: {
+        ...evaluation.summary!,
+        status: "completed",
+        completed_runs: 12,
+        interruption: null,
+        hypothesis: {
+          ...evaluation.summary!.hypothesis,
+          conclusion: "pilot_observation",
+          criteria: {
+            ...evaluation.summary!.hypothesis.criteria,
+            pilot_complete: true,
+          },
+        },
+      },
+    });
+
+    renderPage();
+
+    expect(await screen.findByText("Piloto real, escopo experimental")).toBeInTheDocument();
+    expect(screen.getByText(/indusguard-eval improve/)).toBeInTheDocument();
   });
 
   it("explica quando a avaliação existe mas ainda não possui resumo", async () => {

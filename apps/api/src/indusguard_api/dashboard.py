@@ -61,12 +61,22 @@ class PublicHypothesisAssessment(BaseModel):
     note: str
 
 
+class PublicBenchmarkInterruption(BaseModel):
+    """Categoria e instante seguro; retry/header e conteúdo externo não são públicos."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    code: str
+    resume_not_before: datetime | None = None
+
+
 class PublicBenchmarkSummary(BaseModel):
     """Recorte validado do resumo salvo pelo scorer determinístico."""
 
     model_config = ConfigDict(extra="ignore")
 
     status: str
+    evaluation_scope: str | None = None
     expected_runs: int = Field(ge=0)
     completed_runs: int = Field(ge=0)
     scenarios_observed: int = Field(ge=0)
@@ -74,6 +84,8 @@ class PublicBenchmarkSummary(BaseModel):
     median_paired_overhead_percent: float | None
     hypothesis: PublicHypothesisAssessment
     limitations: list[str]
+    interruption: PublicBenchmarkInterruption | None = None
+    runtime_failures: dict[str, int] = Field(default_factory=dict)
 
 
 class PublicEvaluationScore(BaseModel):
@@ -337,6 +349,15 @@ class SqlAlchemyDashboardReader:
             execution_kind = EvaluationExecutionKind(raw_kind)
         except ValueError:
             execution_kind = EvaluationExecutionKind.UNKNOWN
+        scientific_evidence = (
+            execution_kind is EvaluationExecutionKind.GROQ_BENCHMARK
+            and row.phase == "full"
+            and row.status == "completed"
+            and summary is not None
+            and summary.status == "completed"
+            and summary.completed_runs == summary.expected_runs
+            and not summary.runtime_failures
+        )
         return PublicEvaluationDashboard(
             evaluation_id=row.evaluation_id,
             phase=row.phase,
@@ -345,7 +366,7 @@ class SqlAlchemyDashboardReader:
             model=row.model,
             git_commit=row.git_commit,
             execution_kind=execution_kind,
-            scientific_evidence=execution_kind is EvaluationExecutionKind.GROQ_BENCHMARK,
+            scientific_evidence=scientific_evidence,
             started_at=_as_utc(row.started_at),
             completed_at=_as_utc(row.completed_at) if row.completed_at else None,
             summary=summary,

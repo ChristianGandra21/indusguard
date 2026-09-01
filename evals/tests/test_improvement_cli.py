@@ -33,6 +33,9 @@ async def _seed_evaluation(
     database_url: str,
     *,
     status: str = "completed",
+    execution_kind: EvaluationExecutionKind = EvaluationExecutionKind.GROQ_PILOT,
+    expected_runs: int = 1,
+    golden_digest: str | None = None,
 ) -> tuple[str, EvaluationSample]:
     corpus = OfficialCorpus(CORPUS_ROOT)
     inputs = corpus.load_inputs()
@@ -77,7 +80,7 @@ async def _seed_evaluation(
         input_digest=inputs.digest,
         model="openai/gpt-oss-20b",
         git_commit="a" * 40,
-        config={"execution_kind": EvaluationExecutionKind.GROQ_PILOT.value},
+        config={"execution_kind": execution_kind.value},
     )
     await repository.checkpoint(evaluation_id, sample)
     score = DeterministicScorer(catalog, inputs, goldens).score(sample)
@@ -87,11 +90,11 @@ async def _seed_evaluation(
         status=status,
         summary={
             "status": status,
-            "expected_runs": 1,
+            "expected_runs": expected_runs,
             "completed_runs": 1,
             "runtime_failures": {},
         },
-        golden_digest=goldens.digest,
+        golden_digest=golden_digest or goldens.digest,
     )
     await engine.dispose()
     return evaluation_id, sample
@@ -148,6 +151,43 @@ def test_improve_cli_rejects_unknown_and_partial_evaluations(tmp_path: Path) -> 
         )
     assert not (tmp_path / "missing.md").exists()
     assert not (tmp_path / "partial.md").exists()
+
+
+@pytest.mark.parametrize(
+    ("seed_options", "error_code"),
+    [
+        (
+            {"execution_kind": EvaluationExecutionKind.OFFLINE_SMOKE},
+            "EVALUATION_NOT_ANALYZABLE",
+        ),
+        ({"status": "invalid"}, "EVALUATION_NOT_ANALYZABLE"),
+        ({"expected_runs": 2}, "EVALUATION_NOT_ANALYZABLE"),
+        ({"golden_digest": "b" * 64}, "EVALUATION_ARTIFACT_MISMATCH"),
+    ],
+    ids=["fake", "invalid", "incomplete_checkpoints", "changed_golden"],
+)
+def test_improve_cli_rejects_ineligible_evidence_with_stable_codes(
+    tmp_path: Path,
+    seed_options: dict[str, object],
+    error_code: str,
+) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'eval.db'}"
+    evaluation_id, _ = asyncio.run(_seed_evaluation(database_url, **seed_options))
+    output = tmp_path / "must-not-exist.md"
+
+    with pytest.raises(SystemExit, match=error_code):
+        main(
+            [
+                "--database-url",
+                database_url,
+                "improve",
+                evaluation_id,
+                "--output",
+                str(output),
+            ]
+        )
+
+    assert not output.exists()
 
 
 def test_review_import_cli_writes_a_redacted_assisted_bundle(tmp_path: Path) -> None:

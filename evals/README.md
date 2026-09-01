@@ -103,6 +103,34 @@ Depois de uma avaliação persistida:
 O CSV de revisão humana omite os nomes das variantes e embaralha as respostas. A chave de
 reconciliação é salva em outro arquivo; não a entregue à pessoa revisora antes da anotação.
 
+Importe a planilha preenchida e gere um diagnóstico somente leitura com caminhos explicitamente
+informados:
+
+```bash
+.venv/bin/indusguard-eval review-import UUID \
+  --input .data/human-review.csv \
+  --key .data/human-review-key.json \
+  --review-method human \
+  --output .data/human-review-bundle.json
+.venv/bin/indusguard-eval improve UUID \
+  --human-review .data/human-review-bundle.json \
+  --output .data/improvement-plan.md
+```
+
+`review-import` exige todos os aliases uma única vez, notas binárias e correspondência exata com
+os checkpoints. O bundle `human-review-bundle-v1` contém apenas identidades, notas, agregados,
+método, `calibrated=false` e digests do CSV, chave e rubrica; mensagens, respostas, evidências e
+notas livres ficam de fora. Revisão `assisted` segue o mesmo contrato e continua auxiliar.
+
+`improve` aceita somente `groq_pilot` ou `groq_benchmark` concluído, sem falha de runtime, com todos
+os checkpoints e digests compatíveis com o corpus atual. O artefato `improvement-plan-v1` agrupa
+falhas por cenário, variante e seed, separa agente, policy e runtime e propõe hipóteses, riscos e
+testes. Ele nunca modifica código, banco, golden ou agenda.
+
+Nesta linha de desenvolvimento, `d305451a…` é a baseline concluída para o primeiro diagnóstico.
+`b825a34e…` fica congelado como `partial`: não o retome em um novo commit. Qualquer alteração do
+checkout torna manifestos anteriores obsoletos e exige novo preflight e novo consentimento.
+
 ## Piloto Groq autorizado e ressalva de privacidade
 
 Somente o piloto de 12 runs pode usar a Groq. Primeiro gere o manifesto em um checkout limpo. Esse
