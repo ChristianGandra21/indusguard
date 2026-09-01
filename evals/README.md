@@ -115,6 +115,8 @@ informados:
 .venv/bin/indusguard-eval improve UUID \
   --human-review .data/human-review-bundle.json \
   --output .data/improvement-plan.md
+.venv/bin/indusguard-eval compare BASELINE_UUID CANDIDATE_UUID \
+  --output .data/evaluation-comparison.md
 ```
 
 `review-import` exige todos os aliases uma única vez, notas binárias e correspondência exata com
@@ -126,6 +128,19 @@ notas livres ficam de fora. Revisão `assisted` segue o mesmo contrato e continu
 os checkpoints e digests compatíveis com o corpus atual. O artefato `improvement-plan-v1` agrupa
 falhas por cenário, variante e seed, separa agente, policy e runtime e propõe hipóteses, riscos e
 testes. Ele nunca modifica código, banco, golden ou agenda.
+
+`compare` aceita somente duas avaliações Groq concluídas, sem falhas de runtime e com checkpoints
+completos. Dataset, digests de input e golden, fase, tipo de execução, modelo e conjunto exato de
+`case_id × scenario_id × variant × seed` devem coincidir. A baseline e a candidata precisam ter
+IDs distintos. Violações são recusadas antes do scoring com os códigos estáveis
+`EVALUATION_NOT_COMPARABLE`, `EVALUATION_ARTIFACT_MISMATCH`,
+`EVALUATION_COMPARISON_INVALID` ou `EVALUATION_COMPARISON_MISMATCH`.
+
+O artefato `evaluation-comparison-v1` contém apenas metadados, deltas agregados de runtime,
+segurança e utilidade, classificação redigida por identidade e falhas resolvidas, persistentes ou
+novas. Mensagens, respostas, payloads de evidência, notas livres e conteúdo do golden não entram
+no Markdown. O resultado é observacional, não demonstra causalidade nem significância estatística
+e nunca aciona merge, alteração de código ou nova chamada externa.
 
 Nesta linha de desenvolvimento, `d305451a…` é a baseline concluída para o primeiro diagnóstico.
 `b825a34e…` fica congelado como `partial`: não o retome em um novo commit. Qualquer alteração do

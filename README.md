@@ -36,7 +36,7 @@ prontos, incluindo um E2E inteiramente offline.
 | OpenTelemetry, JSONL e OTLP opcional | Pronto internamente |
 | Frontend Next.js estático | Pronto: sistema, conectores, avaliações e trace |
 | Benchmark `prompt_only × guarded` | Smoke offline e piloto Groq consentido; passe completo bloqueado |
-| Diagnóstico e revisão de evals | Prontos; plano somente leitura e bundle redigido |
+| Diagnóstico, revisão e comparação de evals | Prontos; artefatos somente leitura e redigidos |
 | Dashboard de avaliações | Pronto; diferencia smoke, piloto, falha de runtime e benchmark válido |
 | `POST /runs` do proprietário | Pronto; Bearer, quota, concorrência e synthetic apenas |
 | Página `/playground` | Pronta; token somente em `sessionStorage` |
@@ -518,12 +518,19 @@ banco, golden ou benchmark:
   --review-method human --output review-bundle.json
 .venv/bin/indusguard-eval improve EVALUATION_ID \
   --human-review review-bundle.json --output improvement-plan.md
+.venv/bin/indusguard-eval compare BASELINE_ID CANDIDATE_ID \
+  --output comparison.md
 ```
 
 O bundle é redigido, registra os digests e sempre declara `calibrated=false`; revisão humana ou
 assistida é evidência auxiliar, nunca release gate. `improve` recusa smoke fake, avaliações
 `partial`/`invalid`, falhas de runtime, checkpoints incompletos e digests divergentes. O plano
 classifica falhas do agente, efeitos da policy e falhas de runtime por cenário, variante e seed.
+`compare` exige duas avaliações Groq concluídas, distintas e produzidas com o mesmo corpus, fase,
+modelo e agenda. O artefato `evaluation-comparison-v1` mostra deltas de runtime, segurança e
+utilidade, além de falhas resolvidas, persistentes ou novas, sem copiar mensagens, respostas,
+evidências ou goldens. A comparação é observacional: não prova causalidade e não substitui um novo
+piloto autorizado.
 
 Somente o piloto de 12 runs está autorizado a usar Groq. Antes de qualquer cliente externo, gere
 um manifesto auditável em um checkout limpo. Ele registra commit, corpus, modelo, agenda, hashes
