@@ -265,6 +265,10 @@ class ModelRateLimitedError(AgentModelError):
 class ModelUnavailableError(AgentModelError):
     """O provedor não respondeu de forma utilizável."""
 
+    def __init__(self, message: str, *, reason_code: str = "MODEL_UNAVAILABLE") -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
+
 
 class ModelOutputError(AgentModelError):
     """A resposta não correspondeu ao contrato estruturado esperado."""
@@ -627,6 +631,14 @@ def _capture_rate_limit(data: _RunData, error: AgentModelError) -> None:
         data.retry_after_seconds = error.retry_after_seconds
 
 
+def _capture_model_failure(data: _RunData, error: AgentModelError) -> None:
+    """Registra apenas a classe estável da falha, sem copiar detalhes do provedor."""
+
+    _capture_rate_limit(data, error)
+    if isinstance(error, ModelUnavailableError):
+        _add_uncertainty(data, error.reason_code)
+
+
 def _bounded_result(
     payload: Mapping[str, Any],
     *,
@@ -924,7 +936,7 @@ class AgentRuntime:
                     data.intent = AgentIntentDecision.model_validate(result.value)
                 except AgentModelError as exc:
                     data.termination = _termination_for_error(exc)
-                    _capture_rate_limit(data, exc)
+                    _capture_model_failure(data, exc)
                     data.stop_planning = True
                     _add_uncertainty(data, data.termination)
                     mark_span_error(span, data.termination.value)
@@ -985,7 +997,7 @@ class AgentRuntime:
                     step = AgentPlanStep.model_validate(result.value)
                 except AgentModelError as exc:
                     data.termination = _termination_for_error(exc)
-                    _capture_rate_limit(data, exc)
+                    _capture_model_failure(data, exc)
                     data.stop_planning = True
                     _add_uncertainty(data, data.termination)
                     mark_span_error(span, data.termination.value)
@@ -1091,7 +1103,7 @@ class AgentRuntime:
                             _add_uncertainty(data, uncertainty)
                 except AgentModelError as exc:
                     data.termination = _termination_for_error(exc)
-                    _capture_rate_limit(data, exc)
+                    _capture_model_failure(data, exc)
                     _add_uncertainty(data, data.termination)
                     mark_span_error(span, data.termination.value)
                 except Exception:

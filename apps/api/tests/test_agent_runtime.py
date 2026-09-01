@@ -41,6 +41,7 @@ from indusguard_api.groq_gateway import (
     GroqAgentModelGateway,
     GroqAgentSettings,
     _parse_retry_after,
+    _raise_gateway_error,
 )
 from indusguard_api.policy import GuardedExecutor, PolicyEngine
 from indusguard_api.schemas import PolicyConfirmation, PolicyPrincipal
@@ -910,6 +911,76 @@ def test_groq_free_rate_limit_returns_controlled_failure_without_fallback() -> N
     assert len(gateway.finalize_messages) == 0
     assert "mensagem externa sensível" not in result.model_dump_json()
     assert upstream_requests == []
+
+
+def test_model_unavailable_preserves_only_a_safe_failure_category() -> None:
+    """A causa operacional ajuda o diagnóstico sem vazar a mensagem do provedor."""
+
+    gateway = ScriptedAgentModelGateway(
+        classification=ModelUnavailableError(
+            "detalhe do provedor não deve aparecer",
+            reason_code="MODEL_TIMEOUT",
+        ),
+        plans=[],
+        final_answer=AgentFinalAnswer(
+            answer="não deve ser chamada",
+            decision=AgentDecision.ORIENT,
+        ),
+    )
+
+    result, _ = _run_agent(
+        gateway,
+        request=AgentRunRequest(connector_id="synthetic", message="Consulte o widget."),
+    )
+
+    assert result.metrics.termination_reason == "MODEL_UNAVAILABLE"
+    assert "MODEL_UNAVAILABLE" in result.uncertainties
+    assert "MODEL_TIMEOUT" in result.uncertainties
+    assert "detalhe do provedor" not in result.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    ("error", "reason_code"),
+    [
+        (
+            groq.APITimeoutError(
+                httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+            ),
+            "MODEL_TIMEOUT",
+        ),
+        (
+            groq.APIConnectionError(
+                message="conexão sensível",
+                request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"),
+            ),
+            "MODEL_CONNECTION_ERROR",
+        ),
+        (
+            groq.APIStatusError(
+                "detalhe sensível",
+                response=httpx.Response(
+                    404,
+                    request=httpx.Request(
+                        "POST", "https://api.groq.com/openai/v1/chat/completions"
+                    ),
+                ),
+                body={"secret": "não expor"},
+            ),
+            "MODEL_NOT_FOUND",
+        ),
+    ],
+)
+def test_groq_provider_failures_map_to_redacted_diagnostic_categories(
+    error: Exception,
+    reason_code: str,
+) -> None:
+    """Falhas externas diferentes não devem colapsar em um diagnóstico sem utilidade."""
+
+    with pytest.raises(ModelUnavailableError) as captured:
+        _raise_gateway_error(error)
+
+    assert captured.value.reason_code == reason_code
+    assert "sensível" not in str(captured.value)
 
 
 def test_aggregates_tokens_latency_and_runtime_versions() -> None:

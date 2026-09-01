@@ -136,8 +136,32 @@ def _raise_gateway_error(exc: Exception) -> None:
             "A cota gratuita da Groq está temporariamente indisponível.",
             retry_after_seconds=retry_after,
         )
-    if isinstance(exc, (groq.APIConnectionError, groq.APITimeoutError, groq.APIStatusError)):
-        raise ModelUnavailableError("A Groq não retornou uma resposta utilizável.")
+    if isinstance(exc, groq.APITimeoutError):
+        raise ModelUnavailableError(
+            "A Groq não respondeu dentro do tempo configurado.",
+            reason_code="MODEL_TIMEOUT",
+        )
+    if isinstance(exc, groq.APIConnectionError):
+        raise ModelUnavailableError(
+            "Não foi possível estabelecer comunicação com a Groq.",
+            reason_code="MODEL_CONNECTION_ERROR",
+        )
+    if isinstance(exc, groq.APIStatusError):
+        status_code = getattr(exc, "status_code", None)
+        if status_code in {401, 403}:
+            reason_code = "MODEL_AUTHENTICATION_ERROR"
+        elif status_code == 404:
+            reason_code = "MODEL_NOT_FOUND"
+        elif isinstance(status_code, int) and 400 <= status_code < 500:
+            reason_code = "MODEL_PROVIDER_CLIENT_ERROR"
+        elif isinstance(status_code, int) and status_code >= 500:
+            reason_code = "MODEL_PROVIDER_SERVER_ERROR"
+        else:
+            reason_code = "MODEL_PROVIDER_ERROR"
+        raise ModelUnavailableError(
+            "A Groq rejeitou ou não conseguiu processar a solicitação.",
+            reason_code=reason_code,
+        )
     raise ModelUnavailableError("O modelo não pôde concluir a chamada.")
 
 
