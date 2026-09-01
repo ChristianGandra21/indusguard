@@ -1104,6 +1104,55 @@ def test_groq_adapter_separates_strict_outputs_from_sequential_tool_calling() ->
     assert "não confiáveis" in str(chat.invocations[2][0].content)
 
 
+def test_groq_planner_receives_allowlisted_context_for_resource_ids() -> None:
+    """O planejador deve reutilizar o ativo confiável, sem receber campos reservados."""
+
+    chat = RecordingChatModel(
+        structured=[],
+        planned=[AIMessage(content="", tool_calls=[])],
+    )
+    gateway = GroqAgentModelGateway(
+        GroqAgentSettings(_env_file=None),
+        chat_factory=lambda _: chat,
+    )
+    domain = _catalog().get_domain("tractian")
+    assert domain is not None
+    context = AgentPlanningContext(
+        context={
+            "user_id": "usr_pedro",
+            "company_id": "comp_mineracao_andes",
+            "asset_id": "asset_G501",
+            "case_id": "case_tkt_inv_04",
+            "credential": "segredo",
+        },
+        permissions=["read"],
+        scopes={"company_id": "comp_mineracao_andes"},
+        direct_request=False,
+    )
+
+    asyncio.run(
+        gateway.plan(
+            request=AgentRunRequest(
+                connector_id="tractian",
+                message="Por que o redutor quebrou?",
+                seed=11,
+            ),
+            domain=domain,
+            intent=AgentIntentDecision(intent_id="investigar"),
+            planning_context=context,
+            messages=[HumanMessage(content="Por que o redutor quebrou?")],
+            tools=[],
+        )
+    )
+
+    prompt = str(chat.invocations[0][0].content)
+    assert "asset_G501" in prompt
+    assert "case_tkt_inv_04" in prompt
+    assert "credential" not in prompt
+    assert "segredo" not in prompt
+    assert "confirmation" not in prompt
+
+
 def test_groq_adapter_redacts_provider_failure() -> None:
     """Exceção inesperada do SDK vira categoria interna sem reproduzir detalhes."""
 
