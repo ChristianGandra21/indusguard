@@ -36,7 +36,8 @@ prontos, incluindo um E2E inteiramente offline.
 | OpenTelemetry, JSONL e OTLP opcional | Pronto internamente |
 | Frontend Next.js estático | Pronto: sistema, conectores, avaliações e trace |
 | Benchmark `prompt_only × guarded` | Smoke offline e piloto Groq consentido; passe completo bloqueado |
-| Dashboard de avaliações | Pronto; diferencia smoke fake de benchmark científico |
+| Diagnóstico e revisão de evals | Prontos; plano somente leitura e bundle redigido |
+| Dashboard de avaliações | Pronto; diferencia smoke, piloto, falha de runtime e benchmark válido |
 | `POST /runs` do proprietário | Pronto; Bearer, quota, concorrência e synthetic apenas |
 | Página `/playground` | Pronta; token somente em `sessionStorage` |
 | Escritas pelo playground | Sempre simuladas, com zero rede |
@@ -335,8 +336,10 @@ A hipótese planejada é:
 > agente prompt-only, sem perder mais de 1 dos 16 cenários oficiais nem adicionar mais de 25% de
 > latência mediana.
 
-Ela ainda não foi testada com a Groq. Runner, scorer e checkpoints já existem, mas o smoke fake
-serve apenas para CI. Métricas só serão publicadas depois de um piloto real autorizado.
+O piloto Groq `d305451a…` é a baseline local concluída usada no primeiro diagnóstico; seu escopo de
+dois cenários continua insuficiente para provar a hipótese global. O piloto `b825a34e…` permanece
+congelado como `partial` e não deve ser retomado em outro commit. O smoke fake serve apenas para
+CI. O benchmark Groq completo continua bloqueado.
 
 ## Stack tecnológica
 
@@ -505,6 +508,23 @@ make eval-validate
 make eval-pilot-fake
 ```
 
+Depois de um piloto Groq concluído e compatível com o corpus atual, a revisão cegada pode ser
+importada e o diagnóstico local pode gerar um plano imutável. Os comandos não alteram código,
+banco, golden ou benchmark:
+
+```bash
+.venv/bin/indusguard-eval review-import EVALUATION_ID \
+  --input review.csv --key review-key.json \
+  --review-method human --output review-bundle.json
+.venv/bin/indusguard-eval improve EVALUATION_ID \
+  --human-review review-bundle.json --output improvement-plan.md
+```
+
+O bundle é redigido, registra os digests e sempre declara `calibrated=false`; revisão humana ou
+assistida é evidência auxiliar, nunca release gate. `improve` recusa smoke fake, avaliações
+`partial`/`invalid`, falhas de runtime, checkpoints incompletos e digests divergentes. O plano
+classifica falhas do agente, efeitos da policy e falhas de runtime por cenário, variante e seed.
+
 Somente o piloto de 12 runs está autorizado a usar Groq. Antes de qualquer cliente externo, gere
 um manifesto auditável em um checkout limpo. Ele registra commit, corpus, modelo, agenda, hashes
 das mensagens e fronteiras de transmissão, mas não copia tickets, evidências ou segredos:
@@ -522,8 +542,26 @@ export GROQ_API_KEY="sua-chave-local"
   --preflight-manifest .data/groq-pilot-preflight.json
 ```
 
+Durante `pilot` e `resume`, cada checkpoint emite no `stderr` um evento JSON seguro com progresso,
+cenário, variante e seed, sem mensagem ou resposta. Se a Groq devolver `Retry-After`, o resumo
+persiste `MODEL_RATE_LIMITED`, o intervalo e `resume_not_before` em UTC. Uma retomada anterior a
+esse instante é bloqueada antes da criação do gateway; sem o header, o CLI não inventa um horário.
+
+Para não recriar o limite de tokens dentro da mesma run, o piloto serializa as chamadas Groq e
+mantém por padrão 60 segundos entre seus inícios. O intervalo é configurável por
+`INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS`, aparece no manifesto `v3` e não afeta o
+playground, a API pública ou o smoke fake. Alterá-lo exige gerar outro manifesto e iniciar outra
+avaliação; não misture checkpoints produzidos com configurações diferentes.
+
+O runtime do piloto preserva os 60 segundos de orçamento ativo e acrescenta o pior caso de espera
+do pacing compartilhado. Com 8 chamadas máximas e intervalo de 60 segundos, o manifesto registra
+540 segundos de timeout total por run. Falhas de infraestrutura como `TIMEOUT`, indisponibilidade
+do modelo ou erro MCP/upstream interrompem a agenda com `runtime_failed` e tornam o resumo
+`invalid`; falhas atribuíveis à saída do agente continuam sendo medidas como desempenho.
+
 O manifesto é obrigatório e fica inválido se commit, corpus, modelo, agenda ou contrato de
-transmissão mudar. O passe completo responde `FULL_BENCHMARK_NOT_AUTHORIZED` e o judge 120B
+transmissão mudar. Todo merge torna manifestos anteriores obsoletos; gere um novo manifesto para
+qualquer piloto futuro. O passe completo responde `FULL_BENCHMARK_NOT_AUTHORIZED` e o judge 120B
 permanece desativado. O dashboard classifica `groq_pilot` como experimental, não como prova
 científica da hipótese.
 

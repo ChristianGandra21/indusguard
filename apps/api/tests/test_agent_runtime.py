@@ -3,6 +3,8 @@
 import asyncio
 from collections import deque
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 from pathlib import Path
 from textwrap import dedent
 from typing import Any
@@ -35,7 +37,12 @@ from indusguard_api.agent import (
 )
 from indusguard_api.connectors import ConnectorCatalog
 from indusguard_api.executor import HttpExecutor
-from indusguard_api.groq_gateway import GroqAgentModelGateway, GroqAgentSettings
+from indusguard_api.groq_gateway import (
+    GroqAgentModelGateway,
+    GroqAgentSettings,
+    _parse_retry_after,
+    _raise_gateway_error,
+)
 from indusguard_api.policy import GuardedExecutor, PolicyEngine
 from indusguard_api.schemas import PolicyConfirmation, PolicyPrincipal
 
@@ -879,7 +886,10 @@ def test_groq_free_rate_limit_returns_controlled_failure_without_fallback() -> N
     """A cota gratuita encerra a run; o sistema não tenta Ollama nem outro modelo."""
 
     gateway = ScriptedAgentModelGateway(
-        classification=ModelRateLimitedError("mensagem externa sensível"),
+        classification=ModelRateLimitedError(
+            "mensagem externa sensível",
+            retry_after_seconds=75,
+        ),
         plans=[],
         final_answer=AgentFinalAnswer(
             answer="não deve ser chamada",
@@ -896,10 +906,81 @@ def test_groq_free_rate_limit_returns_controlled_failure_without_fallback() -> N
     assert result.status == "failed"
     assert result.metrics.model == "openai/gpt-oss-20b"
     assert result.metrics.termination_reason == "MODEL_RATE_LIMITED"
+    assert result.metrics.retry_after_seconds == 75
     assert result.metrics.model_calls == 1
     assert len(gateway.finalize_messages) == 0
     assert "mensagem externa sensível" not in result.model_dump_json()
     assert upstream_requests == []
+
+
+def test_model_unavailable_preserves_only_a_safe_failure_category() -> None:
+    """A causa operacional ajuda o diagnóstico sem vazar a mensagem do provedor."""
+
+    gateway = ScriptedAgentModelGateway(
+        classification=ModelUnavailableError(
+            "detalhe do provedor não deve aparecer",
+            reason_code="MODEL_TIMEOUT",
+        ),
+        plans=[],
+        final_answer=AgentFinalAnswer(
+            answer="não deve ser chamada",
+            decision=AgentDecision.ORIENT,
+        ),
+    )
+
+    result, _ = _run_agent(
+        gateway,
+        request=AgentRunRequest(connector_id="synthetic", message="Consulte o widget."),
+    )
+
+    assert result.metrics.termination_reason == "MODEL_UNAVAILABLE"
+    assert "MODEL_UNAVAILABLE" in result.uncertainties
+    assert "MODEL_TIMEOUT" in result.uncertainties
+    assert "detalhe do provedor" not in result.model_dump_json()
+
+
+@pytest.mark.parametrize(
+    ("error", "reason_code"),
+    [
+        (
+            groq.APITimeoutError(
+                httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
+            ),
+            "MODEL_TIMEOUT",
+        ),
+        (
+            groq.APIConnectionError(
+                message="conexão sensível",
+                request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"),
+            ),
+            "MODEL_CONNECTION_ERROR",
+        ),
+        (
+            groq.APIStatusError(
+                "detalhe sensível",
+                response=httpx.Response(
+                    404,
+                    request=httpx.Request(
+                        "POST", "https://api.groq.com/openai/v1/chat/completions"
+                    ),
+                ),
+                body={"secret": "não expor"},
+            ),
+            "MODEL_NOT_FOUND",
+        ),
+    ],
+)
+def test_groq_provider_failures_map_to_redacted_diagnostic_categories(
+    error: Exception,
+    reason_code: str,
+) -> None:
+    """Falhas externas diferentes não devem colapsar em um diagnóstico sem utilidade."""
+
+    with pytest.raises(ModelUnavailableError) as captured:
+        _raise_gateway_error(error)
+
+    assert captured.value.reason_code == reason_code
+    assert "sensível" not in str(captured.value)
 
 
 def test_aggregates_tokens_latency_and_runtime_versions() -> None:
@@ -1094,6 +1175,159 @@ def test_groq_adapter_separates_strict_outputs_from_sequential_tool_calling() ->
     assert "não confiáveis" in str(chat.invocations[2][0].content)
 
 
+def test_groq_planner_receives_allowlisted_context_for_resource_ids() -> None:
+    """O planejador deve reutilizar o ativo confiável, sem receber campos reservados."""
+
+    chat = RecordingChatModel(
+        structured=[],
+        planned=[AIMessage(content="", tool_calls=[])],
+    )
+    gateway = GroqAgentModelGateway(
+        GroqAgentSettings(_env_file=None),
+        chat_factory=lambda _: chat,
+    )
+    domain = _catalog().get_domain("tractian")
+    assert domain is not None
+    context = AgentPlanningContext(
+        context={
+            "user_id": "usr_pedro",
+            "company_id": "comp_mineracao_andes",
+            "asset_id": "asset_G501",
+            "case_id": "case_tkt_inv_04",
+            "credential": "segredo",
+        },
+        permissions=["read"],
+        scopes={"company_id": "comp_mineracao_andes"},
+        direct_request=False,
+    )
+
+    asyncio.run(
+        gateway.plan(
+            request=AgentRunRequest(
+                connector_id="tractian",
+                message="Por que o redutor quebrou?",
+                seed=11,
+            ),
+            domain=domain,
+            intent=AgentIntentDecision(intent_id="investigar"),
+            planning_context=context,
+            messages=[HumanMessage(content="Por que o redutor quebrou?")],
+            tools=[],
+        )
+    )
+
+    prompt = str(chat.invocations[0][0].content)
+    assert "asset_G501" in prompt
+    assert "case_tkt_inv_04" in prompt
+    assert "fontes complementares" in prompt
+    assert "Descrição da intenção selecionada" in prompt
+    assert "getBaseline" in prompt
+    assert "getDataQuality" in prompt
+    assert "getRmsSeries" in prompt
+    assert "identidade do ativo, baseline, qualidade dos dados" in prompt
+    assert "requestSpecialistAnalysis" in prompt
+    assert "escalateCase" in prompt
+    assert "credential" not in prompt
+    assert "segredo" not in prompt
+    assert "confirmation" not in prompt
+
+
+def test_groq_planner_receives_completed_operation_history() -> None:
+    """O planner diferencia o que já foi consultado sem abrir payloads ou goldens."""
+
+    chat = RecordingChatModel(
+        structured=[],
+        planned=[AIMessage(content="", tool_calls=[])],
+    )
+    gateway = GroqAgentModelGateway(
+        GroqAgentSettings(_env_file=None),
+        chat_factory=lambda _: chat,
+    )
+    domain = _catalog().get_domain("tractian")
+    assert domain is not None
+
+    asyncio.run(
+        gateway.plan(
+            request=AgentRunRequest(connector_id="tractian", message="Investigue a falha."),
+            domain=domain,
+            intent=AgentIntentDecision(intent_id="investigar"),
+            planning_context=AgentPlanningContext(),
+            messages=[
+                HumanMessage(content="Investigue a falha."),
+                ToolMessage(
+                    content='{"payload":"não repetir no resumo"}',
+                    tool_call_id="call-1",
+                    name="tractian__getAsset",
+                ),
+                ToolMessage(
+                    content='{"payload":"também não repetir"}',
+                    tool_call_id="call-2",
+                    name="tractian__getBaseline",
+                ),
+            ],
+            tools=[],
+        )
+    )
+
+    prompt = str(chat.invocations[0][0].content)
+    assert "Histórico de operações concluídas: tractian__getAsset, tractian__getBaseline" in prompt
+    assert "não repetir no resumo" not in prompt
+    assert "também não repetir" not in prompt
+
+
+def test_groq_finalizer_receives_domain_decision_semantics() -> None:
+    """Análise especializada continua act; encaminhamento humano continua escalate."""
+
+    chat = RecordingChatModel(
+        structured=[
+            {
+                "raw": AIMessage(content=""),
+                "parsed": {
+                    "answer": "A análise especializada foi simulada [ev-001].",
+                    "decision": "act",
+                    "evidence_ids": ["ev-001"],
+                    "uncertainties": [],
+                },
+                "parsing_error": None,
+            }
+        ],
+        planned=[],
+    )
+    gateway = GroqAgentModelGateway(
+        GroqAgentSettings(_env_file=None),
+        chat_factory=lambda _: chat,
+    )
+    domain = _catalog().get_domain("tractian")
+    assert domain is not None
+
+    asyncio.run(
+        gateway.finalize(
+            request=AgentRunRequest(
+                connector_id="tractian",
+                message="Peça uma análise especializada.",
+            ),
+            domain=domain,
+            intent=AgentIntentDecision(intent_id="agir"),
+            planning_context=AgentPlanningContext(),
+            messages=[
+                HumanMessage(content="Peça uma análise especializada."),
+                ToolMessage(
+                    content='{"execution":{"outcome":"simulated"}}',
+                    tool_call_id="call-1",
+                    name="tractian__requestSpecialistAnalysis",
+                ),
+            ],
+            allowed_evidence_ids=["ev-001"],
+        )
+    )
+
+    prompt = str(chat.invocations[0][0].content)
+    assert "Decisão canônica ao realizar esta intenção: act" in prompt
+    assert "requestSpecialistAnalysis" in prompt
+    assert "escalateCase" in prompt
+    assert "encaminhamento humano" in prompt
+
+
 def test_groq_adapter_redacts_provider_failure() -> None:
     """Exceção inesperada do SDK vira categoria interna sem reproduzir detalhes."""
 
@@ -1125,7 +1359,7 @@ def test_groq_adapter_maps_free_quota_response_to_rate_limit() -> None:
     http_request = httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions")
     error = groq.RateLimitError(
         "quota com detalhe sensível",
-        response=httpx.Response(429, request=http_request),
+        response=httpx.Response(429, request=http_request, headers={"Retry-After": "120"}),
         body={"secret": "não expor"},
     )
     chat = RecordingChatModel(structured=[error], planned=[])
@@ -1146,6 +1380,19 @@ def test_groq_adapter_maps_free_quota_response_to_rate_limit() -> None:
 
     assert "detalhe sensível" not in str(captured.value)
     assert "cota gratuita" in str(captured.value)
+    assert captured.value.retry_after_seconds == 120
+
+
+def test_retry_after_accepts_seconds_and_http_date_without_trusting_invalid_values() -> None:
+    now = datetime(2026, 8, 28, 18, 0, tzinfo=UTC)
+    retry_at = format_datetime(now + timedelta(seconds=45), usegmt=True)
+
+    assert _parse_retry_after("30", now=now) == 30
+    assert _parse_retry_after(retry_at, now=now) == 45
+    assert _parse_retry_after("not-a-date", now=now) is None
+    assert _parse_retry_after("-1", now=now) is None
+    assert _parse_retry_after("999999", now=now) is None
+    assert ModelRateLimitedError("redigida", retry_after_seconds=999999).retry_after_seconds is None
 
 
 def test_groq_adapter_rejects_invalid_structured_output() -> None:

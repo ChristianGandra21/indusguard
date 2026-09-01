@@ -2009,9 +2009,29 @@ O smoke offline usa fake e prova infraestrutura, não a hipótese. Antes do pilo
 manifesto sem payloads ou segredos. O `pilot --groq --confirm-external-transmission` exige esse
 arquivo em `--preflight-manifest` e o vincula ao registro da avaliação. Ele envia tickets, prompts
 fixos, descrições de domínio/tools, evidências redigidas e IDs sintéticos à Groq, mas nunca abre o
-golden antes das runs. Se houver rate limit, `resume` exige o mesmo manifesto e continua do
+golden antes das runs. Cada checkpoint publica progresso seguro no `stderr`, sem conteúdo de
+ticket ou resposta. O manifesto `groq-pilot-preflight-v3` também fixa o intervalo mínimo entre
+chamadas e o timeout pacing-aware. No benchmark Groq, elas são serializadas e iniciam com pelo
+menos 60 segundos de distância por padrão, evitando recriar o teto de tokens por minuto dentro da
+mesma identidade. O runtime preserva 60 segundos de trabalho ativo e acrescenta orçamento para as
+esperas do gateway compartilhado, totalizando 540 segundos por run nos defaults atuais. Timeout,
+indisponibilidade do modelo e erros MCP/upstream interrompem a agenda e invalidam a comparação;
+falhas atribuíveis à saída do agente continuam nas métricas de desempenho. Se ainda houver rate
+limit, o resumo registra `MODEL_RATE_LIMITED`; quando a Groq fornece `Retry-After`, também
+persiste o intervalo e o instante UTC `resume_not_before`. O CLI bloqueia uma retomada antecipada
+antes de criar o gateway. Depois da janela, `resume` exige o mesmo manifesto e continua do
 checkpoint sem duplicar identidades. O passe completo Groq e o judge 120B permanecem bloqueados; a
 revisão humana pode ser exportada em CSV cegado.
+
+O CSV preenchido volta por `review-import`, que valida aliases, notas binárias e a chave da mesma
+avaliação e gera um bundle redigido com `calibrated=false`. Em seguida, `improve` aceita somente
+uma avaliação Groq concluída, sem falha de runtime e compatível com os digests atuais, classificando
+falhas recorrentes e propondo riscos e testes em `improvement-plan-v1`. Nenhum dos comandos altera
+código, banco, golden ou benchmark; revisão humana ou assistida permanece evidência auxiliar.
+
+A baseline concluída do primeiro ciclo é `d305451a…`. O piloto `b825a34e…` permanece congelado
+como `partial` e não deve ser retomado após mudanças no commit. Todo merge invalida manifestos
+anteriores; qualquer piloto futuro exige novo preflight e consentimento explícito.
 
 ### Etapa 8: frontend read-only
 
@@ -2260,8 +2280,10 @@ O sistema já possui agente interno, catálogo, MCP, policy engine e executor au
 que o modelo opere sobre uma lista ambígua, prova o caminho seguro até APIs com diferentes
 autenticações e permite visualizar uma mutação sem executá-la.
 
-O código do piloto e os artefatos de deployment estão prontos. Ainda não houve transmissão real à
-Groq nem provisionamento externo: ambos dependem das chaves e da ação explícita do proprietário.
+O código do piloto e os artefatos de deployment estão prontos. Houve um piloto Groq consentido e
+limitado, que serve como baseline experimental local e não como prova da hipótese global. Não houve
+provisionamento externo; benchmark completo, judge externo e nova transmissão continuam dependendo
+de autorização explícita do proprietário.
 
 Se você guardar apenas três ideias, guarde estas:
 

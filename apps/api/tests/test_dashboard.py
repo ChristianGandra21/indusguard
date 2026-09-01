@@ -47,6 +47,7 @@ def _summary() -> dict[str, Any]:
     }
     return {
         "status": "completed",
+        "evaluation_scope": "pilot",
         "expected_runs": 2,
         "completed_runs": 2,
         "scenarios_observed": 1,
@@ -59,6 +60,12 @@ def _summary() -> dict[str, Any]:
             "note": "Smoke offline não mede qualidade.",
         },
         "limitations": ["Modelo fake, sem valor científico."],
+        "interruption": {
+            "code": "MODEL_RATE_LIMITED",
+            "retry_after_seconds": 300,
+            "resume_not_before": "2026-08-24T13:00:00Z",
+        },
+        "runtime_failures": {"MODEL_UNAVAILABLE": 1},
     }
 
 
@@ -227,6 +234,14 @@ def test_sql_reader_returns_latest_safe_projections(tmp_path: Path) -> None:
     assert evaluation.evaluation_id == EVALUATION_ID
     assert evaluation.execution_kind is EvaluationExecutionKind.OFFLINE_SMOKE
     assert evaluation.scientific_evidence is False
+    assert evaluation.summary is not None
+    assert evaluation.summary.evaluation_scope == "pilot"
+    assert evaluation.summary.interruption is not None
+    assert evaluation.summary.interruption.code == "MODEL_RATE_LIMITED"
+    assert evaluation.summary.interruption.resume_not_before == datetime(
+        2026, 8, 24, 13, tzinfo=UTC
+    )
+    assert evaluation.summary.runtime_failures == {"MODEL_UNAVAILABLE": 1}
     assert evaluation.results[0].warning_codes == ["STABLE_WARNING"]
     assert trace is not None
     assert trace.policy_decisions[0].reason_codes == ["READ_ALLOWED"]
@@ -265,6 +280,39 @@ def test_groq_pilot_is_real_but_not_full_scientific_evidence(tmp_path: Path) -> 
     assert evaluation is not None
     assert evaluation.execution_kind is EvaluationExecutionKind.GROQ_PILOT
     assert evaluation.scientific_evidence is False
+
+
+def test_full_benchmark_is_scientific_only_when_completed_and_valid() -> None:
+    row = EvaluationRunRow(
+        evaluation_id=EVALUATION_ID,
+        phase="full",
+        status="invalid",
+        dataset_version="official-v1",
+        input_digest="a" * 64,
+        golden_digest="b" * 64,
+        model="openai/gpt-oss-20b",
+        git_commit="abc123",
+        config={"execution_kind": "groq_benchmark"},
+        summary={**_summary(), "status": "invalid"},
+        started_at=datetime.now(UTC),
+        completed_at=datetime.now(UTC),
+    )
+
+    invalid = SqlAlchemyDashboardReader._evaluation_projection(row)
+    completed = SqlAlchemyDashboardReader._evaluation_projection(
+        row.__class__(
+            **{
+                column.name: getattr(row, column.name)
+                for column in EvaluationRunRow.__table__.columns
+                if column.name not in {"status", "summary"}
+            },
+            status="completed",
+            summary={**_summary(), "status": "completed", "runtime_failures": {}},
+        )
+    )
+
+    assert invalid.scientific_evidence is False
+    assert completed.scientific_evidence is True
 
 
 class StubDashboardReader:

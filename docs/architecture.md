@@ -285,9 +285,11 @@ Aqui a segurança vem da seleção das colunas antes da materialização, não d
 depois.
 
 O frontend usa o OpenAPI do próprio FastAPI como contrato de compilação e Zod como verificação em
-runtime. Um smoke `offline_smoke` prova apenas infraestrutura; `groq_pilot` contém observações
-reais de dois cenários, mas continua experimental; somente `groq_benchmark` pode receber o selo
-de evidência científica. CORS usa allowlist explícita
+runtime. O resumo público acrescenta `evaluation_scope`, interrupção redigida e contagens de
+falhas de runtime, sem carregar goldens, diagnóstico detalhado ou payloads. Um smoke
+`offline_smoke` prova apenas infraestrutura; `groq_pilot` contém observações reais de dois
+cenários, mas continua experimental; somente um `groq_benchmark` completo, válido e sem falhas de
+runtime pode receber o selo de evidência científica. CORS usa allowlist explícita
 e o build permanece estático. O único segredo do playground é informado pela pessoa e vive apenas
 no `sessionStorage`; não faz parte do bundle ou de query keys.
 
@@ -346,12 +348,34 @@ flowchart TD
     C --> O[abrir golden]
     O --> D[scorer determinístico]
     D --> E[(evaluation_results)]
+    E --> A[EvaluationAnalyzer]
+    A --> IP[improvement-plan-v1 somente leitura]
+    HR[CSV cegado + chave] --> RI[review-import]
+    RI --> RB[bundle redigido calibrated=false]
+    RB -. evidência auxiliar .-> A
 ```
 
 O `AgentRuntime` depende do protocolo `ProtectedOperationExecutor`, não de uma classe concreta.
 Produção injeta `GuardedExecutor`; somente o pacote `evals` possui `PromptOnlyExecutor`. A baseline
 preserva OpenAPI, autenticação e simulação de escrita, removendo apenas o gate para observar o
 contrafactual. A wheel de produção não contém esse pacote.
+
+O runner emite progresso redigido depois de cada checkpoint. Uma interrupção Groq conserva apenas
+o código `MODEL_RATE_LIMITED` e o `Retry-After` normalizado; o resumo calcula
+`resume_not_before` em UTC para impedir tentativas antecipadas sem reconstruir o gateway.
+No piloto, um decorator exclusivo da avaliação serializa chamadas de modelo e aplica o intervalo
+monotônico registrado no manifesto `v3`; o gateway usado pela API pública não recebe esse pacing.
+O mesmo manifesto registra o orçamento ativo e o timeout total acrescido das esperas possíveis do
+gateway compartilhado. Timeout, indisponibilidade do modelo e erros MCP/upstream emitem
+`runtime_failed`, encerram a agenda e tornam a avaliação `invalid`; falhas atribuíveis ao agente
+continuam sendo pontuadas como desempenho.
+
+`EvaluationAnalyzer` é a interface profunda do ciclo de melhoria. Ele reutiliza a mesma avaliação
+de caso do scorer para resolver trajetória esperada, classificar falhas e agregar recorrência por
+cenário, variante e seed. O módulo distingue decisão incorreta, evidência ausente, tool inesperada,
+ação ausente/incorreta, argumento incorreto, citação inválida, redundância e escrita insegura, além
+de separar falha do agente, efeito da policy e falha de runtime. O plano resultante não é um gate
+nem aplica mudanças automaticamente.
 
 `AgentPlanningContext` é uma allowlist derivada de `TrustedRunContext`: IDs de contexto declarados
 no domínio, permissões, escopos e pedido direto. Confirmação, digest, headers e credenciais nunca

@@ -196,6 +196,7 @@ class DomainIntent(BaseModel):
     description: str = Field(min_length=1)
     evidence_operations: list[str] = Field(default_factory=list)
     action_operations: list[str] = Field(default_factory=list)
+    result_decision: Literal["orient", "act", "escalate"] | None = None
 
     @model_validator(mode="after")
     def validate_operation_lists(self) -> "DomainIntent":

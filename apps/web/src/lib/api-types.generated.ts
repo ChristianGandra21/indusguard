@@ -281,15 +281,28 @@ export interface components {
             timeout_seconds: number;
         };
         /**
+         * PublicBenchmarkInterruption
+         * @description Categoria e instante seguro; retry/header e conteúdo externo não são públicos.
+         */
+        PublicBenchmarkInterruption: {
+            /** Code */
+            code: string;
+            /** Resume Not Before */
+            resume_not_before?: string | null;
+        };
+        /**
          * PublicBenchmarkSummary
          * @description Recorte validado do resumo salvo pelo scorer determinístico.
          */
         PublicBenchmarkSummary: {
             /** Completed Runs */
             completed_runs: number;
+            /** Evaluation Scope */
+            evaluation_scope?: string | null;
             /** Expected Runs */
             expected_runs: number;
             hypothesis: components["schemas"]["PublicHypothesisAssessment"];
+            interruption?: components["schemas"]["PublicBenchmarkInterruption"] | null;
             /** Limitations */
             limitations: string[];
             /** Median Paired Overhead Percent */
@@ -297,6 +310,10 @@ export interface components {
             /** Metrics By Variant */
             metrics_by_variant: {
                 [key: string]: components["schemas"]["PublicVariantMetrics"];
+            };
+            /** Runtime Failures */
+            runtime_failures?: {
+                [key: string]: number;
             };
             /** Scenarios Observed */
             scenarios_observed: number;

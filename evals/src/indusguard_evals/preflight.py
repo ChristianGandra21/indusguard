@@ -17,9 +17,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from indusguard_evals.contracts import EvaluationPhase, EvaluationVariant
 from indusguard_evals.corpus import CorpusValidationError, OfficialCorpus
+from indusguard_evals.pacing import (
+    GroqPilotPacingSettings,
+    pacing_aware_runtime_config,
+)
 from indusguard_evals.schedule import build_schedule
 
-PREFLIGHT_SCHEMA_VERSION = "groq-pilot-preflight-v1"
+PREFLIGHT_SCHEMA_VERSION = "groq-pilot-preflight-v3"
 TRANSMITTED_CATEGORIES = [
     "ticket_message",
     "fixed_agent_prompts",
@@ -63,6 +67,7 @@ class PreflightModel(BaseModel):
     max_tokens: int
     temperature: Literal[0] = 0
     reasoning_effort: Literal["low"] = "low"
+    minimum_request_interval_seconds: float = Field(ge=0, le=300)
     api_key_configured: Literal[True]
 
 
@@ -109,6 +114,9 @@ class PreflightRuntimeBoundaries(BaseModel):
     execution_mode: Literal["simulate"] = "simulate"
     real_writes_enabled: Literal[False] = False
     goldens_loaded: Literal[False] = False
+    active_run_timeout_seconds: float = Field(gt=0)
+    paced_run_timeout_seconds: float = Field(gt=0)
+    max_model_calls: int = Field(ge=2)
 
 
 class GroqPilotPreflightManifest(BaseModel):
@@ -116,7 +124,7 @@ class GroqPilotPreflightManifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["groq-pilot-preflight-v1"] = PREFLIGHT_SCHEMA_VERSION
+    schema_version: Literal["groq-pilot-preflight-v3"] = PREFLIGHT_SCHEMA_VERSION
     created_at: datetime
     phase: Literal["pilot"] = "pilot"
     execution_kind: Literal["groq_pilot"] = "groq_pilot"
@@ -180,6 +188,7 @@ def _repository(root: Path) -> PreflightRepository:
 def build_groq_pilot_preflight(
     root: Path,
     settings: GroqAgentSettings,
+    pacing_settings: GroqPilotPacingSettings | None = None,
     *,
     created_at: datetime | None = None,
 ) -> GroqPilotPreflightManifest:
@@ -187,6 +196,11 @@ def build_groq_pilot_preflight(
 
     if settings.api_key is None or not settings.api_key.get_secret_value().strip():
         raise PreflightError("MODEL_NOT_CONFIGURED", "GROQ_API_KEY precisa estar definida")
+    pacing = pacing_settings or GroqPilotPacingSettings()
+    runtime_config = pacing_aware_runtime_config(pacing)
+    active_run_timeout_seconds = runtime_config.run_timeout_seconds - (
+        pacing.minimum_interval_seconds * runtime_config.max_model_calls
+    )
     repository = _repository(root)
     try:
         catalog = ConnectorCatalog(root / "connectors")
@@ -227,6 +241,7 @@ def build_groq_pilot_preflight(
             timeout_seconds=settings.timeout_seconds,
             max_retries=settings.max_retries,
             max_tokens=settings.max_tokens,
+            minimum_request_interval_seconds=pacing.minimum_interval_seconds,
             api_key_configured=True,
         ).model_dump(mode="json"),
         "corpus": PreflightCorpus(
@@ -242,7 +257,11 @@ def build_groq_pilot_preflight(
             included_categories=TRANSMITTED_CATEGORIES,
             excluded_categories=EXCLUDED_CATEGORIES,
         ).model_dump(mode="json"),
-        "runtime_boundaries": PreflightRuntimeBoundaries().model_dump(mode="json"),
+        "runtime_boundaries": PreflightRuntimeBoundaries(
+            active_run_timeout_seconds=active_run_timeout_seconds,
+            paced_run_timeout_seconds=runtime_config.run_timeout_seconds,
+            max_model_calls=runtime_config.max_model_calls,
+        ).model_dump(mode="json"),
     }
     normalized = GroqPilotPreflightManifest.model_validate(
         {**unsigned, "manifest_digest": "0" * 64}
@@ -256,10 +275,11 @@ def write_groq_pilot_preflight(
     root: Path,
     output: Path,
     settings: GroqAgentSettings,
+    pacing_settings: GroqPilotPacingSettings | None = None,
 ) -> GroqPilotPreflightManifest:
     """Grava somente depois de todas as validações para não deixar artefato parcial válido."""
 
-    manifest = build_groq_pilot_preflight(root, settings)
+    manifest = build_groq_pilot_preflight(root, settings, pacing_settings)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
     return manifest
@@ -269,6 +289,7 @@ def load_and_validate_groq_pilot_preflight(
     root: Path,
     path: Path,
     settings: GroqAgentSettings,
+    pacing_settings: GroqPilotPacingSettings | None = None,
 ) -> GroqPilotPreflightManifest:
     """Verifica contrato, integridade e igualdade com todas as fontes locais atuais."""
 
@@ -286,6 +307,7 @@ def load_and_validate_groq_pilot_preflight(
     expected = build_groq_pilot_preflight(
         root,
         settings,
+        pacing_settings,
         created_at=manifest.created_at,
     )
     if not hmac.compare_digest(manifest.manifest_digest, expected.manifest_digest):

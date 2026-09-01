@@ -23,7 +23,7 @@ from indusguard_evals.contracts import (
     EvaluationVariant,
 )
 
-EvaluationStatus = Literal["running", "partial", "completed"]
+EvaluationStatus = Literal["running", "partial", "completed", "invalid"]
 
 
 class PersistedEvaluationRun(BaseModel):

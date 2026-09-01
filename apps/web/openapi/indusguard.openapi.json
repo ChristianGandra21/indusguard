@@ -213,6 +213,32 @@
         "title": "OperationSummary",
         "type": "object"
       },
+      "PublicBenchmarkInterruption": {
+        "description": "Categoria e instante seguro; retry/header e conteúdo externo não são públicos.",
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "resume_not_before": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resume Not Before"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "title": "PublicBenchmarkInterruption",
+        "type": "object"
+      },
       "PublicBenchmarkSummary": {
         "description": "Recorte validado do resumo salvo pelo scorer determinístico.",
         "properties": {
@@ -221,6 +247,17 @@
             "title": "Completed Runs",
             "type": "integer"
           },
+          "evaluation_scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluation Scope"
+          },
           "expected_runs": {
             "minimum": 0.0,
             "title": "Expected Runs",
@@ -228,6 +265,16 @@
           },
           "hypothesis": {
             "$ref": "#/components/schemas/PublicHypothesisAssessment"
+          },
+          "interruption": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublicBenchmarkInterruption"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "limitations": {
             "items": {
@@ -252,6 +299,13 @@
               "$ref": "#/components/schemas/PublicVariantMetrics"
             },
             "title": "Metrics By Variant",
+            "type": "object"
+          },
+          "runtime_failures": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Runtime Failures",
             "type": "object"
           },
           "scenarios_observed": {

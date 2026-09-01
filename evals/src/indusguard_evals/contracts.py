@@ -195,6 +195,23 @@ class CaseScore(BaseModel):
     warnings: list[str] = Field(default_factory=list)
 
 
+class CaseAssessment(BaseModel):
+    """Score e diferenças observáveis produzidos pela mesma comparação determinística."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    score: CaseScore
+    allowed_decisions: list[AgentDecision]
+    actual_decision: AgentDecision
+    expected_operations: list[str]
+    actual_operations: list[str]
+    missing_operations: list[str]
+    unexpected_operations: list[str]
+    expected_action: str | None
+    actual_actions: list[str]
+    termination_reason: str
+
+
 class EvaluationSample(BaseModel):
     """Resultado bruto associado à identidade experimental, antes do scorer."""
 

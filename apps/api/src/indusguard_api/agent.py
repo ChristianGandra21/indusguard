@@ -253,9 +253,21 @@ class AgentModelError(RuntimeError):
 class ModelRateLimitedError(AgentModelError):
     """A faixa gratuita recusou a chamada por limite de uso."""
 
+    def __init__(self, message: str, *, retry_after_seconds: int | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = (
+            retry_after_seconds
+            if retry_after_seconds is None or 0 <= retry_after_seconds <= 86_400
+            else None
+        )
+
 
 class ModelUnavailableError(AgentModelError):
     """O provedor não respondeu de forma utilizável."""
+
+    def __init__(self, message: str, *, reason_code: str = "MODEL_UNAVAILABLE") -> None:
+        super().__init__(message)
+        self.reason_code = reason_code
 
 
 class ModelOutputError(AgentModelError):
@@ -428,6 +440,7 @@ class AgentRunMetrics(BaseModel):
     total_tokens: int = Field(ge=0)
     latency_ms: float = Field(ge=0)
     termination_reason: AgentTerminationReason
+    retry_after_seconds: int | None = Field(default=None, ge=0, le=86_400)
     truncations: int = Field(ge=0)
     observability_degraded: bool = False
 
@@ -476,7 +489,7 @@ class AgentRuntimeConfig(BaseModel):
 
     max_model_calls: int = Field(default=8, ge=2, le=32)
     max_tool_calls: int = Field(default=12, ge=1, le=64)
-    run_timeout_seconds: float = Field(default=60, gt=0, le=300)
+    run_timeout_seconds: float = Field(default=60, gt=0, le=3600)
     max_evidence_bytes: int = Field(default=32 * 1024, ge=256, le=1024 * 1024)
     max_run_evidence_bytes: int = Field(default=128 * 1024, ge=256, le=4 * 1024 * 1024)
     prompt_version: str = PROMPT_VERSION
@@ -522,6 +535,7 @@ class _RunData:
     uncertainties: list[str] = field(default_factory=list)
     final_answer: AgentFinalAnswer | None = None
     termination: AgentTerminationReason = AgentTerminationReason.COMPLETED
+    retry_after_seconds: int | None = None
     stop_planning: bool = False
     model_calls: int = 0
     input_tokens: int = 0
@@ -608,6 +622,21 @@ def _termination_for_error(error: AgentModelError) -> AgentTerminationReason:
     if isinstance(error, ModelOutputError):
         return AgentTerminationReason.MODEL_OUTPUT_INVALID
     return AgentTerminationReason.MODEL_UNAVAILABLE
+
+
+def _capture_rate_limit(data: _RunData, error: AgentModelError) -> None:
+    """Propaga somente a espera redigida; headers e corpo do provedor ficam na borda."""
+
+    if isinstance(error, ModelRateLimitedError):
+        data.retry_after_seconds = error.retry_after_seconds
+
+
+def _capture_model_failure(data: _RunData, error: AgentModelError) -> None:
+    """Registra apenas a classe estável da falha, sem copiar detalhes do provedor."""
+
+    _capture_rate_limit(data, error)
+    if isinstance(error, ModelUnavailableError):
+        _add_uncertainty(data, error.reason_code)
 
 
 def _bounded_result(
@@ -907,6 +936,7 @@ class AgentRuntime:
                     data.intent = AgentIntentDecision.model_validate(result.value)
                 except AgentModelError as exc:
                     data.termination = _termination_for_error(exc)
+                    _capture_model_failure(data, exc)
                     data.stop_planning = True
                     _add_uncertainty(data, data.termination)
                     mark_span_error(span, data.termination.value)
@@ -967,6 +997,7 @@ class AgentRuntime:
                     step = AgentPlanStep.model_validate(result.value)
                 except AgentModelError as exc:
                     data.termination = _termination_for_error(exc)
+                    _capture_model_failure(data, exc)
                     data.stop_planning = True
                     _add_uncertainty(data, data.termination)
                     mark_span_error(span, data.termination.value)
@@ -1072,6 +1103,7 @@ class AgentRuntime:
                             _add_uncertainty(data, uncertainty)
                 except AgentModelError as exc:
                     data.termination = _termination_for_error(exc)
+                    _capture_model_failure(data, exc)
                     _add_uncertainty(data, data.termination)
                     mark_span_error(span, data.termination.value)
                 except Exception:
@@ -1406,6 +1438,7 @@ class AgentRuntime:
             total_tokens=data.input_tokens + data.output_tokens,
             latency_ms=latency_ms,
             termination_reason=data.termination,
+            retry_after_seconds=data.retry_after_seconds,
             truncations=data.truncations,
         )
         return AgentRunResult(

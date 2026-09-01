@@ -11,7 +11,8 @@ test("navega pelo dashboard seguro até um trace público", async ({ page }) => 
 
   await page.getByRole("link", { name: /Avaliações/ }).click();
   await expect(page.getByText("smoke offline", { exact: true })).toBeVisible();
-  await expect(page.getByText("Este resultado não sustenta a hipótese.")).toBeVisible();
+  await expect(page.getByText("Smoke de infraestrutura")).toBeVisible();
+  await expect(page.getByText("Próxima ação segura")).toBeVisible();
   await page.getByRole("link", { name: /abrir/ }).first().click();
 
   await expect(page.getByRole("heading", { name: "Veja o caminho. Não o conteúdo." })).toBeVisible();

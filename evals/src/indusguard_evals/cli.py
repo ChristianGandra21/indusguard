@@ -6,6 +6,9 @@ import argparse
 import asyncio
 import json
 import subprocess
+import sys
+from datetime import UTC, datetime
+from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +27,10 @@ from indusguard_api.groq_gateway import GroqAgentModelGateway, GroqAgentSettings
 from indusguard_api.persistence import SqlAlchemyAgentRunRecorder, normalize_database_url
 from indusguard_api.policy import GuardedExecutor, PolicyEngine
 from indusguard_api.settings import Settings
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from indusguard_evals.analysis import EvaluationAnalysisError, EvaluationAnalyzer
 from indusguard_evals.baseline import PromptOnlyExecutor
 from indusguard_evals.contracts import (
     EvaluationExecutionKind,
@@ -34,7 +39,14 @@ from indusguard_evals.contracts import (
 )
 from indusguard_evals.corpus import OfficialCorpus
 from indusguard_evals.execution import create_variant_runtime
-from indusguard_evals.human_review import export_human_review
+from indusguard_evals.human_review import (
+    HumanReviewBundle,
+    HumanReviewImportError,
+    ReviewMethod,
+    export_human_review,
+    import_human_review,
+)
+from indusguard_evals.pacing import GroqPilotPacingSettings, PacedAgentModelGateway
 from indusguard_evals.preflight import (
     GroqPilotPreflightManifest,
     PreflightError,
@@ -42,8 +54,9 @@ from indusguard_evals.preflight import (
     require_persisted_preflight_digest,
     write_groq_pilot_preflight,
 )
+from indusguard_evals.report import BenchmarkSummary
 from indusguard_evals.repository import EvaluationRepository
-from indusguard_evals.runner import BenchmarkRunner
+from indusguard_evals.runner import BenchmarkRunner, EvaluationProgress
 from indusguard_evals.tractian_fixture import store
 
 
@@ -77,6 +90,56 @@ def _fake_gateway() -> ScriptedAgentModelGateway:
             uncertainties=["OFFLINE_FAKE_NOT_A_BENCHMARK_RESULT"],
         ),
         model_name="scripted-eval-smoke",
+    )
+
+
+def _print_progress(progress: EvaluationProgress) -> None:
+    """Mantém eventos incrementais fora do stdout reservado ao resultado final."""
+
+    print(progress.model_dump_json(), file=sys.stderr, flush=True)
+
+
+def _enforce_resume_window(
+    summary_payload: dict[str, Any] | None,
+    *,
+    now: datetime | None = None,
+) -> None:
+    """Evita construir gateway enquanto o Retry-After persistido ainda está ativo."""
+
+    if summary_payload is None:
+        return
+    try:
+        summary = BenchmarkSummary.model_validate(summary_payload)
+    except ValueError:
+        # Resumos legados ou incompletos não ganham uma restrição que não registraram.
+        return
+    interruption = summary.interruption
+    if interruption is None or interruption.resume_not_before is None:
+        return
+    current = now or datetime.now(UTC)
+    resume_at = interruption.resume_not_before.astimezone(UTC)
+    if current >= resume_at:
+        return
+    remaining = ceil((resume_at - current).total_seconds())
+    timestamp = resume_at.isoformat().replace("+00:00", "Z")
+    raise SystemExit(
+        f"MODEL_RATE_LIMITED: retomada disponível após {timestamp} ({remaining} segundos restantes)"
+    )
+
+
+def _rate_limit_guidance(summary: BenchmarkSummary) -> str:
+    interruption = summary.interruption
+    if interruption is None:
+        return "A avaliação ficou parcial; use resume para continuar os checkpoints pendentes."
+    if interruption.resume_not_before is None:
+        return (
+            "MODEL_RATE_LIMITED: a Groq não informou Retry-After; "
+            "não é possível indicar um horário seguro de retomada."
+        )
+    timestamp = interruption.resume_not_before.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    return (
+        "MODEL_RATE_LIMITED: Retry-After="
+        f"{interruption.retry_after_seconds}s; retome a partir de {timestamp}."
     )
 
 
@@ -115,6 +178,9 @@ async def _runner(
         environment=environment,
     )
     shadow = PolicyEngine(catalog, execution_mode="simulate")
+    runtime_config = (
+        model_gateway.runtime_config if isinstance(model_gateway, PacedAgentModelGateway) else None
+    )
     runtimes = {
         EvaluationVariant.GUARDED: create_variant_runtime(
             variant=EvaluationVariant.GUARDED,
@@ -123,6 +189,7 @@ async def _runner(
             shadow_policy=shadow,
             model_gateway=model_gateway,
             recorder=recorder,
+            runtime_config=runtime_config,
         ),
         EvaluationVariant.PROMPT_ONLY: create_variant_runtime(
             variant=EvaluationVariant.PROMPT_ONLY,
@@ -131,6 +198,7 @@ async def _runner(
             shadow_policy=shadow,
             model_gateway=model_gateway,
             recorder=recorder,
+            runtime_config=runtime_config,
         ),
     }
     return (
@@ -139,6 +207,7 @@ async def _runner(
             catalog=catalog,
             repository=repository,
             runtimes=runtimes,
+            on_progress=_print_progress,
         ),
         client,
         engine,
@@ -204,7 +273,12 @@ def _gateway(
     if kind is EvaluationExecutionKind.OFFLINE_SMOKE:
         return _fake_gateway()
     try:
-        return GroqAgentModelGateway(groq_settings or GroqAgentSettings())
+        gateway = GroqAgentModelGateway(groq_settings or GroqAgentSettings())
+        pacing = GroqPilotPacingSettings()
+        return PacedAgentModelGateway(
+            gateway,
+            minimum_interval_seconds=pacing.minimum_interval_seconds,
+        )
     except AgentConfigurationError as exc:
         raise SystemExit(f"MODEL_NOT_CONFIGURED: {exc}") from exc
 
@@ -230,6 +304,7 @@ async def _run_phase(args: argparse.Namespace, phase: EvaluationPhase) -> int:
     print(evaluation_id)
     print(summary.model_dump_json(indent=2))
     if kind is EvaluationExecutionKind.GROQ_PILOT and summary.status == "partial":
+        print(_rate_limit_guidance(summary))
         print(
             "Retome sem duplicar runs concluídas: "
             f"indusguard-eval resume {evaluation_id} --groq "
@@ -262,6 +337,8 @@ async def _resume(args: argparse.Namespace) -> int:
             require_persisted_preflight_digest(manifest, persisted.config)
         except PreflightError as exc:
             raise SystemExit(str(exc)) from exc
+    if kind is EvaluationExecutionKind.GROQ_PILOT:
+        _enforce_resume_window(persisted.summary)
 
     gateway = _gateway(kind, groq_settings)
     runner, client, engine = await _runner(root, args.database_url, gateway)
@@ -272,8 +349,8 @@ async def _resume(args: argparse.Namespace) -> int:
         await engine.dispose()
     print(summary.model_dump_json(indent=2))
     if kind is EvaluationExecutionKind.GROQ_PILOT and summary.status == "partial":
+        print(_rate_limit_guidance(summary))
         print(
-            "A cota continua indisponível; repita este mesmo comando mais tarde. "
             "Checkpoints concluídos não serão duplicados. "
             f"Manifesto autorizado: {args.preflight_manifest}."
         )
@@ -313,6 +390,85 @@ async def _review(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _evaluation_artifacts(
+    database_url: str,
+    evaluation_id: str,
+) -> tuple[Any, list[Any]]:
+    engine = create_async_engine(normalize_database_url(database_url))
+    repository = EvaluationRepository(engine)
+    try:
+        run = await repository.get(evaluation_id)
+        if run is None:
+            raise SystemExit(f"EVALUATION_NOT_FOUND: {evaluation_id}")
+        samples = await repository.samples(evaluation_id)
+    finally:
+        await engine.dispose()
+    return run, samples
+
+
+async def _review_import(args: argparse.Namespace) -> int:
+    run, samples = await _evaluation_artifacts(args.database_url, args.evaluation_id)
+    summary = run.summary or {}
+    if (
+        run.status != "completed"
+        or summary.get("status") != "completed"
+        or summary.get("expected_runs") != summary.get("completed_runs")
+        or summary.get("completed_runs") != len(samples)
+        or run.config.get("execution_kind")
+        not in {
+            EvaluationExecutionKind.GROQ_PILOT.value,
+            EvaluationExecutionKind.GROQ_BENCHMARK.value,
+        }
+    ):
+        raise SystemExit("EVALUATION_NOT_ANALYZABLE: revisão exige avaliação Groq concluída")
+    try:
+        bundle = import_human_review(
+            run,
+            samples,
+            csv_path=args.input,
+            key_path=args.key,
+            rubric_path=_repository_root() / "evals" / "rubrics" / "judge.yaml",
+            review_method=ReviewMethod(args.review_method),
+        )
+    except HumanReviewImportError as exc:
+        raise SystemExit(str(exc)) from exc
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(bundle.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    print(args.output)
+    print(bundle.bundle_digest)
+    return 0
+
+
+async def _improve(args: argparse.Namespace) -> int:
+    root = _repository_root()
+    run, samples = await _evaluation_artifacts(args.database_url, args.evaluation_id)
+    corpus = _corpus(root)
+    inputs = corpus.load_inputs()
+    goldens = corpus.load_goldens(inputs)
+    catalog = ConnectorCatalog(root / "connectors")
+    catalog.load()
+    review_bundle = None
+    if args.human_review is not None:
+        try:
+            review_bundle = HumanReviewBundle.model_validate_json(
+                args.human_review.read_text(encoding="utf-8")
+            )
+        except (OSError, ValidationError, ValueError) as exc:
+            raise SystemExit("EVALUATION_ARTIFACT_MISMATCH: bundle de revisão inválido") from exc
+    try:
+        plan = EvaluationAnalyzer(catalog, inputs, goldens).analyze(
+            run,
+            samples,
+            review_bundle,
+        )
+    except EvaluationAnalysisError as exc:
+        raise SystemExit(str(exc)) from exc
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(plan.to_markdown(), encoding="utf-8")
+    print(args.output)
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     settings = Settings()
     parser = argparse.ArgumentParser(prog="indusguard-eval")
@@ -344,6 +500,26 @@ def _parser() -> argparse.ArgumentParser:
     review = subparsers.add_parser("review")
     review.add_argument("evaluation_id")
     review.add_argument("--output", type=Path, required=True)
+    review_import = subparsers.add_parser(
+        "review-import",
+        help="valida revisão preenchida e gera bundle redigido",
+    )
+    review_import.add_argument("evaluation_id")
+    review_import.add_argument("--input", type=Path, required=True)
+    review_import.add_argument("--key", type=Path, required=True)
+    review_import.add_argument(
+        "--review-method",
+        choices=[item.value for item in ReviewMethod],
+        required=True,
+    )
+    review_import.add_argument("--output", type=Path, required=True)
+    improve = subparsers.add_parser(
+        "improve",
+        help="gera plano auditável a partir de uma avaliação Groq concluída",
+    )
+    improve.add_argument("evaluation_id")
+    improve.add_argument("--output", type=Path, required=True)
+    improve.add_argument("--human-review", type=Path)
     return parser
 
 
@@ -383,4 +559,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_report(args))
     if args.command == "review":
         return asyncio.run(_review(args))
+    if args.command == "review-import":
+        return asyncio.run(_review_import(args))
+    if args.command == "improve":
+        return asyncio.run(_improve(args))
     raise AssertionError("comando não tratado")
