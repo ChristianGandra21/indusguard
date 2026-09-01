@@ -350,6 +350,9 @@ flowchart TD
     D --> E[(evaluation_results)]
     E --> A[EvaluationAnalyzer]
     A --> IP[improvement-plan-v1 somente leitura]
+    E --> CP[EvaluationComparator]
+    E2[(segunda avaliação compatível)] --> CP
+    CP --> CM[evaluation-comparison-v1 redigido]
     HR[CSV cegado + chave] --> RI[review-import]
     RI --> RB[bundle redigido calibrated=false]
     RB -. evidência auxiliar .-> A
@@ -376,6 +379,13 @@ cenário, variante e seed. O módulo distingue decisão incorreta, evidência au
 ação ausente/incorreta, argumento incorreto, citação inválida, redundância e escrita insegura, além
 de separar falha do agente, efeito da policy e falha de runtime. O plano resultante não é um gate
 nem aplica mudanças automaticamente.
+
+`EvaluationComparator` é a interface profunda da comparação entre uma baseline e uma candidata.
+Ele valida elegibilidade e compatibilidade experimental antes de reutilizar scorer e analisador,
+pareia a agenda por identidade e devolve deltas de runtime, segurança e utilidade. Falhas são
+classificadas como resolvidas, persistentes ou novas por categoria e cenário. O contrato não inclui
+mensagens, respostas, evidências, notas ou trajetórias esperadas; também não faz chamadas externas
+nem transforma o resultado em release gate.
 
 `AgentPlanningContext` é uma allowlist derivada de `TrustedRunContext`: IDs de contexto declarados
 no domínio, permissões, escopos e pedido direto. Confirmação, digest, headers e credenciais nunca

@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from indusguard_evals.analysis import EvaluationAnalysisError, EvaluationAnalyzer
 from indusguard_evals.baseline import PromptOnlyExecutor
+from indusguard_evals.comparison import EvaluationComparator, EvaluationComparisonError
 from indusguard_evals.contracts import (
     EvaluationExecutionKind,
     EvaluationPhase,
@@ -469,6 +470,34 @@ async def _improve(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _compare(args: argparse.Namespace) -> int:
+    root = _repository_root()
+    baseline, baseline_samples = await _evaluation_artifacts(
+        args.database_url, args.baseline_evaluation_id
+    )
+    candidate, candidate_samples = await _evaluation_artifacts(
+        args.database_url, args.candidate_evaluation_id
+    )
+    corpus = _corpus(root)
+    inputs = corpus.load_inputs()
+    goldens = corpus.load_goldens(inputs)
+    catalog = ConnectorCatalog(root / "connectors")
+    catalog.load()
+    try:
+        comparison = EvaluationComparator(catalog, inputs, goldens).compare(
+            baseline,
+            baseline_samples,
+            candidate,
+            candidate_samples,
+        )
+    except EvaluationComparisonError as exc:
+        raise SystemExit(str(exc)) from exc
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(comparison.to_markdown(), encoding="utf-8")
+    print(args.output)
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     settings = Settings()
     parser = argparse.ArgumentParser(prog="indusguard-eval")
@@ -520,6 +549,13 @@ def _parser() -> argparse.ArgumentParser:
     improve.add_argument("evaluation_id")
     improve.add_argument("--output", type=Path, required=True)
     improve.add_argument("--human-review", type=Path)
+    compare = subparsers.add_parser(
+        "compare",
+        help="compara duas avaliações Groq concluídas e compatíveis",
+    )
+    compare.add_argument("baseline_evaluation_id")
+    compare.add_argument("candidate_evaluation_id")
+    compare.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -563,4 +599,6 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_review_import(args))
     if args.command == "improve":
         return asyncio.run(_improve(args))
+    if args.command == "compare":
+        return asyncio.run(_compare(args))
     raise AssertionError("comando não tratado")
