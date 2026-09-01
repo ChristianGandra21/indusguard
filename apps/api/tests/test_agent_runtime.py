@@ -1220,11 +1220,112 @@ def test_groq_planner_receives_allowlisted_context_for_resource_ids() -> None:
     assert "asset_G501" in prompt
     assert "case_tkt_inv_04" in prompt
     assert "fontes complementares" in prompt
+    assert "Descrição da intenção selecionada" in prompt
+    assert "getBaseline" in prompt
+    assert "getDataQuality" in prompt
+    assert "getRmsSeries" in prompt
+    assert "identidade do ativo, baseline, qualidade dos dados" in prompt
     assert "requestSpecialistAnalysis" in prompt
     assert "escalateCase" in prompt
     assert "credential" not in prompt
     assert "segredo" not in prompt
     assert "confirmation" not in prompt
+
+
+def test_groq_planner_receives_completed_operation_history() -> None:
+    """O planner diferencia o que já foi consultado sem abrir payloads ou goldens."""
+
+    chat = RecordingChatModel(
+        structured=[],
+        planned=[AIMessage(content="", tool_calls=[])],
+    )
+    gateway = GroqAgentModelGateway(
+        GroqAgentSettings(_env_file=None),
+        chat_factory=lambda _: chat,
+    )
+    domain = _catalog().get_domain("tractian")
+    assert domain is not None
+
+    asyncio.run(
+        gateway.plan(
+            request=AgentRunRequest(connector_id="tractian", message="Investigue a falha."),
+            domain=domain,
+            intent=AgentIntentDecision(intent_id="investigar"),
+            planning_context=AgentPlanningContext(),
+            messages=[
+                HumanMessage(content="Investigue a falha."),
+                ToolMessage(
+                    content='{"payload":"não repetir no resumo"}',
+                    tool_call_id="call-1",
+                    name="tractian__getAsset",
+                ),
+                ToolMessage(
+                    content='{"payload":"também não repetir"}',
+                    tool_call_id="call-2",
+                    name="tractian__getBaseline",
+                ),
+            ],
+            tools=[],
+        )
+    )
+
+    prompt = str(chat.invocations[0][0].content)
+    assert "Histórico de operações concluídas: tractian__getAsset, tractian__getBaseline" in prompt
+    assert "não repetir no resumo" not in prompt
+    assert "também não repetir" not in prompt
+
+
+def test_groq_finalizer_receives_domain_decision_semantics() -> None:
+    """Análise especializada continua act; encaminhamento humano continua escalate."""
+
+    chat = RecordingChatModel(
+        structured=[
+            {
+                "raw": AIMessage(content=""),
+                "parsed": {
+                    "answer": "A análise especializada foi simulada [ev-001].",
+                    "decision": "act",
+                    "evidence_ids": ["ev-001"],
+                    "uncertainties": [],
+                },
+                "parsing_error": None,
+            }
+        ],
+        planned=[],
+    )
+    gateway = GroqAgentModelGateway(
+        GroqAgentSettings(_env_file=None),
+        chat_factory=lambda _: chat,
+    )
+    domain = _catalog().get_domain("tractian")
+    assert domain is not None
+
+    asyncio.run(
+        gateway.finalize(
+            request=AgentRunRequest(
+                connector_id="tractian",
+                message="Peça uma análise especializada.",
+            ),
+            domain=domain,
+            intent=AgentIntentDecision(intent_id="agir"),
+            planning_context=AgentPlanningContext(),
+            messages=[
+                HumanMessage(content="Peça uma análise especializada."),
+                ToolMessage(
+                    content='{"execution":{"outcome":"simulated"}}',
+                    tool_call_id="call-1",
+                    name="tractian__requestSpecialistAnalysis",
+                ),
+            ],
+            allowed_evidence_ids=["ev-001"],
+        )
+    )
+
+    prompt = str(chat.invocations[0][0].content)
+    assert "Decisão canônica ao realizar esta intenção: act" in prompt
+    assert "requestSpecialistAnalysis" in prompt
+    assert "escalateCase" in prompt
+    assert "encaminhamento humano" in prompt
 
 
 def test_groq_adapter_redacts_provider_failure() -> None:

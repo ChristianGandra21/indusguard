@@ -15,7 +15,7 @@ from math import ceil
 
 import groq
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_groq import ChatGroq
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -112,6 +112,51 @@ def _trusted_context_guidance(
         f"{serialized}\n"
         "Ao preencher argumentos de tools, reutilize exatamente os identificadores fornecidos "
         "neste contexto quando o campo correspondente existir; não invente nem substitua IDs."
+    )
+
+
+def _intent_guidance(
+    domain: ConnectorDomain,
+    intent: AgentIntentDecision,
+    messages: Sequence[BaseMessage],
+) -> str:
+    """Expõe a intenção validada e o histórico de nomes sem copiar payloads de tools."""
+
+    selected = next((item for item in domain.intents if item.id == intent.intent_id), None)
+    if selected is None:
+        return "Intenção selecionada não possui orientação de domínio validada."
+    history = list(
+        dict.fromkeys(
+            message.name
+            for message in messages
+            if isinstance(message, ToolMessage) and message.name
+        )
+    )
+    evidence_operations = ", ".join(selected.evidence_operations) or "nenhuma"
+    action_operations = ", ".join(selected.action_operations) or "nenhuma"
+    decision = selected.result_decision or "não fixada; depende das evidências"
+    terminology = "\n".join(
+        f"- {term}: {definition}" for term, definition in domain.terminology.items()
+    )
+    action_semantics = []
+    for domain_intent in domain.intents:
+        if domain_intent.result_decision is None:
+            continue
+        for operation_id in domain_intent.action_operations:
+            action_semantics.append(
+                f"- {operation_id}: decisão {domain_intent.result_decision}; "
+                f"{domain_intent.description}"
+            )
+    serialized_actions = "\n".join(action_semantics) if action_semantics else "- nenhuma"
+    return (
+        f"Descrição da intenção selecionada: {selected.description}\n"
+        f"Operações de evidência relevantes: {evidence_operations}.\n"
+        f"Ações relevantes: {action_operations}.\n"
+        f"Decisão canônica ao realizar esta intenção: {decision}.\n"
+        "Histórico de operações concluídas: "
+        f"{', '.join(history) if history else 'nenhuma'}.\n"
+        f"Terminologia do domínio:\n{terminology or '- nenhuma'}\n"
+        f"Semântica de ações do domínio:\n{serialized_actions}"
     )
 
 
@@ -266,9 +311,6 @@ class GroqAgentModelGateway(AgentModelGateway):
         messages: Sequence[BaseMessage],
         tools: Sequence[AgentToolDefinition],
     ) -> GatewayResult[AgentPlanStep]:
-        terminology = "\n".join(
-            f"- {term}: {definition}" for term, definition in domain.terminology.items()
-        )
         evidence_states = ", ".join(domain.evidence_states) or "não declarados"
         system = SystemMessage(
             content=(
@@ -277,8 +319,8 @@ class GroqAgentModelGateway(AgentModelGateway):
                 "fornecidas, não invente identidade, permissão, escopo ou confirmação e encerre "
                 "quando houver evidência suficiente. Escritas podem apenas ser simuladas.\n"
                 f"Intenção classificada: {intent.intent_id}.\n"
-                f"Terminologia:\n{terminology or '- nenhuma'}\n"
                 f"Estados de evidência conhecidos: {evidence_states}.\n"
+                f"{_intent_guidance(domain, intent, messages)}\n"
                 f"{_trusted_context_guidance(planning_context, domain.context_fields)}"
             )
         )
@@ -341,6 +383,7 @@ class GroqAgentModelGateway(AgentModelGateway):
                 "indisponíveis ou conflitantes e não invente valores ausentes. Não exponha "
                 "raciocínio "
                 "interno.\n"
+                f"{_intent_guidance(domain, intent, messages)}\n"
                 f"{_trusted_context_guidance(planning_context, domain.context_fields)}"
             )
         )

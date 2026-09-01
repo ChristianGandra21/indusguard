@@ -17,7 +17,7 @@ terminology:
   data_quality: completude, frescor e relação sinal-ruído dos dados
   investigation_evidence: fontes complementares de configuração, baseline, qualidade e sinais que sustentam uma investigação
   specialist_analysis: análise técnica especializada solicitada por meio de requestSpecialistAnalysis
-  human_escalation: encaminhamento do caso para atendimento humano por meio de escalateCase
+  human_escalation: encaminhamento humano do caso por meio de escalateCase
 
 intents:
   # Cada intenção referencia operationIds do OpenAPI, não URLs. Isso permite que o
@@ -25,8 +25,9 @@ intents:
   - id: contextualizar
     description: Identificar pessoa usuária, empresa, ativo e permissões.
     evidence_operations: [getCurrentUser, getCompany, getAsset]
+    result_decision: orient
   - id: investigar
-    description: Consultar fontes complementares de análises, sinais, baseline, qualidade, modelo e conhecimento técnico antes de concluir; se a evidência continuar parcial ou indisponível, declarar a limitação e considerar escalonamento.
+    description: Investigar causa de falha combinando identidade do ativo, baseline, qualidade dos dados e ao menos um sinal observado antes de concluir; fontes parciais, indisponíveis ou conflitantes exigem limitação explícita e podem justificar escalonamento humano.
     evidence_operations:
       - listAnalyses
       - getAnalysis
@@ -39,6 +40,7 @@ intents:
       - getKnowledgeDoc
   - id: agir
     description: Propor ou executar uma operação mutável autorizada; pedido de análise técnica especializada usa requestSpecialistAnalysis, enquanto encaminhamento para atendimento humano usa escalateCase.
+    result_decision: act
     action_operations:
       - updateAssetConfig
       - reprocessAnalysis
@@ -46,6 +48,7 @@ intents:
       - requestRetraining
   - id: escalar
     description: Encaminhar um caso para atendimento humano com escalateCase quando a evidência ou a autoridade forem insuficientes; não confundir com requestSpecialistAnalysis, que solicita análise técnica.
+    result_decision: escalate
     action_operations: [escalateCase]
 
 evidence_states:
