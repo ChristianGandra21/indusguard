@@ -190,6 +190,7 @@ class BenchmarkRunner:
             samples,
             expected_runs=len(schedule),
             completed=complete,
+            phase=run.phase,
             interruption=interruption,
         )
         await self._repository.finish(

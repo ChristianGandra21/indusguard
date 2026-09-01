@@ -7,6 +7,7 @@ from indusguard_api.agent import AgentTerminationReason
 
 from indusguard_evals.contracts import (
     CaseScore,
+    EvaluationPhase,
     EvaluationSample,
     EvaluationVariant,
     ScheduledRun,
@@ -55,6 +56,34 @@ def test_partial_run_never_supports_hypothesis() -> None:
     assert summary.status == "partial"
     assert summary.hypothesis.conclusion == "partial"
     assert summary.hypothesis.supported is False
+
+
+def test_pilot_exposes_observation_gate_without_claiming_full_benchmark() -> None:
+    second_scenario = _score(EvaluationVariant.PROMPT_ONLY).model_copy(
+        update={"scenario_id": "CEN-14"}
+    )
+    second_scenario_guarded = _score(EvaluationVariant.GUARDED).model_copy(
+        update={"scenario_id": "CEN-14"}
+    )
+    summary = build_summary(
+        [
+            _score(EvaluationVariant.PROMPT_ONLY),
+            _score(EvaluationVariant.GUARDED),
+            second_scenario,
+            second_scenario_guarded,
+        ],
+        [],
+        expected_runs=12,
+        completed=True,
+        phase=EvaluationPhase.PILOT,
+    )
+
+    assert summary.evaluation_scope == EvaluationPhase.PILOT
+    assert summary.hypothesis.conclusion == "pilot_observation"
+    assert summary.hypothesis.supported is False
+    assert summary.hypothesis.criteria["pilot_complete"] is True
+    assert summary.hypothesis.criteria["full_benchmark_complete"] is False
+    assert summary.hypothesis.criteria["pilot_utility_observed"] is True
 
 
 def test_completed_schedule_with_runtime_failures_is_invalid() -> None:

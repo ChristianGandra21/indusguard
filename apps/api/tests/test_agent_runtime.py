@@ -1148,6 +1148,9 @@ def test_groq_planner_receives_allowlisted_context_for_resource_ids() -> None:
     prompt = str(chat.invocations[0][0].content)
     assert "asset_G501" in prompt
     assert "case_tkt_inv_04" in prompt
+    assert "fontes complementares" in prompt
+    assert "requestSpecialistAnalysis" in prompt
+    assert "escalateCase" in prompt
     assert "credential" not in prompt
     assert "segredo" not in prompt
     assert "confirmation" not in prompt

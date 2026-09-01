@@ -15,7 +15,9 @@ terminology:
   analysis: diagnóstico produzido a partir dos sinais do ativo
   baseline: estado normal aprendido para um ativo ou ponto de medição
   data_quality: completude, frescor e relação sinal-ruído dos dados
-  escalation: encaminhamento explícito do caso para análise humana
+  investigation_evidence: fontes complementares de configuração, baseline, qualidade e sinais que sustentam uma investigação
+  specialist_analysis: análise técnica especializada solicitada por meio de requestSpecialistAnalysis
+  human_escalation: encaminhamento do caso para atendimento humano por meio de escalateCase
 
 intents:
   # Cada intenção referencia operationIds do OpenAPI, não URLs. Isso permite que o
@@ -24,7 +26,7 @@ intents:
     description: Identificar pessoa usuária, empresa, ativo e permissões.
     evidence_operations: [getCurrentUser, getCompany, getAsset]
   - id: investigar
-    description: Consultar análises, sinais, baseline, modelo e conhecimento técnico.
+    description: Consultar fontes complementares de análises, sinais, baseline, qualidade, modelo e conhecimento técnico antes de concluir; se a evidência continuar parcial ou indisponível, declarar a limitação e considerar escalonamento.
     evidence_operations:
       - listAnalyses
       - getAnalysis
@@ -36,14 +38,14 @@ intents:
       - searchKnowledge
       - getKnowledgeDoc
   - id: agir
-    description: Propor ou executar uma operação mutável autorizada.
+    description: Propor ou executar uma operação mutável autorizada; pedido de análise técnica especializada usa requestSpecialistAnalysis, enquanto encaminhamento para atendimento humano usa escalateCase.
     action_operations:
       - updateAssetConfig
       - reprocessAnalysis
       - requestSpecialistAnalysis
       - requestRetraining
   - id: escalar
-    description: Encaminhar um caso quando a evidência ou a autoridade forem insuficientes.
+    description: Encaminhar um caso para atendimento humano com escalateCase quando a evidência ou a autoridade forem insuficientes; não confundir com requestSpecialistAnalysis, que solicita análise técnica.
     action_operations: [escalateCase]
 
 evidence_states:
