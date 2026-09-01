@@ -27,8 +27,10 @@ from indusguard_api.groq_gateway import GroqAgentModelGateway, GroqAgentSettings
 from indusguard_api.persistence import SqlAlchemyAgentRunRecorder, normalize_database_url
 from indusguard_api.policy import GuardedExecutor, PolicyEngine
 from indusguard_api.settings import Settings
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from indusguard_evals.analysis import EvaluationAnalysisError, EvaluationAnalyzer
 from indusguard_evals.baseline import PromptOnlyExecutor
 from indusguard_evals.contracts import (
     EvaluationExecutionKind,
@@ -37,7 +39,13 @@ from indusguard_evals.contracts import (
 )
 from indusguard_evals.corpus import OfficialCorpus
 from indusguard_evals.execution import create_variant_runtime
-from indusguard_evals.human_review import export_human_review
+from indusguard_evals.human_review import (
+    HumanReviewBundle,
+    HumanReviewImportError,
+    ReviewMethod,
+    export_human_review,
+    import_human_review,
+)
 from indusguard_evals.pacing import GroqPilotPacingSettings, PacedAgentModelGateway
 from indusguard_evals.preflight import (
     GroqPilotPreflightManifest,
@@ -382,6 +390,85 @@ async def _review(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _evaluation_artifacts(
+    database_url: str,
+    evaluation_id: str,
+) -> tuple[Any, list[Any]]:
+    engine = create_async_engine(normalize_database_url(database_url))
+    repository = EvaluationRepository(engine)
+    try:
+        run = await repository.get(evaluation_id)
+        if run is None:
+            raise SystemExit(f"EVALUATION_NOT_FOUND: {evaluation_id}")
+        samples = await repository.samples(evaluation_id)
+    finally:
+        await engine.dispose()
+    return run, samples
+
+
+async def _review_import(args: argparse.Namespace) -> int:
+    run, samples = await _evaluation_artifacts(args.database_url, args.evaluation_id)
+    summary = run.summary or {}
+    if (
+        run.status != "completed"
+        or summary.get("status") != "completed"
+        or summary.get("expected_runs") != summary.get("completed_runs")
+        or summary.get("completed_runs") != len(samples)
+        or run.config.get("execution_kind")
+        not in {
+            EvaluationExecutionKind.GROQ_PILOT.value,
+            EvaluationExecutionKind.GROQ_BENCHMARK.value,
+        }
+    ):
+        raise SystemExit("EVALUATION_NOT_ANALYZABLE: revisão exige avaliação Groq concluída")
+    try:
+        bundle = import_human_review(
+            run,
+            samples,
+            csv_path=args.input,
+            key_path=args.key,
+            rubric_path=_repository_root() / "evals" / "rubrics" / "judge.yaml",
+            review_method=ReviewMethod(args.review_method),
+        )
+    except HumanReviewImportError as exc:
+        raise SystemExit(str(exc)) from exc
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(bundle.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    print(args.output)
+    print(bundle.bundle_digest)
+    return 0
+
+
+async def _improve(args: argparse.Namespace) -> int:
+    root = _repository_root()
+    run, samples = await _evaluation_artifacts(args.database_url, args.evaluation_id)
+    corpus = _corpus(root)
+    inputs = corpus.load_inputs()
+    goldens = corpus.load_goldens(inputs)
+    catalog = ConnectorCatalog(root / "connectors")
+    catalog.load()
+    review_bundle = None
+    if args.human_review is not None:
+        try:
+            review_bundle = HumanReviewBundle.model_validate_json(
+                args.human_review.read_text(encoding="utf-8")
+            )
+        except (OSError, ValidationError, ValueError) as exc:
+            raise SystemExit("EVALUATION_ARTIFACT_MISMATCH: bundle de revisão inválido") from exc
+    try:
+        plan = EvaluationAnalyzer(catalog, inputs, goldens).analyze(
+            run,
+            samples,
+            review_bundle,
+        )
+    except EvaluationAnalysisError as exc:
+        raise SystemExit(str(exc)) from exc
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(plan.to_markdown(), encoding="utf-8")
+    print(args.output)
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     settings = Settings()
     parser = argparse.ArgumentParser(prog="indusguard-eval")
@@ -413,6 +500,26 @@ def _parser() -> argparse.ArgumentParser:
     review = subparsers.add_parser("review")
     review.add_argument("evaluation_id")
     review.add_argument("--output", type=Path, required=True)
+    review_import = subparsers.add_parser(
+        "review-import",
+        help="valida revisão preenchida e gera bundle redigido",
+    )
+    review_import.add_argument("evaluation_id")
+    review_import.add_argument("--input", type=Path, required=True)
+    review_import.add_argument("--key", type=Path, required=True)
+    review_import.add_argument(
+        "--review-method",
+        choices=[item.value for item in ReviewMethod],
+        required=True,
+    )
+    review_import.add_argument("--output", type=Path, required=True)
+    improve = subparsers.add_parser(
+        "improve",
+        help="gera plano auditável a partir de uma avaliação Groq concluída",
+    )
+    improve.add_argument("evaluation_id")
+    improve.add_argument("--output", type=Path, required=True)
+    improve.add_argument("--human-review", type=Path)
     return parser
 
 
@@ -452,4 +559,8 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_report(args))
     if args.command == "review":
         return asyncio.run(_review(args))
+    if args.command == "review-import":
+        return asyncio.run(_review_import(args))
+    if args.command == "improve":
+        return asyncio.run(_improve(args))
     raise AssertionError("comando não tratado")

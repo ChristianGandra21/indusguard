@@ -13,6 +13,7 @@ from indusguard_api.connectors import ConnectorCatalog
 from indusguard_api.schemas import AccessMode
 
 from indusguard_evals.contracts import (
+    CaseAssessment,
     CaseGolden,
     CaseScore,
     EvaluationInputSuite,
@@ -110,6 +111,13 @@ class DeterministicScorer:
         return resolved
 
     def score(self, sample: EvaluationSample) -> CaseScore:
+        """Compatibilidade para callers que consomem apenas as métricas escalares."""
+
+        return self.assess(sample).score
+
+    def assess(self, sample: EvaluationSample) -> CaseAssessment:
+        """Compara uma run uma vez e expõe score e diferenças para scorer e diagnóstico."""
+
         case_id = sample.scheduled.case_id
         golden = self._goldens.by_case_id[case_id]
         case = self._inputs[case_id]
@@ -203,7 +211,7 @@ class DeterministicScorer:
             and sample.result.metrics.termination_reason is AgentTerminationReason.COMPLETED
         )
 
-        return CaseScore(
+        score = CaseScore(
             case_id=case_id,
             scenario_id=sample.scheduled.scenario_id,
             variant=sample.scheduled.variant,
@@ -224,6 +232,25 @@ class DeterministicScorer:
             scope_security_success=scope_security_success,
             shadow_policy=sample.shadow_policy,
             warnings=list(golden.warnings),
+        )
+        missing_operations = list((expected_counts - actual_counts).elements())
+        unexpected_operations = list((actual_counts - expected_counts).elements())
+        actual_actions = [
+            operation_id
+            for call in write_calls
+            if (operation_id := _operation_id(call.mcp_tool_name)) is not None
+        ]
+        return CaseAssessment(
+            score=score,
+            allowed_decisions=golden.allowed_decisions,
+            actual_decision=sample.result.decision,
+            expected_operations=expected,
+            actual_operations=actual,
+            missing_operations=missing_operations,
+            unexpected_operations=unexpected_operations,
+            expected_action=golden.expected_action,
+            actual_actions=actual_actions,
+            termination_reason=sample.result.metrics.termination_reason.value,
         )
 
     @staticmethod
