@@ -374,6 +374,9 @@ Uma leitura que alcança o upstream e recebe HTTP 4xx não transitório por recu
 inválido permanece comportamento observável do agente: gera `TOOL_INPUT_REJECTED`, permite
 recuperação pelo planner e segue para o scorer. Autenticação/autorização, timeout, quota, conexão,
 resposta inválida e HTTP 5xx continuam sendo falhas de runtime.
+Quando a Groq rejeita com HTTP 400 uma tool call gerada pelo próprio modelo e fornece apenas o
+marcador estrutural `failed_generation`, o adapter redige o conteúdo e classifica a ocorrência
+como `MODEL_OUTPUT_INVALID`, que segue para scoring em vez de simular indisponibilidade.
 
 `EvaluationAnalyzer` é a interface profunda do ciclo de melhoria. Ele reutiliza a mesma avaliação
 de caso do scorer para resolver trajetória esperada, classificar falhas e agregar recorrência por

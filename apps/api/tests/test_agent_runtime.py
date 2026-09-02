@@ -1022,6 +1022,32 @@ def test_groq_provider_failures_map_to_redacted_diagnostic_categories(
     assert "sensível" not in str(captured.value)
 
 
+def test_groq_failed_tool_generation_is_model_output_failure() -> None:
+    """Tool call inválida gerada pelo modelo é desempenho, não indisponibilidade do provedor."""
+
+    error = groq.BadRequestError(
+        "detalhe sensível",
+        response=httpx.Response(
+            400,
+            request=httpx.Request("POST", "https://api.groq.com/openai/v1/chat/completions"),
+        ),
+        body={
+            "error": {
+                "type": "invalid_request_error",
+                "failed_generation": {
+                    "reason": "argumentos inválidos com segredo",
+                },
+            }
+        },
+    )
+
+    with pytest.raises(ModelOutputError) as captured:
+        _raise_gateway_error(error)
+
+    assert "sensível" not in str(captured.value)
+    assert "segredo" not in str(captured.value)
+
+
 def test_aggregates_tokens_latency_and_runtime_versions() -> None:
     """Cada run expõe métricas comparáveis sem registrar prompts ou raciocínio interno."""
 

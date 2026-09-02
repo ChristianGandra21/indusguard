@@ -8,7 +8,7 @@ carregado de ``GROQ_API_KEY`` e nunca faz parte de prompts, métricas ou mensage
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from math import ceil
@@ -91,6 +91,16 @@ def _parse_retry_after(value: str | None, *, now: datetime | None = None) -> int
     if seconds < 0 or seconds > 86_400:
         return None
     return seconds
+
+
+def _is_failed_tool_generation(exc: groq.APIStatusError) -> bool:
+    """Reconhece somente a chave estrutural documentada, sem copiar o conteúdo rejeitado."""
+
+    body = getattr(exc, "body", None)
+    if not isinstance(body, Mapping):
+        return False
+    error = body.get("error")
+    return isinstance(error, Mapping) and "failed_generation" in error
 
 
 def _trusted_context_guidance(
@@ -193,6 +203,8 @@ def _raise_gateway_error(exc: Exception) -> None:
         )
     if isinstance(exc, groq.APIStatusError):
         status_code = getattr(exc, "status_code", None)
+        if status_code == 400 and _is_failed_tool_generation(exc):
+            raise ModelOutputError("O modelo gerou uma tool call inválida.")
         if status_code in {401, 403}:
             reason_code = "MODEL_AUTHENTICATION_ERROR"
         elif status_code == 404:

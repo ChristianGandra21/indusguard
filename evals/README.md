@@ -181,6 +181,9 @@ HTTP 4xx não transitório causado por recurso ou argumento inexistente também 
 agente: a evidência recebe `TOOL_INPUT_REJECTED`, o planner pode se recuperar e o scorer avalia a
 trajetória. Autenticação/autorização, timeout, quota, conexão, resposta inválida e 5xx permanecem
 falhas de runtime.
+Uma resposta Groq 400 com o marcador documentado `failed_generation` também é desempenho do
+modelo: o conteúdo rejeitado não é persistido e a run termina como `MODEL_OUTPUT_INVALID`, ainda
+pontuável. Outros erros 400 continuam `MODEL_PROVIDER_CLIENT_ERROR` e invalidam a execução.
 
 Se a cota gratuita interromper o piloto, o status ficará `partial`, a categoria estável será
 `MODEL_RATE_LIMITED` e o próprio CLI imprimirá:
