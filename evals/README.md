@@ -177,6 +177,11 @@ modelo ou erro MCP/upstream, o runner emite `runtime_failed`, interrompe a agend
 como `invalid`. Saída inválida, tool inexistente e falha de finalização continuam sendo resultados
 de desempenho do agente; `MODEL_RATE_LIMITED` permanece `partial` e retomável.
 
+HTTP 4xx não transitório causado por recurso ou argumento inexistente também é desempenho do
+agente: a evidência recebe `TOOL_INPUT_REJECTED`, o planner pode se recuperar e o scorer avalia a
+trajetória. Autenticação/autorização, timeout, quota, conexão, resposta inválida e 5xx permanecem
+falhas de runtime.
+
 Se a cota gratuita interromper o piloto, o status ficará `partial`, a categoria estável será
 `MODEL_RATE_LIMITED` e o próprio CLI imprimirá:
 

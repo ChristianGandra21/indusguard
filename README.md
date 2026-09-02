@@ -558,6 +558,9 @@ do pacing compartilhado. Com 8 chamadas máximas e intervalo de 60 segundos, o m
 540 segundos de timeout total por run. Falhas de infraestrutura como `TIMEOUT`, indisponibilidade
 do modelo ou erro MCP/upstream interrompem a agenda com `runtime_failed` e tornam o resumo
 `invalid`; falhas atribuíveis à saída do agente continuam sendo medidas como desempenho.
+Um HTTP 4xx não transitório por ID ou argumento inexistente é atribuído ao agente como
+`TOOL_INPUT_REJECTED`; ele não simula indisponibilidade do runtime nem invalida sozinho a
+comparação.
 
 O manifesto é obrigatório e fica inválido se commit, corpus, modelo, agenda ou contrato de
 transmissão mudar. Todo merge torna manifestos anteriores obsoletos; gere um novo manifesto para

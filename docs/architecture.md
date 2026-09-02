@@ -370,6 +370,11 @@ gateway compartilhado. Timeout, indisponibilidade do modelo e erros MCP/upstream
 `runtime_failed`, encerram a agenda e tornam a avaliação `invalid`; falhas atribuíveis ao agente
 continuam sendo pontuadas como desempenho.
 
+Uma leitura que alcança o upstream e recebe HTTP 4xx não transitório por recurso ou argumento
+inválido permanece comportamento observável do agente: gera `TOOL_INPUT_REJECTED`, permite
+recuperação pelo planner e segue para o scorer. Autenticação/autorização, timeout, quota, conexão,
+resposta inválida e HTTP 5xx continuam sendo falhas de runtime.
+
 `EvaluationAnalyzer` é a interface profunda do ciclo de melhoria. Ele reutiliza a mesma avaliação
 de caso do scorer para resolver trajetória esperada, classificar falhas e agregar recorrência por
 cenário, variante e seed. O módulo distingue decisão incorreta, evidência ausente, tool inesperada,

@@ -584,6 +584,45 @@ def test_preserves_upstream_failure_as_partial_structured_run() -> None:
     assert len(upstream_requests) == 3
 
 
+def test_non_retryable_not_found_remains_agent_result_instead_of_runtime_failure() -> None:
+    """Um ID inexistente escolhido pelo modelo não simula indisponibilidade da infraestrutura."""
+
+    gateway = ScriptedAgentModelGateway(
+        classification=AgentIntentDecision(intent_id="consultar"),
+        plans=[
+            AgentPlanStep(
+                tool_calls=[
+                    AgentPlannedToolCall(
+                        alias="synthetic__getWidget",
+                        arguments={"path": {"widgetId": "inventado-pelo-modelo"}},
+                    )
+                ]
+            ),
+            AgentPlanStep(done=True),
+        ],
+        final_answer=AgentFinalAnswer(
+            answer="O recurso informado não foi encontrado [ev-001].",
+            decision=AgentDecision.ESCALATE,
+            evidence_ids=["ev-001"],
+            uncertainties=["RESOURCE_NOT_FOUND"],
+        ),
+    )
+
+    result, upstream_requests = _run_agent(
+        gateway,
+        request=AgentRunRequest(connector_id="synthetic", message="Consulte o widget."),
+        upstream=lambda _: httpx.Response(404, json={"message": "not found"}),
+    )
+
+    execution = result.evidence[0].result["execution"]
+    assert result.status == "completed"
+    assert result.metrics.termination_reason == "COMPLETED"
+    assert "TOOL_INPUT_REJECTED" in result.uncertainties
+    assert execution["outcome"] == "failed"
+    assert execution["status_code"] == 404
+    assert len(upstream_requests) == 1
+
+
 def test_executes_multiple_planned_tools_sequentially_in_stable_order() -> None:
     """Mesmo quando o modelo devolve duas calls, a rede observa uma ordem determinística."""
 
@@ -1227,6 +1266,8 @@ def test_groq_planner_receives_allowlisted_context_for_resource_ids() -> None:
     assert "identidade do ativo, baseline, qualidade dos dados" in prompt
     assert "requestSpecialistAnalysis" in prompt
     assert "escalateCase" in prompt
+    assert "só pode ser reutilizado se aparecer explicitamente" in prompt
+    assert "não invente um ID para chamar uma operação dependente" in prompt
     assert "credential" not in prompt
     assert "segredo" not in prompt
     assert "confirmation" not in prompt
