@@ -23,7 +23,7 @@ from indusguard_evals.report import (
     BenchmarkSummary,
     build_summary,
 )
-from indusguard_evals.repository import EvaluationRepository
+from indusguard_evals.repository import EvaluationRepository, is_retryable_checkpoint
 from indusguard_evals.schedule import FULL_SEEDS, PILOT_SEEDS, build_schedule, pending_schedule
 from indusguard_evals.scorer import DeterministicScorer
 
@@ -149,7 +149,9 @@ class BenchmarkRunner:
                 )
                 break
             if sample.result.metrics.termination_reason in INVALID_RUNTIME_TERMINATIONS:
-                completed_runs += 1
+                retryable_runtime_failure = is_retryable_checkpoint(sample)
+                if not retryable_runtime_failure:
+                    completed_runs += 1
                 self._emit_progress(
                     EvaluationProgress(
                         evaluation_id=evaluation_id,

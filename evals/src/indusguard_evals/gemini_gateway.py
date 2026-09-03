@@ -43,7 +43,7 @@ class GeminiEvalSettings(BaseSettings):
         validation_alias="INDUSGUARD_EVAL_GEMINI_TIMEOUT_SECONDS",
     )
     max_retries: int = Field(
-        default=0,
+        default=2,
         ge=0,
         le=2,
         validation_alias="INDUSGUARD_EVAL_GEMINI_MAX_RETRIES",

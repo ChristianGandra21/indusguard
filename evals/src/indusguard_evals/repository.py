@@ -24,6 +24,24 @@ from indusguard_evals.contracts import (
 )
 
 EvaluationStatus = Literal["running", "partial", "completed", "invalid"]
+RETRYABLE_MODEL_FAILURE_CODES = frozenset(
+    {
+        "MODEL_CONNECTION_ERROR",
+        "MODEL_PROVIDER_SERVER_ERROR",
+        "MODEL_TIMEOUT",
+    }
+)
+
+
+def is_retryable_checkpoint(sample: EvaluationSample) -> bool:
+    """Distingue falha transitória do provedor de resultado experimental avaliável."""
+
+    termination = sample.result.metrics.termination_reason
+    if termination is AgentTerminationReason.MODEL_RATE_LIMITED:
+        return True
+    if termination is not AgentTerminationReason.MODEL_UNAVAILABLE:
+        return False
+    return bool(RETRYABLE_MODEL_FAILURE_CODES & set(sample.result.uncertainties))
 
 
 class PersistedEvaluationRun(BaseModel):
@@ -92,10 +110,7 @@ class EvaluationRepository:
         )
         async with self._sessions() as session, session.begin():
             existing = (await session.execute(statement)).scalar_one_or_none()
-            retryable = (
-                sample.result.metrics.termination_reason
-                is AgentTerminationReason.MODEL_RATE_LIMITED
-            )
+            retryable = is_retryable_checkpoint(sample)
             values = {
                 "scenario_id": scheduled.scenario_id,
                 "ordinal": scheduled.ordinal,

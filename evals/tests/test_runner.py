@@ -33,12 +33,14 @@ class FakeVariantRuntime:
         rate_limit_once: bool = False,
         retry_after_seconds: int | None = None,
         termination: AgentTerminationReason = AgentTerminationReason.COMPLETED,
+        uncertainties: list[str] | None = None,
     ) -> None:
         self.variant = variant
         self._recorder = recorder
         self._rate_limit_once = rate_limit_once
         self._retry_after_seconds = retry_after_seconds
         self._termination = termination
+        self._uncertainties = uncertainties or []
 
     async def run(self, scheduled: object, case: object) -> EvaluationSample:
         termination = (
@@ -48,6 +50,8 @@ class FakeVariantRuntime:
         )
         self._rate_limit_once = False
         result = agent_result(termination=termination).model_copy(update={"run_id": str(uuid4())})
+        if self._uncertainties:
+            result = result.model_copy(update={"uncertainties": self._uncertainties})
         if termination is AgentTerminationReason.MODEL_RATE_LIMITED:
             result = result.model_copy(
                 update={
@@ -228,3 +232,74 @@ def test_runtime_failure_stops_and_invalidates_the_schedule(tmp_path: Path) -> N
     assert persisted_status == "invalid"
     assert len(progress) == 1
     assert progress[0].checkpoint_status == "runtime_failed"
+
+
+def test_transient_model_server_error_is_retryable_and_resume_repeats_identity(
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> tuple[
+        BenchmarkSummary,
+        BenchmarkSummary,
+        int,
+        list[EvaluationProgress],
+        list[EvaluationProgress],
+    ]:
+        engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'retryable.db'}")
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        repository = EvaluationRepository(engine)
+        recorder = SqlAlchemyAgentRunRecorder(engine)
+        catalog = ConnectorCatalog(REPOSITORY_ROOT / "connectors")
+        catalog.load()
+        corpus = OfficialCorpus(CORPUS_ROOT)
+        partial_progress: list[EvaluationProgress] = []
+        first_runner = BenchmarkRunner(
+            corpus=corpus,
+            catalog=catalog,
+            repository=repository,
+            runtimes={
+                EvaluationVariant.PROMPT_ONLY: FakeVariantRuntime(
+                    EvaluationVariant.PROMPT_ONLY,
+                    recorder,
+                    termination=AgentTerminationReason.MODEL_UNAVAILABLE,
+                    uncertainties=["MODEL_PROVIDER_SERVER_ERROR", "MODEL_UNAVAILABLE"],
+                ),
+                EvaluationVariant.GUARDED: FakeVariantRuntime(
+                    EvaluationVariant.GUARDED,
+                    recorder,
+                ),
+            },
+            on_progress=partial_progress.append,
+        )
+        evaluation_id = await first_runner.start(
+            phase=EvaluationPhase.PILOT,
+            model="gemini:gemini-3.1-flash-lite",
+            git_commit="abc123",
+        )
+        partial = await first_runner.execute(evaluation_id)
+        resumed_progress: list[EvaluationProgress] = []
+        resumed_runner = BenchmarkRunner(
+            corpus=corpus,
+            catalog=catalog,
+            repository=repository,
+            runtimes={
+                variant: FakeVariantRuntime(variant, recorder) for variant in EvaluationVariant
+            },
+            on_progress=resumed_progress.append,
+        )
+        completed = await resumed_runner.execute(evaluation_id)
+        identities = await repository.completed_identities(evaluation_id)
+        await engine.dispose()
+        return partial, completed, len(identities), partial_progress, resumed_progress
+
+    partial, completed, identity_count, partial_progress, resumed_progress = asyncio.run(exercise())
+
+    assert partial.status == "partial"
+    assert partial.completed_runs == 0
+    assert partial.runtime_failures == {}
+    assert partial_progress[0].checkpoint_status == "runtime_failed"
+    assert partial_progress[0].completed_runs == 0
+    assert completed.status == "completed"
+    assert completed.completed_runs == 12
+    assert identity_count == 12
+    assert len(resumed_progress) == 12
