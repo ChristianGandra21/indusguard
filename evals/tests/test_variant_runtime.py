@@ -149,3 +149,78 @@ def test_variants_share_context_and_mcp_but_only_policy_gate_changes() -> None:
     assert guarded_context == baseline_context
     assert "action_low" in guarded_context.permissions
     assert guarded_context.context["asset_id"] == "asset_C710"
+
+
+def test_missing_analysis_id_is_scored_as_agent_behavior_not_runtime_failure() -> None:
+    """Reproduz CEN-01: análise inconclusiva seguida de um ID inexistente escolhido pelo modelo."""
+
+    async def exercise() -> tuple[object, list[int]]:
+        store.configure_data_dir(CORPUS_ROOT / "fixture" / "data")
+        inputs = OfficialCorpus(CORPUS_ROOT).load_inputs()
+        case = next(item for item in inputs.cases if item.case_id == "case_tkt_inv_04")
+        scheduled = next(
+            item
+            for item in build_schedule(inputs, EvaluationPhase.PILOT)
+            if item.case_id == case.case_id
+            and item.variant is EvaluationVariant.GUARDED
+            and item.seed == 42
+        )
+        gateway = ScriptedAgentModelGateway(
+            classification=AgentIntentDecision(intent_id="investigar"),
+            plans=[
+                AgentPlanStep(
+                    tool_calls=[
+                        AgentPlannedToolCall(
+                            alias="tractian__listAnalyses",
+                            arguments={"path": {"assetId": "asset_G501"}},
+                        )
+                    ]
+                ),
+                AgentPlanStep(
+                    tool_calls=[
+                        AgentPlannedToolCall(
+                            alias="tractian__getAnalysis",
+                            arguments={"path": {"analysisId": "analysis_inexistente"}},
+                        )
+                    ]
+                ),
+                AgentPlanStep(done=True),
+            ],
+            final_answer=AgentFinalAnswer(
+                answer="Análise inconclusiva; detalhe inexistente [ev-001] [ev-002].",
+                decision=AgentDecision.ESCALATE,
+                evidence_ids=["ev-001", "ev-002"],
+                uncertainties=["ANALYSIS_INCONCLUSIVE"],
+            ),
+        )
+        catalog = ConnectorCatalog(REPOSITORY_ROOT / "connectors")
+        catalog.load()
+        transport = CountingAsgiTransport()
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://localhost:8000",
+        ) as client:
+            executor = HttpExecutor(
+                catalog,
+                client=client,
+                execution_mode="simulate",
+                environment={"TRACTIAN_API_URL": "http://localhost:8000"},
+            )
+            shadow = PolicyEngine(catalog, execution_mode="simulate")
+            runtime = create_variant_runtime(
+                variant=EvaluationVariant.GUARDED,
+                catalog=catalog,
+                executor=GuardedExecutor(shadow, executor),
+                shadow_policy=shadow,
+                model_gateway=gateway,
+            )
+            sample = await runtime.run(scheduled, case)
+        return sample, [request.method for request in transport.requests]
+
+    sample, methods = asyncio.run(exercise())
+
+    assert methods == ["GET", "GET"]
+    assert sample.result.status == "completed"
+    assert sample.result.metrics.termination_reason == "COMPLETED"
+    assert "TOOL_INPUT_REJECTED" in sample.result.uncertainties
+    assert sample.result.evidence[1].status_code == 404

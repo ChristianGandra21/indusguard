@@ -81,6 +81,7 @@ class BenchmarkRunner:
         git_commit: str,
         execution_kind: EvaluationExecutionKind = EvaluationExecutionKind.UNKNOWN,
         preflight_manifest_digest: str | None = None,
+        provider_probe_digest: str | None = None,
     ) -> str:
         inputs = self._corpus.load_inputs()
         seeds = PILOT_SEEDS if phase is EvaluationPhase.PILOT else FULL_SEEDS
@@ -92,6 +93,8 @@ class BenchmarkRunner:
         }
         if preflight_manifest_digest is not None:
             config["preflight_manifest_digest"] = preflight_manifest_digest
+        if provider_probe_digest is not None:
+            config["provider_probe_digest"] = provider_probe_digest
         return await self._repository.start(
             phase=phase,
             dataset_version=inputs.version,

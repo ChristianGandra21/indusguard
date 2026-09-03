@@ -1,4 +1,4 @@
-"""CLI do benchmark com consentimento explícito para o piloto Groq autorizado."""
+"""CLI do benchmark com consentimento explícito para o piloto externo autorizado."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ from indusguard_evals.contracts import (
     EvaluationVariant,
 )
 from indusguard_evals.corpus import OfficialCorpus
-from indusguard_evals.execution import create_variant_runtime
+from indusguard_evals.execution import FallbackVariantRuntime, create_variant_runtime
 from indusguard_evals.human_review import (
     HumanReviewBundle,
     HumanReviewImportError,
@@ -47,12 +47,19 @@ from indusguard_evals.human_review import (
     import_human_review,
 )
 from indusguard_evals.pacing import GroqPilotPacingSettings, PacedAgentModelGateway
+from indusguard_evals.pilot_models import PilotFallbackSettings, build_pilot_model_gateway
 from indusguard_evals.preflight import (
     GroqPilotPreflightManifest,
     PreflightError,
     load_and_validate_groq_pilot_preflight,
     require_persisted_preflight_digest,
     write_groq_pilot_preflight,
+)
+from indusguard_evals.provider_probe import (
+    ProviderProbeReport,
+    build_provider_probe_report,
+    load_and_validate_provider_probe,
+    write_provider_probe_report,
 )
 from indusguard_evals.report import BenchmarkSummary
 from indusguard_evals.repository import EvaluationRepository
@@ -133,7 +140,7 @@ def _rate_limit_guidance(summary: BenchmarkSummary) -> str:
         return "A avaliação ficou parcial; use resume para continuar os checkpoints pendentes."
     if interruption.resume_not_before is None:
         return (
-            "MODEL_RATE_LIMITED: a Groq não informou Retry-After; "
+            "MODEL_RATE_LIMITED: o provedor não informou Retry-After; "
             "não é possível indicar um horário seguro de retomada."
         )
     timestamp = interruption.resume_not_before.astimezone(UTC).isoformat().replace("+00:00", "Z")
@@ -148,7 +155,7 @@ async def _runner(
     database_url: str,
     model_gateway: AgentModelGateway,
 ) -> tuple[BenchmarkRunner, Any, Any]:
-    """Monta variantes equivalentes; somente o gateway decide se haverá tráfego à Groq."""
+    """Monta variantes equivalentes; somente o gateway decide se haverá tráfego externo."""
 
     import httpx
 
@@ -178,9 +185,7 @@ async def _runner(
         environment=environment,
     )
     shadow = PolicyEngine(catalog, execution_mode="simulate")
-    runtime_config = (
-        model_gateway.runtime_config if isinstance(model_gateway, PacedAgentModelGateway) else None
-    )
+    runtime_config = getattr(model_gateway, "runtime_config", None)
     runtimes = {
         EvaluationVariant.GUARDED: create_variant_runtime(
             variant=EvaluationVariant.GUARDED,
@@ -201,6 +206,11 @@ async def _runner(
             runtime_config=runtime_config,
         ),
     }
+    if callable(getattr(model_gateway, "advance_after_failure", None)):
+        runtimes = {
+            variant: FallbackVariantRuntime(runtime, model_gateway)
+            for variant, runtime in runtimes.items()
+        }
     return (
         BenchmarkRunner(
             corpus=_corpus(root),
@@ -226,12 +236,13 @@ def _requested_execution_kind(
     if args.groq:
         if command == "run":
             raise SystemExit(
-                "FULL_BENCHMARK_NOT_AUTHORIZED: somente o piloto CEN-01/CEN-14 pode usar Groq"
+                "FULL_BENCHMARK_NOT_AUTHORIZED: somente o piloto CEN-01/CEN-14 "
+                "pode usar modelos externos"
             )
         if not args.confirm_external_transmission:
             raise SystemExit(
                 "EXTERNAL_TRANSMISSION_CONSENT_REQUIRED: acrescente "
-                "--confirm-external-transmission para autorizar o envio à Groq"
+                "--confirm-external-transmission para autorizar o envio aos provedores configurados"
             )
         return EvaluationExecutionKind.GROQ_PILOT
     if args.confirm_external_transmission:
@@ -247,21 +258,32 @@ def _validated_preflight(
     args: argparse.Namespace,
     kind: EvaluationExecutionKind,
     root: Path,
-) -> tuple[GroqAgentSettings | None, GroqPilotPreflightManifest | None]:
+) -> tuple[
+    GroqAgentSettings | None,
+    PilotFallbackSettings | None,
+    GroqPilotPreflightManifest | None,
+]:
     path = args.preflight_manifest
     if kind is EvaluationExecutionKind.OFFLINE_SMOKE:
         if path is not None:
             raise SystemExit(
                 "PREFLIGHT_MODE_MISMATCH: manifesto do piloto Groq não pode ser usado com --fake"
             )
-        return None, None
+        return None, None, None
     if path is None:
         raise SystemExit(
             "PILOT_PREFLIGHT_REQUIRED: informe --preflight-manifest para autorizar esta execução"
         )
     settings = GroqAgentSettings()
+    fallback_settings = PilotFallbackSettings()
     try:
-        return settings, load_and_validate_groq_pilot_preflight(root, path, settings)
+        manifest = load_and_validate_groq_pilot_preflight(
+            root,
+            path,
+            settings,
+            fallback_settings=fallback_settings,
+        )
+        return settings, fallback_settings, manifest
     except PreflightError as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -269,25 +291,107 @@ def _validated_preflight(
 def _gateway(
     kind: EvaluationExecutionKind,
     groq_settings: GroqAgentSettings | None = None,
+    fallback_settings: PilotFallbackSettings | None = None,
 ) -> AgentModelGateway:
     if kind is EvaluationExecutionKind.OFFLINE_SMOKE:
         return _fake_gateway()
     try:
-        gateway = GroqAgentModelGateway(groq_settings or GroqAgentSettings())
         pacing = GroqPilotPacingSettings()
-        return PacedAgentModelGateway(
-            gateway,
+        primary = PacedAgentModelGateway(
+            GroqAgentModelGateway(groq_settings or GroqAgentSettings()),
             minimum_interval_seconds=pacing.minimum_interval_seconds,
+        )
+        return build_pilot_model_gateway(
+            primary,
+            fallback_settings or PilotFallbackSettings(_env_file=None),
         )
     except AgentConfigurationError as exc:
         raise SystemExit(f"MODEL_NOT_CONFIGURED: {exc}") from exc
 
 
+def _validated_provider_probe(
+    args: argparse.Namespace,
+    kind: EvaluationExecutionKind,
+    root: Path,
+    fallback_settings: PilotFallbackSettings | None,
+    manifest: GroqPilotPreflightManifest | None,
+) -> ProviderProbeReport | None:
+    """Exige compatibilidade observada quando o manifesto contém fallbacks."""
+
+    path = getattr(args, "provider_probe", None)
+    if kind is EvaluationExecutionKind.OFFLINE_SMOKE:
+        if path is not None:
+            raise SystemExit(
+                "PROVIDER_PROBE_MODE_MISMATCH: probe externo não pode ser usado com --fake"
+            )
+        return None
+    if fallback_settings is None or manifest is None:
+        raise AssertionError("piloto externo validado precisa de settings e manifesto")
+    try:
+        configs = fallback_settings.provider_configs()
+    except AgentConfigurationError as exc:
+        raise SystemExit(f"MODEL_NOT_CONFIGURED: {exc}") from exc
+    if not configs:
+        if path is not None:
+            raise SystemExit(
+                "PROVIDER_PROBE_MODE_MISMATCH: o manifesto não contém fallbacks para validar"
+            )
+        return None
+    if path is None:
+        raise SystemExit(
+            "PROVIDER_PROBE_REQUIRED: execute probe-fallbacks e informe --provider-probe"
+        )
+    try:
+        return load_and_validate_provider_probe(
+            path,
+            git_commit=_git_commit(root),
+            preflight_manifest_digest=manifest.manifest_digest,
+            expected_providers=[(item.provider.value, item.model) for item in configs],
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+async def _probe_fallbacks(args: argparse.Namespace) -> int:
+    """Valida APIs configuradas sem transmitir tickets ou executar conectores."""
+
+    if not args.confirm_external_transmission:
+        raise SystemExit(
+            "EXTERNAL_TRANSMISSION_CONSENT_REQUIRED: acrescente "
+            "--confirm-external-transmission para enviar o probe sintético"
+        )
+    root = _repository_root()
+    settings = GroqAgentSettings()
+    fallback_settings = PilotFallbackSettings()
+    try:
+        manifest = load_and_validate_groq_pilot_preflight(
+            root,
+            args.preflight_manifest,
+            settings,
+            fallback_settings=fallback_settings,
+        )
+        configs = fallback_settings.provider_configs()
+    except (PreflightError, AgentConfigurationError) as exc:
+        raise SystemExit(str(exc)) from exc
+    if not configs:
+        raise SystemExit("FALLBACK_PROVIDERS_REQUIRED: nenhum fallback configurado no manifesto")
+    report = await build_provider_probe_report(
+        configs,
+        git_commit=_git_commit(root),
+        preflight_manifest_digest=manifest.manifest_digest,
+    )
+    write_provider_probe_report(args.output, report)
+    print(args.output)
+    print(report.model_dump_json(indent=2))
+    return 0 if report.all_compatible else 2
+
+
 async def _run_phase(args: argparse.Namespace, phase: EvaluationPhase) -> int:
     kind = _requested_execution_kind(args, command=args.command)
     root = _repository_root()
-    groq_settings, manifest = _validated_preflight(args, kind, root)
-    gateway = _gateway(kind, groq_settings)
+    groq_settings, fallback_settings, manifest = _validated_preflight(args, kind, root)
+    provider_probe = _validated_provider_probe(args, kind, root, fallback_settings, manifest)
+    gateway = _gateway(kind, groq_settings, fallback_settings)
     runner, client, engine = await _runner(root, args.database_url, gateway)
     try:
         evaluation_id = await runner.start(
@@ -296,6 +400,7 @@ async def _run_phase(args: argparse.Namespace, phase: EvaluationPhase) -> int:
             git_commit=_git_commit(root),
             execution_kind=kind,
             preflight_manifest_digest=(manifest.manifest_digest if manifest else None),
+            provider_probe_digest=(provider_probe.report_digest if provider_probe else None),
         )
         summary = await runner.execute(evaluation_id)
     finally:
@@ -310,6 +415,7 @@ async def _run_phase(args: argparse.Namespace, phase: EvaluationPhase) -> int:
             f"indusguard-eval resume {evaluation_id} --groq "
             "--confirm-external-transmission "
             f"--preflight-manifest {args.preflight_manifest}"
+            + (f" --provider-probe {args.provider_probe}" if provider_probe is not None else "")
         )
     return 0
 
@@ -317,7 +423,7 @@ async def _run_phase(args: argparse.Namespace, phase: EvaluationPhase) -> int:
 async def _resume(args: argparse.Namespace) -> int:
     kind = _requested_execution_kind(args, command=args.command)
     root = _repository_root()
-    groq_settings, manifest = _validated_preflight(args, kind, root)
+    groq_settings, fallback_settings, manifest = _validated_preflight(args, kind, root)
     inspection_engine = create_async_engine(normalize_database_url(args.database_url))
     try:
         persisted = await EvaluationRepository(inspection_engine).get(args.evaluation_id)
@@ -339,8 +445,15 @@ async def _resume(args: argparse.Namespace) -> int:
             raise SystemExit(str(exc)) from exc
     if kind is EvaluationExecutionKind.GROQ_PILOT:
         _enforce_resume_window(persisted.summary)
+    provider_probe = _validated_provider_probe(args, kind, root, fallback_settings, manifest)
+    persisted_probe = persisted.config.get("provider_probe_digest")
+    expected_probe = provider_probe.report_digest if provider_probe is not None else None
+    if persisted_probe != expected_probe:
+        raise SystemExit(
+            "PROVIDER_PROBE_DIGEST_MISMATCH: use o mesmo probe que iniciou a avaliação"
+        )
 
-    gateway = _gateway(kind, groq_settings)
+    gateway = _gateway(kind, groq_settings, fallback_settings)
     runner, client, engine = await _runner(root, args.database_url, gateway)
     try:
         summary = await runner.execute(args.evaluation_id)
@@ -475,25 +588,42 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--database-url", default=settings.database_url)
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("validate", help="valida entradas, golden e digests")
-    preflight = subparsers.add_parser("preflight", help="gera manifesto local do piloto Groq")
-    preflight.add_argument("--groq", action="store_true", help="prepara o piloto Groq autorizado")
+    preflight = subparsers.add_parser("preflight", help="gera manifesto local do piloto externo")
+    preflight.add_argument(
+        "--groq",
+        action="store_true",
+        help="prepara Groq primário e fallbacks autorizados do piloto",
+    )
     preflight.add_argument("--output", type=Path, required=True)
+    probe = subparsers.add_parser(
+        "probe-fallbacks",
+        help="exercita contratos sintéticos dos fallbacks vinculados ao manifesto",
+    )
+    probe.add_argument("--confirm-external-transmission", action="store_true")
+    probe.add_argument("--preflight-manifest", type=Path, required=True)
+    probe.add_argument("--output", type=Path, required=True)
     for command in ("pilot", "run"):
         child = subparsers.add_parser(command)
         child.add_argument("--fake", action="store_true", help="smoke local, sem valor científico")
-        child.add_argument("--groq", action="store_true", help="usa a Groq Free")
+        child.add_argument(
+            "--groq",
+            action="store_true",
+            help="usa Groq primário e fallbacks declarados no manifesto",
+        )
         child.add_argument(
             "--confirm-external-transmission",
             action="store_true",
-            help="confirma o envio de entradas e evidências à Groq",
+            help="confirma o envio de entradas e evidências aos provedores do manifesto",
         )
         child.add_argument("--preflight-manifest", type=Path)
+        child.add_argument("--provider-probe", type=Path)
     resume = subparsers.add_parser("resume")
     resume.add_argument("evaluation_id")
     resume.add_argument("--fake", action="store_true")
     resume.add_argument("--groq", action="store_true")
     resume.add_argument("--confirm-external-transmission", action="store_true")
     resume.add_argument("--preflight-manifest", type=Path)
+    resume.add_argument("--provider-probe", type=Path)
     report = subparsers.add_parser("report")
     report.add_argument("evaluation_id")
     report.add_argument("--output", type=Path)
@@ -543,12 +673,15 @@ def main(argv: list[str] | None = None) -> int:
                 _repository_root(),
                 args.output,
                 GroqAgentSettings(),
+                fallback_settings=PilotFallbackSettings(),
             )
         except PreflightError as exc:
             raise SystemExit(str(exc)) from exc
         print(args.output)
         print(manifest.manifest_digest)
         return 0
+    if args.command == "probe-fallbacks":
+        return asyncio.run(_probe_fallbacks(args))
     if args.command == "pilot":
         return asyncio.run(_run_phase(args, EvaluationPhase.PILOT))
     if args.command == "run":

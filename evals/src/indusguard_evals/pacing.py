@@ -94,6 +94,12 @@ class PacedAgentModelGateway:
         )
         return pacing_aware_runtime_config(settings)
 
+    def advance_after_failure(self) -> bool:
+        """Propaga a troca whole-run sem expor o delegate à composition root."""
+
+        advance = getattr(self._delegate, "advance_after_failure", None)
+        return bool(advance is not None and advance())
+
     async def _paced(
         self,
         operation: Callable[[], Awaitable[GatewayResult[GatewayValue]]],

@@ -10,6 +10,7 @@ from indusguard_api.groq_gateway import GroqAgentSettings
 
 from indusguard_evals import schedule as schedule_module
 from indusguard_evals.pacing import GroqPilotPacingSettings
+from indusguard_evals.pilot_models import PilotFallbackSettings
 from indusguard_evals.preflight import (
     TRANSMITTED_CATEGORIES,
     PreflightError,
@@ -44,6 +45,57 @@ def _pacing(seconds: float = 60) -> GroqPilotPacingSettings:
         INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS=seconds,
         _env_file=None,
     )
+
+
+def _fallback(**overrides: object) -> PilotFallbackSettings:
+    values = {
+        "INDUSGUARD_EVAL_FALLBACK_PROVIDERS": "eloagents,gemini",
+        "ELOAGENTS_API_KEY": "elo-secret",
+        "INDUSGUARD_EVAL_ELOAGENTS_BASE_URL": "https://elo.example/v1",
+        "INDUSGUARD_EVAL_ELOAGENTS_MODEL": "elo-model",
+        "GEMINI_API_KEY": "gemini-secret",
+        "INDUSGUARD_EVAL_GEMINI_MODEL": "gemini-model",
+        **overrides,
+    }
+    return PilotFallbackSettings(**values, _env_file=None)  # type: ignore[arg-type]
+
+
+def test_manifest_binds_fallback_order_without_serializing_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_git(monkeypatch)
+    output = tmp_path / "preflight.json"
+
+    manifest = write_groq_pilot_preflight(
+        REPOSITORY_ROOT,
+        output,
+        _settings(),
+        fallback_settings=_fallback(),
+    )
+
+    assert manifest.schema_version == "groq-pilot-preflight-v6"
+    assert manifest.fallback_strategy == "whole_run_restart"
+    assert [item.provider for item in manifest.fallback_models] == ["eloagents", "gemini"]
+    assert [item.temperature for item in manifest.fallback_models] == [0, None]
+    assert [item.reasoning_effort for item in manifest.fallback_models] == [None, "minimal"]
+    assert [item.api_transport for item in manifest.fallback_models] == [
+        "openai_compatible",
+        "google_genai_native",
+    ]
+    assert "provider_continuation_signatures" in manifest.transmission.included_categories
+    assert manifest.runtime_boundaries.max_provider_attempts_per_identity == 3
+    assert manifest.runtime_boundaries.maximum_identity_timeout_seconds == 1620
+    serialized = output.read_text(encoding="utf-8")
+    assert "elo-secret" not in serialized
+    assert "gemini-secret" not in serialized
+    with pytest.raises(PreflightError, match="PREFLIGHT_STALE"):
+        load_and_validate_groq_pilot_preflight(
+            REPOSITORY_ROOT,
+            output,
+            _settings(),
+            fallback_settings=_fallback(INDUSGUARD_EVAL_GEMINI_MODEL="changed-model"),
+        )
 
 
 def test_manifest_rejects_tampering_and_live_configuration_drift(

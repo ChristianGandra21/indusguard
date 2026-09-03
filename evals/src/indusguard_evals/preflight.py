@@ -1,4 +1,4 @@
-"""Manifesto auditável que antecede qualquer cliente ou transmissão à Groq."""
+"""Manifesto auditável que antecede clientes ou transmissão do piloto externo."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
+from indusguard_api.agent import AgentConfigurationError
 from indusguard_api.connectors import ConnectorCatalog, ConnectorValidationError
 from indusguard_api.groq_gateway import GroqAgentSettings
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -21,19 +22,23 @@ from indusguard_evals.pacing import (
     GroqPilotPacingSettings,
     pacing_aware_runtime_config,
 )
+from indusguard_evals.pilot_models import PilotFallbackSettings
 from indusguard_evals.schedule import build_schedule
 
-PREFLIGHT_SCHEMA_VERSION = "groq-pilot-preflight-v3"
+PREFLIGHT_SCHEMA_VERSION = "groq-pilot-preflight-v6"
 TRANSMITTED_CATEGORIES = [
     "ticket_message",
     "fixed_agent_prompts",
     "domain_and_tool_descriptions",
     "redacted_tool_results",
     "synthetic_evidence_ids",
+    "provider_continuation_signatures",
 ]
 EXCLUDED_CATEGORIES = [
     "goldens",
     "groq_api_key",
+    "eloagents_api_key",
+    "gemini_api_key",
     "authentication_headers",
     "confirmation",
     "confirmation_digest",
@@ -68,6 +73,21 @@ class PreflightModel(BaseModel):
     temperature: Literal[0] = 0
     reasoning_effort: Literal["low"] = "low"
     minimum_request_interval_seconds: float = Field(ge=0, le=300)
+    api_key_configured: Literal[True]
+
+
+class PreflightFallbackModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider: Literal["eloagents", "gemini"]
+    api_transport: Literal["openai_compatible", "google_genai_native"]
+    name: str
+    base_url: str
+    timeout_seconds: float
+    max_retries: int
+    max_tokens: int
+    temperature: float | None = Field(default=None, ge=0, le=2)
+    reasoning_effort: Literal["minimal", "low"] | None = None
     api_key_configured: Literal[True]
 
 
@@ -117,6 +137,8 @@ class PreflightRuntimeBoundaries(BaseModel):
     active_run_timeout_seconds: float = Field(gt=0)
     paced_run_timeout_seconds: float = Field(gt=0)
     max_model_calls: int = Field(ge=2)
+    max_provider_attempts_per_identity: int = Field(ge=1)
+    maximum_identity_timeout_seconds: float = Field(gt=0)
 
 
 class GroqPilotPreflightManifest(BaseModel):
@@ -124,12 +146,14 @@ class GroqPilotPreflightManifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["groq-pilot-preflight-v3"] = PREFLIGHT_SCHEMA_VERSION
+    schema_version: Literal["groq-pilot-preflight-v6"] = PREFLIGHT_SCHEMA_VERSION
     created_at: datetime
     phase: Literal["pilot"] = "pilot"
     execution_kind: Literal["groq_pilot"] = "groq_pilot"
     repository: PreflightRepository
     model: PreflightModel
+    fallback_strategy: Literal["whole_run_restart"] = "whole_run_restart"
+    fallback_models: list[PreflightFallbackModel]
     corpus: PreflightCorpus
     schedule: list[PreflightScheduledRun]
     messages: list[PreflightMessage]
@@ -189,14 +213,19 @@ def build_groq_pilot_preflight(
     root: Path,
     settings: GroqAgentSettings,
     pacing_settings: GroqPilotPacingSettings | None = None,
+    fallback_settings: PilotFallbackSettings | None = None,
     *,
     created_at: datetime | None = None,
 ) -> GroqPilotPreflightManifest:
-    """Valida somente fontes locais e não abre banco, golden, fixture HTTP ou cliente Groq."""
+    """Valida somente fontes locais e não abre banco, golden, fixture ou cliente externo."""
 
     if settings.api_key is None or not settings.api_key.get_secret_value().strip():
         raise PreflightError("MODEL_NOT_CONFIGURED", "GROQ_API_KEY precisa estar definida")
     pacing = pacing_settings or GroqPilotPacingSettings()
+    try:
+        fallbacks = (fallback_settings or PilotFallbackSettings(_env_file=None)).provider_configs()
+    except AgentConfigurationError as exc:
+        raise PreflightError("MODEL_NOT_CONFIGURED", str(exc)) from exc
     runtime_config = pacing_aware_runtime_config(pacing)
     active_run_timeout_seconds = runtime_config.run_timeout_seconds - (
         pacing.minimum_interval_seconds * runtime_config.max_model_calls
@@ -244,6 +273,26 @@ def build_groq_pilot_preflight(
             minimum_request_interval_seconds=pacing.minimum_interval_seconds,
             api_key_configured=True,
         ).model_dump(mode="json"),
+        "fallback_strategy": "whole_run_restart",
+        "fallback_models": [
+            PreflightFallbackModel(
+                provider=item.provider.value,
+                api_transport=(
+                    "google_genai_native"
+                    if item.provider.value == "gemini"
+                    else "openai_compatible"
+                ),
+                name=item.model,
+                base_url=item.base_url,
+                timeout_seconds=item.timeout_seconds,
+                max_retries=item.max_retries,
+                max_tokens=item.max_tokens,
+                temperature=item.temperature,
+                reasoning_effort=item.reasoning_effort,
+                api_key_configured=True,
+            ).model_dump(mode="json")
+            for item in fallbacks
+        ],
         "corpus": PreflightCorpus(
             version=inputs.version,
             input_digest=inputs.digest,
@@ -261,6 +310,10 @@ def build_groq_pilot_preflight(
             active_run_timeout_seconds=active_run_timeout_seconds,
             paced_run_timeout_seconds=runtime_config.run_timeout_seconds,
             max_model_calls=runtime_config.max_model_calls,
+            max_provider_attempts_per_identity=1 + len(fallbacks),
+            maximum_identity_timeout_seconds=(
+                runtime_config.run_timeout_seconds * (1 + len(fallbacks))
+            ),
         ).model_dump(mode="json"),
     }
     normalized = GroqPilotPreflightManifest.model_validate(
@@ -276,10 +329,11 @@ def write_groq_pilot_preflight(
     output: Path,
     settings: GroqAgentSettings,
     pacing_settings: GroqPilotPacingSettings | None = None,
+    fallback_settings: PilotFallbackSettings | None = None,
 ) -> GroqPilotPreflightManifest:
     """Grava somente depois de todas as validações para não deixar artefato parcial válido."""
 
-    manifest = build_groq_pilot_preflight(root, settings, pacing_settings)
+    manifest = build_groq_pilot_preflight(root, settings, pacing_settings, fallback_settings)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
     return manifest
@@ -290,6 +344,7 @@ def load_and_validate_groq_pilot_preflight(
     path: Path,
     settings: GroqAgentSettings,
     pacing_settings: GroqPilotPacingSettings | None = None,
+    fallback_settings: PilotFallbackSettings | None = None,
 ) -> GroqPilotPreflightManifest:
     """Verifica contrato, integridade e igualdade com todas as fontes locais atuais."""
 
@@ -308,6 +363,7 @@ def load_and_validate_groq_pilot_preflight(
         root,
         settings,
         pacing_settings,
+        fallback_settings,
         created_at=manifest.created_at,
     )
     if not hmac.compare_digest(manifest.manifest_digest, expected.manifest_digest):

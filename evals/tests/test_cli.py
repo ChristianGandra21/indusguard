@@ -20,6 +20,7 @@ from indusguard_evals.contracts import (
 )
 from indusguard_evals.corpus import OfficialCorpus
 from indusguard_evals.pacing import PacedAgentModelGateway
+from indusguard_evals.pilot_models import PilotFallbackSettings, WholeRunFallbackGateway
 from indusguard_evals.report import BenchmarkInterruption, build_summary
 from indusguard_evals.repository import EvaluationRepository
 from indusguard_evals.runner import EvaluationProgress
@@ -41,6 +42,7 @@ def test_preflight_writes_auditable_metadata_without_payloads(
 
     monkeypatch.setattr(subprocess, "check_output", git_output)
     monkeypatch.setenv("GROQ_API_KEY", "must-never-be-serialized")
+    monkeypatch.setenv("INDUSGUARD_EVAL_FALLBACK_PROVIDERS", "")
     monkeypatch.setattr(
         eval_cli,
         "_gateway",
@@ -61,15 +63,19 @@ def test_preflight_writes_auditable_metadata_without_payloads(
 
     payload = json.loads(output.read_text(encoding="utf-8"))
     serialized = json.dumps(payload, ensure_ascii=False)
-    assert payload["schema_version"] == "groq-pilot-preflight-v3"
+    assert payload["schema_version"] == "groq-pilot-preflight-v6"
     assert payload["repository"] == {"git_commit": commit, "worktree_clean": True}
     assert payload["corpus"]["version"] == "official-v1"
     assert payload["corpus"]["pilot_scenarios"] == ["CEN-01", "CEN-14"]
     assert len(payload["schedule"]) == 12
     assert payload["model"]["minimum_request_interval_seconds"] == 60
+    assert payload["fallback_strategy"] == "whole_run_restart"
+    assert payload["fallback_models"] == []
     assert payload["runtime_boundaries"]["active_run_timeout_seconds"] == 60
     assert payload["runtime_boundaries"]["paced_run_timeout_seconds"] == 540
     assert payload["runtime_boundaries"]["max_model_calls"] == 8
+    assert payload["runtime_boundaries"]["max_provider_attempts_per_identity"] == 1
+    assert payload["runtime_boundaries"]["maximum_identity_timeout_seconds"] == 540
     assert {item["seed"] for item in payload["schedule"]} == {11, 42, 73}
     assert {item["variant"] for item in payload["schedule"]} == {
         "prompt_only",
@@ -124,6 +130,29 @@ def test_only_the_groq_evaluation_gateway_receives_pacing(
     assert not isinstance(fake, PacedAgentModelGateway)
 
 
+def test_fallback_chain_paces_only_the_primary_groq_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS", "45")
+    settings = eval_cli.GroqAgentSettings(GROQ_API_KEY="test-key", _env_file=None)
+    fallbacks = PilotFallbackSettings(
+        INDUSGUARD_EVAL_FALLBACK_PROVIDERS="eloagents,gemini",
+        ELOAGENTS_API_KEY="elo-key",
+        INDUSGUARD_EVAL_ELOAGENTS_BASE_URL="https://elo.example/v1",
+        INDUSGUARD_EVAL_ELOAGENTS_MODEL="elo-model",
+        GEMINI_API_KEY="gemini-key",
+        INDUSGUARD_EVAL_GEMINI_MODEL="gemini-3.7-flash",
+        _env_file=None,
+    )
+
+    gateway = eval_cli._gateway(EvaluationExecutionKind.GROQ_PILOT, settings, fallbacks)
+
+    assert isinstance(gateway, WholeRunFallbackGateway)
+    assert isinstance(gateway._gateways[0], PacedAgentModelGateway)
+    assert all(not isinstance(item, PacedAgentModelGateway) for item in gateway._gateways[1:])
+    assert gateway.runtime_config.run_timeout_seconds == 420
+
+
 def test_groq_pilot_and_resume_require_preflight_before_external_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -147,6 +176,38 @@ def test_groq_pilot_and_resume_require_preflight_before_external_dependencies(
 def test_fake_mode_rejects_a_preflight_manifest() -> None:
     with pytest.raises(SystemExit, match="PREFLIGHT_MODE_MISMATCH"):
         main(["pilot", "--fake", "--preflight-manifest", "preflight.json"])
+
+
+def test_probe_fallbacks_requires_explicit_external_consent() -> None:
+    with pytest.raises(SystemExit, match="EXTERNAL_TRANSMISSION_CONSENT_REQUIRED"):
+        main(
+            [
+                "probe-fallbacks",
+                "--preflight-manifest",
+                "preflight.json",
+                "--output",
+                "probe.json",
+            ]
+        )
+
+
+def test_fallback_pilot_requires_a_probe_before_gateway_creation() -> None:
+    fallbacks = PilotFallbackSettings(
+        INDUSGUARD_EVAL_FALLBACK_PROVIDERS="gemini",
+        GEMINI_API_KEY="gemini-key",
+        INDUSGUARD_EVAL_GEMINI_MODEL="gemini-model",
+        _env_file=None,
+    )
+    args = Namespace(provider_probe=None)
+
+    with pytest.raises(SystemExit, match="PROVIDER_PROBE_REQUIRED"):
+        eval_cli._validated_provider_probe(
+            args,
+            EvaluationExecutionKind.GROQ_PILOT,
+            Path.cwd(),
+            fallbacks,
+            object(),
+        )
 
 
 def test_full_groq_benchmark_remains_blocked_even_with_consent() -> None:
@@ -241,7 +302,11 @@ def test_resume_before_retry_after_stops_before_gateway(
         return evaluation_id
 
     evaluation_id = asyncio.run(seed())
-    monkeypatch.setattr(eval_cli, "_validated_preflight", lambda *args: (None, object()))
+    monkeypatch.setattr(
+        eval_cli,
+        "_validated_preflight",
+        lambda *args: (None, None, object()),
+    )
     monkeypatch.setattr(eval_cli, "require_persisted_preflight_digest", lambda *args: None)
     monkeypatch.setattr(
         eval_cli,

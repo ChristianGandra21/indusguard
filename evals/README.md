@@ -131,32 +131,85 @@ Nesta linha de desenvolvimento, `d305451a…` é a baseline concluída para o pr
 `b825a34e…` fica congelado como `partial`: não o retome em um novo commit. Qualquer alteração do
 checkout torna manifestos anteriores obsoletos e exige novo preflight e novo consentimento.
 
-## Piloto Groq autorizado e ressalva de privacidade
+## Piloto externo autorizado e ressalva de privacidade
 
-Somente o piloto de 12 runs pode usar a Groq. Primeiro gere o manifesto em um checkout limpo. Esse
-comando valida localmente chave configurada, catálogo, inputs, modelo e as 12 identidades; não abre
-banco, fixture HTTP, golden ou cliente Groq:
+Somente o piloto de 12 runs pode usar provedores externos. Groq é sempre primário; EloAgents e
+Gemini são fallbacks opt-in exclusivos desse processo. Primeiro gere o manifesto em um checkout
+limpo. Esse comando valida localmente chaves configuradas, endpoints HTTPS, catálogo, inputs,
+modelos e as 12 identidades; não abre banco, fixture HTTP, golden ou cliente externo:
 
 ```bash
 export GROQ_API_KEY="sua-chave-local"
+# Opcional: copie o bloco de fallback do .env.example e preencha os valores vazios.
 .venv/bin/indusguard-eval preflight --groq \
   --output .data/groq-pilot-preflight.json
 ```
 
-O manifesto `groq-pilot-preflight-v3` contém commit, digest dos inputs, configuração não secreta do
-modelo, intervalo mínimo entre chamadas, orçamento ativo e timeout pacing-aware, agenda
-contrabalanceada, tamanhos e hashes das mensagens e listas de categorias incluídas e excluídas.
-Ele não duplica texto de ticket, evidência, payload de tool ou chave. Depois de revisar o arquivo,
-autorize a transmissão vinculada àquele manifesto:
+Para habilitar a cadeia solicitada, configure no `.env`:
+
+```dotenv
+INDUSGUARD_EVAL_FALLBACK_PROVIDERS=eloagents,gemini
+ELOAGENTS_API_KEY=
+INDUSGUARD_EVAL_ELOAGENTS_BASE_URL=
+INDUSGUARD_EVAL_ELOAGENTS_MODEL=
+GEMINI_API_KEY=
+INDUSGUARD_EVAL_GEMINI_BASE_URL=https://generativelanguage.googleapis.com/
+INDUSGUARD_EVAL_GEMINI_MODEL=gemini-3.1-flash-lite
+INDUSGUARD_EVAL_GEMINI_REASONING_EFFORT=minimal
+INDUSGUARD_EVAL_FALLBACK_TIMEOUT_SECONDS=30
+INDUSGUARD_EVAL_FALLBACK_MAX_RETRIES=1
+INDUSGUARD_EVAL_FALLBACK_MAX_TOKENS=2048
+```
+
+O EloAgents precisa informar um endpoint OpenAI-compatible e o ID técnico do modelo. Nomes da
+interface como “Gemini 3.1 Pro (Preview)” são apenas rótulos e não são inferidos pelo código. O
+endpoint Gemini acima usa o SDK nativo documentado pelo
+[Google AI for Developers](https://ai.google.dev/gemini-api/docs/quickstart); consulte a lista da sua
+conta antes de trocar o modelo. Campo vazio, URL sem HTTPS, provedor desconhecido ou duplicado
+falha localmente como `MODEL_NOT_CONFIGURED`, antes de qualquer transmissão.
+O adapter preserva em memória somente a `thought_signature` opaca que o Gemini 3 devolve em um
+tool call e a retransmite no turno seguinte para o mesmo provedor. A assinatura não é interpretada,
+logada nem persistida. O manifesto registra `api_transport=google_genai_native`,
+`temperature=null` e `reasoning_effort=minimal`: o adapter omite a amostragem e limita o raciocínio
+do Gemini para reduzir latência e consumo no probe e no piloto.
+
+O manifesto `groq-pilot-preflight-v6` contém commit, digest dos inputs, Groq primário, ordem dos
+fallbacks, modelos, endpoints sem credenciais, intervalo mínimo entre chamadas, orçamento ativo e
+timeout pacing-aware, agenda contrabalanceada, tamanhos e hashes das mensagens e listas de
+categorias incluídas e excluídas. Ele não duplica texto de ticket, evidência, payload de tool ou
+qualquer chave. Quando houver fallback, execute primeiro o probe dos contratos vinculados ao mesmo
+manifesto:
+
+```bash
+.venv/bin/indusguard-eval probe-fallbacks \
+  --confirm-external-transmission \
+  --preflight-manifest .data/groq-pilot-preflight.json \
+  --output .data/provider-probe.json
+```
+
+O probe transmite somente um ativo, domínio, schema de tool e resultado de tool fixos e sintéticos;
+não transmite tickets do piloto, goldens, credenciais nem payloads reais. Cada API precisa passar
+classificação estruturada, chamada da única tool permitida com o ID confiável e finalização
+estruturada que cite a evidência sintética. O artefato guarda somente metadados redigidos e fica
+vinculado ao commit, ao digest do manifesto e à ordem de provedor/modelo. Uma ferramenta interna ou
+inventada pelo provedor é rejeitada como `MODEL_TOOL_CONTRACT_INVALID`.
+
+Depois de revisar os dois arquivos, autorize a transmissão do piloto:
 
 ```bash
 .venv/bin/indusguard-eval pilot --groq \
   --confirm-external-transmission \
-  --preflight-manifest .data/groq-pilot-preflight.json
+  --preflight-manifest .data/groq-pilot-preflight.json \
+  --provider-probe .data/provider-probe.json
 ```
 
-Esse comando envia à Groq mensagens dos tickets, prompts fixos, descrições de domínio/tools,
-resultados redigidos das tools e IDs sintéticos de evidência. Não envia golden, credenciais,
+Se o manifesto não declarar fallback, `probe-fallbacks` e `--provider-probe` devem ser omitidos. Se
+declarar, o CLI recusa probe ausente, falho, adulterado ou criado para outra configuração. O mesmo
+arquivo deve ser informado em `resume`.
+
+Esse comando envia ao primeiro provedor disponível mensagens dos tickets, prompts fixos,
+descrições de domínio/tools, resultados redigidos das tools, IDs sintéticos de evidência e, quando
+o próprio provedor a produz, sua assinatura opaca de continuação. Não envia golden, credenciais,
 headers de autenticação, confirmação, digest, payload não redigido ou chain of thought. O CLI
 recalcula o manifesto antes de construir gateway ou banco e responde `PREFLIGHT_STALE` se commit,
 corpus, modelo, agenda ou contrato de transmissão mudou. `run --groq` continua respondendo
@@ -166,16 +219,32 @@ Durante o piloto, cada checkpoint imprime no `stderr` um evento JSON `evaluation
 `completed_runs/expected_runs`, identidade, variante e seed. Mensagem, resposta, evidência e
 segredos não entram nesse evento; o resumo final continua no `stdout`.
 
-O gateway do benchmark serializa chamadas e mantém 60 segundos entre seus inícios para não
+O adapter Groq do benchmark serializa suas chamadas e mantém 60 segundos entre seus inícios para não
 reproduzir o teto gratuito de tokens por minuto dentro da mesma identidade. Ajuste somente via
 `INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS`; o valor é validado entre 0 e 300 segundos e
-fica vinculado ao digest do manifesto. O pacing não é aplicado ao runtime da API nem ao fake.
-O piloto preserva 60 segundos de execução ativa e acrescenta uma janela para cada chamada máxima,
+fica vinculado ao digest do manifesto. O pacing não é aplicado aos fallbacks, ao runtime da API
+nem ao fake.
+Quando fallbacks estão habilitados, a estratégia `whole_run_restart` usa um único provedor durante
+cada run. Se ocorrer rate limit, indisponibilidade ou timeout, a tentativa é persistida de forma
+redigida, a identidade inteira é reiniciada no próximo provedor e esse provedor permanece ativo
+nas runs seguintes. Nenhuma run mistura modelos; o resumo lista todos os modelos observados e
+destaca como limitação quando a avaliação usou mais de um. `ModelOutputError` é pontuado e nunca
+aciona fallback.
+Cada tentativa preserva 60 segundos de execução ativa e acrescenta uma janela para cada chamada máxima,
 inclusive a primeira de uma nova run porque o gateway é compartilhado. Nos defaults atuais, o
-timeout total auditado é 540 segundos. Se uma run terminar por `TIMEOUT`, indisponibilidade do
+timeout auditado é 540 segundos por tentativa e 1.620 segundos por identidade com dois fallbacks.
+Se uma run terminar por `TIMEOUT`, indisponibilidade do
 modelo ou erro MCP/upstream, o runner emite `runtime_failed`, interrompe a agenda e grava o resumo
 como `invalid`. Saída inválida, tool inexistente e falha de finalização continuam sendo resultados
 de desempenho do agente; `MODEL_RATE_LIMITED` permanece `partial` e retomável.
+
+HTTP 4xx não transitório causado por recurso ou argumento inexistente também é desempenho do
+agente: a evidência recebe `TOOL_INPUT_REJECTED`, o planner pode se recuperar e o scorer avalia a
+trajetória. Autenticação/autorização, timeout, quota, conexão, resposta inválida e 5xx permanecem
+falhas de runtime.
+Uma resposta Groq 400 com o marcador documentado `failed_generation` também é desempenho do
+modelo: o conteúdo rejeitado não é persistido e a run termina como `MODEL_OUTPUT_INVALID`, ainda
+pontuável. Outros erros 400 continuam `MODEL_PROVIDER_CLIENT_ERROR` e invalidam a execução.
 
 Se a cota gratuita interromper o piloto, o status ficará `partial`, a categoria estável será
 `MODEL_RATE_LIMITED` e o próprio CLI imprimirá:

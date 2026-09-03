@@ -240,10 +240,16 @@ class TokenUsage(BaseModel):
 
 @dataclass(frozen=True)
 class GatewayResult[GatewayValue]:
-    """Valor estruturado acompanhado do uso retornado pelo provedor."""
+    """Valor estruturado, uso e mensagem transitória retornados pelo provedor.
+
+    ``provider_message`` nunca integra o resultado persistido da run. Ela existe para que
+    adapters que dependem de metadados opacos de continuação possam devolver ao próprio modelo a
+    mensagem exata do turno anterior.
+    """
 
     value: GatewayValue
     usage: TokenUsage = field(default_factory=TokenUsage)
+    provider_message: AIMessage | None = field(default=None, repr=False, compare=False)
 
 
 class AgentModelError(RuntimeError):
@@ -609,6 +615,23 @@ def _find_evidence_states(value: Any, allowed: frozenset[str]) -> set[str]:
     elif isinstance(value, str) and value in allowed:
         found.add(value)
     return found
+
+
+def _is_agent_correctable_http_failure(execution: Mapping[str, Any]) -> bool:
+    """Separa rejeição do argumento do agente de indisponibilidade operacional.
+
+    O MCP e o executor funcionaram quando uma leitura chegou ao upstream e recebeu um 4xx
+    não transitório. Esses resultados continuam sendo evidência de desempenho do agente; não
+    devem invalidar uma avaliação como se a infraestrutura tivesse falhado.
+    """
+
+    status_code = execution.get("status_code")
+    if not isinstance(status_code, int) or not 400 <= status_code < 500:
+        return False
+    error = execution.get("error")
+    if isinstance(error, Mapping) and error.get("retryable") is True:
+        return False
+    return status_code not in {401, 403, 407, 408, 425, 429}
 
 
 def _usage(data: _RunData, result: GatewayResult[Any]) -> None:
@@ -1013,8 +1036,11 @@ class AgentRuntime:
                 span.set_attribute("indusguard.model.done", step.done)
 
             data.pending_calls = list(step.tool_calls)
+            provider_message = result.provider_message
             data.messages.append(
-                AIMessage(
+                provider_message
+                if provider_message is not None
+                else AIMessage(
                     content=step.note or "",
                     tool_calls=[
                         {
@@ -1268,10 +1294,15 @@ class AgentRuntime:
             data.termination = AgentTerminationReason.MCP_ERROR
             _add_uncertainty(data, "MCP_TOOL_ERROR")
         elif execution.get("outcome") == "failed":
-            # A chamada MCP funcionou e a policy autorizou, mas o sistema externo falhou.
-            # Manter uma categoria própria evita confundir indisponibilidade com bloqueio.
-            data.termination = AgentTerminationReason.UPSTREAM_ERROR
-            _add_uncertainty(data, "UPSTREAM_ERROR")
+            if _is_agent_correctable_http_failure(execution):
+                # IDs inventados, recursos ausentes e outros 4xx não transitórios são resultados
+                # observáveis do agente. O planner pode se recuperar e o scorer pode penalizá-los.
+                _add_uncertainty(data, "TOOL_INPUT_REJECTED")
+            else:
+                # Quota, autenticação, timeout, conexão, resposta inválida e 5xx pertencem ao
+                # runtime; manter a categoria própria invalida comparações sem culpar o agente.
+                data.termination = AgentTerminationReason.UPSTREAM_ERROR
+                _add_uncertainty(data, "UPSTREAM_ERROR")
         else:
             declared_states = frozenset(data.domain.evidence_states)
             for state in sorted(

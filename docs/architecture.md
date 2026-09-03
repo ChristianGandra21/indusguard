@@ -204,8 +204,9 @@ aliases como `connector__operationId`; o mapa interno resolve o nome MCP com pon
 são dados não confiáveis e permanecem `ToolMessage`, nunca system prompt.
 
 O runtime encerra de forma controlada em rate limit, timeout, limite de chamadas, erro MCP ou
-falha upstream. A suíte usa `ScriptedAgentModelGateway`; `GroqAgentModelGateway` é opcional e usa
-somente `openai/gpt-oss-20b`, sem fallback pago ou Ollama.
+falha upstream. A suíte usa `ScriptedAgentModelGateway`; o produto usa opcionalmente
+`GroqAgentModelGateway` com `openai/gpt-oss-20b`. O pacote `evals`, que não entra na wheel da API,
+pode envolver esse adapter em fallback OpenAI-compatible para EloAgents e Gemini somente no piloto.
 
 ## Persistência e observabilidade
 
@@ -360,15 +361,36 @@ Produção injeta `GuardedExecutor`; somente o pacote `evals` possui `PromptOnly
 preserva OpenAPI, autenticação e simulação de escrita, removendo apenas o gate para observar o
 contrafactual. A wheel de produção não contém esse pacote.
 
-O runner emite progresso redigido depois de cada checkpoint. Uma interrupção Groq conserva apenas
+O runner emite progresso redigido depois de cada checkpoint. Uma interrupção do provedor conserva apenas
 o código `MODEL_RATE_LIMITED` e o `Retry-After` normalizado; o resumo calcula
 `resume_not_before` em UTC para impedir tentativas antecipadas sem reconstruir o gateway.
 No piloto, um decorator exclusivo da avaliação serializa chamadas de modelo e aplica o intervalo
-monotônico registrado no manifesto `v3`; o gateway usado pela API pública não recebe esse pacing.
+monotônico registrado no manifesto `v4`; o gateway usado pela API pública não recebe esse pacing.
 O mesmo manifesto registra o orçamento ativo e o timeout total acrescido das esperas possíveis do
 gateway compartilhado. Timeout, indisponibilidade do modelo e erros MCP/upstream emitem
 `runtime_failed`, encerram a agenda e tornam a avaliação `invalid`; falhas atribuíveis ao agente
 continuam sendo pontuadas como desempenho.
+
+`WholeRunFallbackGateway` e `FallbackVariantRuntime` formam a fronteira do fallback experimental.
+Cada run usa um único adapter. Rate limit, indisponibilidade ou timeout encerra e persiste a
+tentativa atual; a mesma identidade é então reiniciada desde a classificação no próximo provider.
+O resumo registra os modelos observados e ressalva uma avaliação heterogênea. Erros de saída
+estruturada continuam pontuáveis e nunca provocam troca de provider.
+
+O adapter OpenAI-compatible retém no histórico transitório somente a assinatura opaca de
+continuação associada ao ID de um tool call e a devolve exclusivamente ao mesmo provedor no turno
+seguinte. Esse campo atende ao contrato multi-turno do Gemini 3 sem entrar em traces, checkpoints,
+relatórios ou chain of thought. A categoria de transmissão e os parâmetros de amostragem efetivos
+de cada fallback ficam vinculados ao manifesto. O EloAgents usa OpenAI-compatible; o Gemini usa o
+SDK nativo, omite `temperature` e aplica `thinking_level=minimal` para limitar latência e consumo.
+
+Uma leitura que alcança o upstream e recebe HTTP 4xx não transitório por recurso ou argumento
+inválido permanece comportamento observável do agente: gera `TOOL_INPUT_REJECTED`, permite
+recuperação pelo planner e segue para o scorer. Autenticação/autorização, timeout, quota, conexão,
+resposta inválida e HTTP 5xx continuam sendo falhas de runtime.
+Quando a Groq rejeita com HTTP 400 uma tool call gerada pelo próprio modelo e fornece apenas o
+marcador estrutural `failed_generation`, o adapter redige o conteúdo e classifica a ocorrência
+como `MODEL_OUTPUT_INVALID`, que segue para scoring em vez de simular indisponibilidade.
 
 `EvaluationAnalyzer` é a interface profunda do ciclo de melhoria. Ele reutiliza a mesma avaliação
 de caso do scorer para resolver trajetória esperada, classificar falhas e agregar recorrência por

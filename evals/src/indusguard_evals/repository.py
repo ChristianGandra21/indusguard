@@ -103,13 +103,30 @@ class EvaluationRepository:
                 "termination_reason": sample.result.metrics.termination_reason.value,
                 "agent_run_id": sample.result.run_id,
                 "observations": {
-                    "shadow_policy": [item.model_dump(mode="json") for item in sample.shadow_policy]
+                    "shadow_policy": [
+                        item.model_dump(mode="json") for item in sample.shadow_policy
+                    ],
+                    "model_provider_attempts": [
+                        item.model_dump(mode="json") for item in sample.model_provider_attempts
+                    ],
                 },
                 "warnings": [],
             }
             if existing is not None and existing.result_status == "completed":
                 return
             if existing is not None:
+                previous_attempts = existing.observations.get("model_provider_attempts", [])
+                current_attempts = values["observations"]["model_provider_attempts"]
+                if not isinstance(previous_attempts, list):
+                    previous_attempts = []
+                attempts_by_run_id = {
+                    item.get("agent_run_id"): item
+                    for item in [*previous_attempts, *current_attempts]
+                    if isinstance(item, dict) and isinstance(item.get("agent_run_id"), str)
+                }
+                values["observations"]["model_provider_attempts"] = list(
+                    attempts_by_run_id.values()
+                )
                 for key, value in values.items():
                     setattr(existing, key, value)
                 existing.score = None
@@ -180,6 +197,10 @@ class EvaluationRepository:
                     },
                     result=persisted.result,
                     shadow_policy=row.observations.get("shadow_policy", []),
+                    model_provider_attempts=row.observations.get(
+                        "model_provider_attempts",
+                        [],
+                    ),
                 )
             )
         return samples
