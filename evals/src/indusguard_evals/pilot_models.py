@@ -251,6 +251,9 @@ class ContinuationAwareChatOpenAI(ChatOpenAI):
     ) -> dict[str, Any]:
         messages = self._convert_input(input_).to_messages()
         payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        # O endpoint Google/Gemini não suporta o parâmetro 'seed' no payload OpenAI-compatible
+        if self.openai_api_base and "generativelanguage.googleapis.com" in self.openai_api_base:
+            payload.pop("seed", None)
         outgoing = payload.get("messages")
         if not isinstance(outgoing, list):
             return payload
