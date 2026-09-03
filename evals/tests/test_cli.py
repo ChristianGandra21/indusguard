@@ -63,7 +63,7 @@ def test_preflight_writes_auditable_metadata_without_payloads(
 
     payload = json.loads(output.read_text(encoding="utf-8"))
     serialized = json.dumps(payload, ensure_ascii=False)
-    assert payload["schema_version"] == "groq-pilot-preflight-v4"
+    assert payload["schema_version"] == "groq-pilot-preflight-v5"
     assert payload["repository"] == {"git_commit": commit, "worktree_clean": True}
     assert payload["corpus"]["version"] == "official-v1"
     assert payload["corpus"]["pilot_scenarios"] == ["CEN-01", "CEN-14"]

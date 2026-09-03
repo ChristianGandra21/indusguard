@@ -47,6 +47,7 @@ def _config(
         max_retries=0,
         max_tokens=2048,
         temperature=None,
+        reasoning_effort="low" if provider is PilotFallbackProvider.GEMINI else None,
     )
 
 

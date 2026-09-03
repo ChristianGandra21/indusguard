@@ -74,6 +74,7 @@ def test_settings_require_complete_opt_in_without_exposing_keys() -> None:
         PilotFallbackProvider.GEMINI,
     ]
     assert providers[0].base_url == "https://elo.example/v1/"
+    assert [item.reasoning_effort for item in providers] == [None, "low"]
     serialized = repr(providers)
     assert "elo-secret" not in serialized
     assert "gemini-secret" not in serialized
@@ -178,6 +179,7 @@ def test_openai_compatible_rate_limit_is_redacted_and_retains_retry_after() -> N
         max_retries=0,
         max_tokens=2048,
         temperature=None,
+        reasoning_effort="low",
     )
     gateway = OpenAICompatibleAgentModelGateway(config)
     chat = gateway._create_openai_chat(42)
@@ -195,6 +197,7 @@ def test_openai_compatible_rate_limit_is_redacted_and_retains_retry_after() -> N
     assert chat.seed == 42
     assert chat.max_tokens == 2048
     assert chat.temperature is None
+    assert chat.reasoning_effort == "low"
 
 
 def test_openai_compatible_chat_round_trips_gemini_tool_call_signature() -> None:

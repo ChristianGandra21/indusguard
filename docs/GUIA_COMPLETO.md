@@ -2010,7 +2010,7 @@ manifesto sem payloads ou segredos. O `pilot --groq --confirm-external-transmiss
 arquivo em `--preflight-manifest` e o vincula ao registro da avaliação. Ele envia tickets, prompts
 fixos, descrições de domínio/tools, evidências redigidas e IDs sintéticos à Groq, mas nunca abre o
 golden antes das runs. Cada checkpoint publica progresso seguro no `stderr`, sem conteúdo de
-ticket ou resposta. O manifesto `groq-pilot-preflight-v4` também fixa Groq como primário, a ordem
+ticket ou resposta. O manifesto `groq-pilot-preflight-v5` também fixa Groq como primário, a ordem
 opcional EloAgents/Gemini, seus modelos e endpoints sem credenciais, além do intervalo mínimo entre
 chamadas e o timeout pacing-aware. No benchmark Groq, elas são serializadas e iniciam com pelo
 menos 60 segundos de distância por padrão, evitando recriar o teto de tokens por minuto dentro da

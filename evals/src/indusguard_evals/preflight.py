@@ -25,7 +25,7 @@ from indusguard_evals.pacing import (
 from indusguard_evals.pilot_models import PilotFallbackSettings
 from indusguard_evals.schedule import build_schedule
 
-PREFLIGHT_SCHEMA_VERSION = "groq-pilot-preflight-v4"
+PREFLIGHT_SCHEMA_VERSION = "groq-pilot-preflight-v5"
 TRANSMITTED_CATEGORIES = [
     "ticket_message",
     "fixed_agent_prompts",
@@ -86,6 +86,7 @@ class PreflightFallbackModel(BaseModel):
     max_retries: int
     max_tokens: int
     temperature: float | None = Field(default=None, ge=0, le=2)
+    reasoning_effort: Literal["low"] | None = None
     api_key_configured: Literal[True]
 
 
@@ -144,7 +145,7 @@ class GroqPilotPreflightManifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["groq-pilot-preflight-v4"] = PREFLIGHT_SCHEMA_VERSION
+    schema_version: Literal["groq-pilot-preflight-v5"] = PREFLIGHT_SCHEMA_VERSION
     created_at: datetime
     phase: Literal["pilot"] = "pilot"
     execution_kind: Literal["groq_pilot"] = "groq_pilot"
@@ -281,6 +282,7 @@ def build_groq_pilot_preflight(
                 max_retries=item.max_retries,
                 max_tokens=item.max_tokens,
                 temperature=item.temperature,
+                reasoning_effort=item.reasoning_effort,
                 api_key_configured=True,
             ).model_dump(mode="json")
             for item in fallbacks

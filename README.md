@@ -566,7 +566,7 @@ esse instante é bloqueada antes da criação do gateway; sem o header, o CLI n�
 
 Para não recriar o limite de tokens dentro da mesma run, o piloto serializa as chamadas Groq e
 mantém por padrão 60 segundos entre seus inícios. O intervalo é configurável por
-`INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS`, aparece no manifesto `v4` e não afeta o
+`INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS`, aparece no manifesto `v5` e não afeta o
 playground, a API pública ou o smoke fake. Alterá-lo exige gerar outro manifesto e iniciar outra
 avaliação; não misture checkpoints produzidos com configurações diferentes.
 
@@ -580,8 +580,9 @@ infraestrutura.
 
 Para tool calling multi-turno no Gemini 3, o adapter preserva apenas a assinatura opaca de
 continuação devolvida pelo provedor e a retransmite no turno seguinte; ela não é interpretada,
-logada ou persistida. Essa categoria e a omissão auditada dos parâmetros de amostragem do Gemini
-via endpoint Google fazem parte do manifesto revisado antes do consentimento.
+logada ou persistida. Essa categoria, a omissão auditada de `temperature` e o
+`reasoning_effort=low` do Gemini via endpoint Google fazem parte do manifesto revisado antes do
+consentimento.
 
 Cada tentativa do piloto preserva os 60 segundos de orçamento ativo e acrescenta o pior caso de espera
 do pacing compartilhado. Com 8 chamadas máximas e intervalo de 60 segundos, o manifesto registra

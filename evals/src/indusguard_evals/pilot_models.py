@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from math import ceil
-from typing import Any, TypeVar, cast
+from typing import Any, Literal, TypeVar, cast
 from urllib.parse import urlsplit
 
 import openai
@@ -53,6 +53,7 @@ class OpenAICompatibleProviderConfig(BaseModel):
     max_retries: int = Field(ge=0, le=2)
     max_tokens: int = Field(ge=128, le=8192)
     temperature: float | None = Field(default=None, ge=0, le=2)
+    reasoning_effort: Literal["low"] | None = None
 
 
 class PilotFallbackSettings(BaseSettings):
@@ -151,6 +152,7 @@ class PilotFallbackSettings(BaseSettings):
             max_retries=self.max_retries,
             max_tokens=self.max_tokens,
             temperature=None if provider is PilotFallbackProvider.GEMINI else 0,
+            reasoning_effort="low" if provider is PilotFallbackProvider.GEMINI else None,
         )
 
 
@@ -292,6 +294,7 @@ class OpenAICompatibleAgentModelGateway(GroqAgentModelGateway):
             max_retries=config.max_retries,
             max_completion_tokens=config.max_tokens,
             seed=seed,
+            reasoning_effort=config.reasoning_effort,
         )
 
     @property

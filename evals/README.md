@@ -168,10 +168,11 @@ conta antes de trocar o modelo. Campo vazio, URL sem HTTPS, provedor desconhecid
 falha localmente como `MODEL_NOT_CONFIGURED`, antes de qualquer transmissão.
 O adapter preserva em memória somente a `thought_signature` opaca que o Gemini 3 devolve em um
 tool call e a retransmite no turno seguinte para o mesmo provedor. A assinatura não é interpretada,
-logada nem persistida. O manifesto registra `temperature=null`: o adapter omite esse parâmetro e
-usa a amostragem padrão do Gemini.
+logada nem persistida. O manifesto registra `temperature=null` e `reasoning_effort=low`: o adapter
+omite a amostragem e limita o raciocínio do Gemini para reduzir latência e consumo no probe e no
+piloto.
 
-O manifesto `groq-pilot-preflight-v4` contém commit, digest dos inputs, Groq primário, ordem dos
+O manifesto `groq-pilot-preflight-v5` contém commit, digest dos inputs, Groq primário, ordem dos
 fallbacks, modelos, endpoints sem credenciais, intervalo mínimo entre chamadas, orçamento ativo e
 timeout pacing-aware, agenda contrabalanceada, tamanhos e hashes das mensagens e listas de
 categorias incluídas e excluídas. Ele não duplica texto de ticket, evidência, payload de tool ou
