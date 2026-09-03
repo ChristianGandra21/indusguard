@@ -27,6 +27,8 @@ class EvaluationExecutionKind(StrEnum):
     OFFLINE_SMOKE = "offline_smoke"
     GROQ_PILOT = "groq_pilot"
     GROQ_BENCHMARK = "groq_benchmark"
+    GEMINI_PILOT = "gemini_pilot"
+    GEMINI_BENCHMARK = "gemini_benchmark"
     UNKNOWN = "unknown"
 
 

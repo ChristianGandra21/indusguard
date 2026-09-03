@@ -34,6 +34,8 @@ class EvaluationExecutionKind(StrEnum):
     OFFLINE_SMOKE = "offline_smoke"
     GROQ_PILOT = "groq_pilot"
     GROQ_BENCHMARK = "groq_benchmark"
+    GEMINI_PILOT = "gemini_pilot"
+    GEMINI_BENCHMARK = "gemini_benchmark"
     UNKNOWN = "unknown"
 
 
@@ -350,7 +352,11 @@ class SqlAlchemyDashboardReader:
         except ValueError:
             execution_kind = EvaluationExecutionKind.UNKNOWN
         scientific_evidence = (
-            execution_kind is EvaluationExecutionKind.GROQ_BENCHMARK
+            execution_kind
+            in {
+                EvaluationExecutionKind.GROQ_BENCHMARK,
+                EvaluationExecutionKind.GEMINI_BENCHMARK,
+            }
             and row.phase == "full"
             and row.status == "completed"
             and summary is not None

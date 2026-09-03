@@ -240,10 +240,15 @@ class TokenUsage(BaseModel):
 
 @dataclass(frozen=True)
 class GatewayResult[GatewayValue]:
-    """Valor estruturado acompanhado do uso retornado pelo provedor."""
+    """Valor estruturado acompanhado do uso retornado pelo provedor.
+
+    ``provider_message`` fica restrita ao histórico transitório da run. Adaptadores compatíveis com
+    OpenAI podem precisar reenviar metadados opacos do turno anterior sem persisti-los no resultado.
+    """
 
     value: GatewayValue
     usage: TokenUsage = field(default_factory=TokenUsage)
+    provider_message: AIMessage | None = field(default=None, repr=False, compare=False)
 
 
 class AgentModelError(RuntimeError):
@@ -1014,7 +1019,9 @@ class AgentRuntime:
 
             data.pending_calls = list(step.tool_calls)
             data.messages.append(
-                AIMessage(
+                result.provider_message
+                if result.provider_message is not None
+                else AIMessage(
                     content=step.note or "",
                     tool_calls=[
                         {

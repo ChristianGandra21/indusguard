@@ -1,4 +1,4 @@
-"""CLI do benchmark com consentimento explícito para o piloto Groq autorizado."""
+"""CLI do benchmark com consentimento explícito para o piloto externo autorizado."""
 
 from __future__ import annotations
 
@@ -39,6 +39,7 @@ from indusguard_evals.contracts import (
 )
 from indusguard_evals.corpus import OfficialCorpus
 from indusguard_evals.execution import create_variant_runtime
+from indusguard_evals.gemini_gateway import GeminiEvalModelGateway, GeminiEvalSettings
 from indusguard_evals.human_review import (
     HumanReviewBundle,
     HumanReviewImportError,
@@ -48,10 +49,12 @@ from indusguard_evals.human_review import (
 )
 from indusguard_evals.pacing import GroqPilotPacingSettings, PacedAgentModelGateway
 from indusguard_evals.preflight import (
-    GroqPilotPreflightManifest,
+    ExternalPilotPreflightManifest,
     PreflightError,
+    load_and_validate_gemini_pilot_preflight,
     load_and_validate_groq_pilot_preflight,
     require_persisted_preflight_digest,
+    write_gemini_pilot_preflight,
     write_groq_pilot_preflight,
 )
 from indusguard_evals.report import BenchmarkSummary
@@ -221,47 +224,61 @@ def _requested_execution_kind(
 ) -> EvaluationExecutionKind:
     """Valida autorização antes de ler chave ou construir qualquer cliente externo."""
 
-    if args.fake and args.groq:
-        raise SystemExit("EVALUATION_MODE_CONFLICT: escolha somente --fake ou --groq")
-    if args.groq:
+    selected_modes = sum(
+        bool(item) for item in (args.fake, args.groq, getattr(args, "gemini", False))
+    )
+    if selected_modes > 1:
+        raise SystemExit("EVALUATION_MODE_CONFLICT: escolha somente --fake, --groq ou --gemini")
+    if args.groq or getattr(args, "gemini", False):
         if command == "run":
             raise SystemExit(
-                "FULL_BENCHMARK_NOT_AUTHORIZED: somente o piloto CEN-01/CEN-14 pode usar Groq"
+                "FULL_BENCHMARK_NOT_AUTHORIZED: somente o piloto CEN-01/CEN-14 "
+                "pode usar modelos externos"
             )
         if not args.confirm_external_transmission:
             raise SystemExit(
                 "EXTERNAL_TRANSMISSION_CONSENT_REQUIRED: acrescente "
-                "--confirm-external-transmission para autorizar o envio à Groq"
+                "--confirm-external-transmission para autorizar o envio ao provedor configurado"
             )
+        if getattr(args, "gemini", False):
+            return EvaluationExecutionKind.GEMINI_PILOT
         return EvaluationExecutionKind.GROQ_PILOT
     if args.confirm_external_transmission:
         raise SystemExit(
-            "EXTERNAL_TRANSMISSION_MODE_REQUIRED: o consentimento só é válido junto de --groq"
+            "EXTERNAL_TRANSMISSION_MODE_REQUIRED: o consentimento só é válido junto "
+            "de --groq ou --gemini"
         )
     if args.fake:
         return EvaluationExecutionKind.OFFLINE_SMOKE
-    raise SystemExit("EVALUATION_MODE_REQUIRED: escolha --fake ou --groq")
+    raise SystemExit("EVALUATION_MODE_REQUIRED: escolha --fake, --groq ou --gemini")
 
 
 def _validated_preflight(
     args: argparse.Namespace,
     kind: EvaluationExecutionKind,
     root: Path,
-) -> tuple[GroqAgentSettings | None, GroqPilotPreflightManifest | None]:
+) -> tuple[
+    GroqAgentSettings | None,
+    GeminiEvalSettings | None,
+    ExternalPilotPreflightManifest | None,
+]:
     path = args.preflight_manifest
     if kind is EvaluationExecutionKind.OFFLINE_SMOKE:
         if path is not None:
             raise SystemExit(
-                "PREFLIGHT_MODE_MISMATCH: manifesto do piloto Groq não pode ser usado com --fake"
+                "PREFLIGHT_MODE_MISMATCH: manifesto de piloto externo não pode ser usado com --fake"
             )
-        return None, None
+        return None, None, None
     if path is None:
         raise SystemExit(
             "PILOT_PREFLIGHT_REQUIRED: informe --preflight-manifest para autorizar esta execução"
         )
-    settings = GroqAgentSettings()
     try:
-        return settings, load_and_validate_groq_pilot_preflight(root, path, settings)
+        if kind is EvaluationExecutionKind.GEMINI_PILOT:
+            settings = GeminiEvalSettings()
+            return None, settings, load_and_validate_gemini_pilot_preflight(root, path, settings)
+        settings = GroqAgentSettings()
+        return settings, None, load_and_validate_groq_pilot_preflight(root, path, settings)
     except PreflightError as exc:
         raise SystemExit(str(exc)) from exc
 
@@ -269,12 +286,19 @@ def _validated_preflight(
 def _gateway(
     kind: EvaluationExecutionKind,
     groq_settings: GroqAgentSettings | None = None,
+    gemini_settings: GeminiEvalSettings | None = None,
 ) -> AgentModelGateway:
     if kind is EvaluationExecutionKind.OFFLINE_SMOKE:
         return _fake_gateway()
     try:
-        gateway = GroqAgentModelGateway(groq_settings or GroqAgentSettings())
         pacing = GroqPilotPacingSettings()
+        if kind is EvaluationExecutionKind.GEMINI_PILOT:
+            gateway = GeminiEvalModelGateway(gemini_settings or GeminiEvalSettings())
+            return PacedAgentModelGateway(
+                gateway,
+                minimum_interval_seconds=pacing.minimum_interval_seconds,
+            )
+        gateway = GroqAgentModelGateway(groq_settings or GroqAgentSettings())
         return PacedAgentModelGateway(
             gateway,
             minimum_interval_seconds=pacing.minimum_interval_seconds,
@@ -286,8 +310,8 @@ def _gateway(
 async def _run_phase(args: argparse.Namespace, phase: EvaluationPhase) -> int:
     kind = _requested_execution_kind(args, command=args.command)
     root = _repository_root()
-    groq_settings, manifest = _validated_preflight(args, kind, root)
-    gateway = _gateway(kind, groq_settings)
+    groq_settings, gemini_settings, manifest = _validated_preflight(args, kind, root)
+    gateway = _gateway(kind, groq_settings, gemini_settings)
     runner, client, engine = await _runner(root, args.database_url, gateway)
     try:
         evaluation_id = await runner.start(
@@ -303,11 +327,15 @@ async def _run_phase(args: argparse.Namespace, phase: EvaluationPhase) -> int:
         await engine.dispose()
     print(evaluation_id)
     print(summary.model_dump_json(indent=2))
-    if kind is EvaluationExecutionKind.GROQ_PILOT and summary.status == "partial":
+    if (
+        kind in {EvaluationExecutionKind.GROQ_PILOT, EvaluationExecutionKind.GEMINI_PILOT}
+        and summary.status == "partial"
+    ):
+        mode_flag = "--gemini" if kind is EvaluationExecutionKind.GEMINI_PILOT else "--groq"
         print(_rate_limit_guidance(summary))
         print(
             "Retome sem duplicar runs concluídas: "
-            f"indusguard-eval resume {evaluation_id} --groq "
+            f"indusguard-eval resume {evaluation_id} {mode_flag} "
             "--confirm-external-transmission "
             f"--preflight-manifest {args.preflight_manifest}"
         )
@@ -317,7 +345,7 @@ async def _run_phase(args: argparse.Namespace, phase: EvaluationPhase) -> int:
 async def _resume(args: argparse.Namespace) -> int:
     kind = _requested_execution_kind(args, command=args.command)
     root = _repository_root()
-    groq_settings, manifest = _validated_preflight(args, kind, root)
+    groq_settings, gemini_settings, manifest = _validated_preflight(args, kind, root)
     inspection_engine = create_async_engine(normalize_database_url(args.database_url))
     try:
         persisted = await EvaluationRepository(inspection_engine).get(args.evaluation_id)
@@ -330,17 +358,22 @@ async def _resume(args: argparse.Namespace) -> int:
         raise SystemExit(
             f"EVALUATION_MODE_MISMATCH: use o mesmo modo que iniciou a avaliação ({persisted_kind})"
         )
-    if kind is EvaluationExecutionKind.GROQ_PILOT and persisted.phase is not EvaluationPhase.PILOT:
-        raise SystemExit("FULL_BENCHMARK_NOT_AUTHORIZED: uma avaliação full não pode usar Groq")
+    if (
+        kind in {EvaluationExecutionKind.GROQ_PILOT, EvaluationExecutionKind.GEMINI_PILOT}
+        and persisted.phase is not EvaluationPhase.PILOT
+    ):
+        raise SystemExit(
+            "FULL_BENCHMARK_NOT_AUTHORIZED: uma avaliação full não pode usar modelo externo"
+        )
     if manifest is not None:
         try:
             require_persisted_preflight_digest(manifest, persisted.config)
         except PreflightError as exc:
             raise SystemExit(str(exc)) from exc
-    if kind is EvaluationExecutionKind.GROQ_PILOT:
+    if kind in {EvaluationExecutionKind.GROQ_PILOT, EvaluationExecutionKind.GEMINI_PILOT}:
         _enforce_resume_window(persisted.summary)
 
-    gateway = _gateway(kind, groq_settings)
+    gateway = _gateway(kind, groq_settings, gemini_settings)
     runner, client, engine = await _runner(root, args.database_url, gateway)
     try:
         summary = await runner.execute(args.evaluation_id)
@@ -348,7 +381,10 @@ async def _resume(args: argparse.Namespace) -> int:
         await client.aclose()
         await engine.dispose()
     print(summary.model_dump_json(indent=2))
-    if kind is EvaluationExecutionKind.GROQ_PILOT and summary.status == "partial":
+    if (
+        kind in {EvaluationExecutionKind.GROQ_PILOT, EvaluationExecutionKind.GEMINI_PILOT}
+        and summary.status == "partial"
+    ):
         print(_rate_limit_guidance(summary))
         print(
             "Checkpoints concluídos não serão duplicados. "
@@ -418,9 +454,11 @@ async def _review_import(args: argparse.Namespace) -> int:
         not in {
             EvaluationExecutionKind.GROQ_PILOT.value,
             EvaluationExecutionKind.GROQ_BENCHMARK.value,
+            EvaluationExecutionKind.GEMINI_PILOT.value,
+            EvaluationExecutionKind.GEMINI_BENCHMARK.value,
         }
     ):
-        raise SystemExit("EVALUATION_NOT_ANALYZABLE: revisão exige avaliação Groq concluída")
+        raise SystemExit("EVALUATION_NOT_ANALYZABLE: revisão exige avaliação externa concluída")
     try:
         bundle = import_human_review(
             run,
@@ -475,23 +513,30 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--database-url", default=settings.database_url)
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("validate", help="valida entradas, golden e digests")
-    preflight = subparsers.add_parser("preflight", help="gera manifesto local do piloto Groq")
+    preflight = subparsers.add_parser("preflight", help="gera manifesto local do piloto externo")
     preflight.add_argument("--groq", action="store_true", help="prepara o piloto Groq autorizado")
+    preflight.add_argument(
+        "--gemini",
+        action="store_true",
+        help="prepara o piloto Gemini autorizado",
+    )
     preflight.add_argument("--output", type=Path, required=True)
     for command in ("pilot", "run"):
         child = subparsers.add_parser(command)
         child.add_argument("--fake", action="store_true", help="smoke local, sem valor científico")
         child.add_argument("--groq", action="store_true", help="usa a Groq Free")
+        child.add_argument("--gemini", action="store_true", help="usa Gemini API")
         child.add_argument(
             "--confirm-external-transmission",
             action="store_true",
-            help="confirma o envio de entradas e evidências à Groq",
+            help="confirma o envio de entradas e evidências ao provedor externo",
         )
         child.add_argument("--preflight-manifest", type=Path)
     resume = subparsers.add_parser("resume")
     resume.add_argument("evaluation_id")
     resume.add_argument("--fake", action="store_true")
     resume.add_argument("--groq", action="store_true")
+    resume.add_argument("--gemini", action="store_true")
     resume.add_argument("--confirm-external-transmission", action="store_true")
     resume.add_argument("--preflight-manifest", type=Path)
     report = subparsers.add_parser("report")
@@ -515,7 +560,7 @@ def _parser() -> argparse.ArgumentParser:
     review_import.add_argument("--output", type=Path, required=True)
     improve = subparsers.add_parser(
         "improve",
-        help="gera plano auditável a partir de uma avaliação Groq concluída",
+        help="gera plano auditável a partir de uma avaliação externa concluída",
     )
     improve.add_argument("evaluation_id")
     improve.add_argument("--output", type=Path, required=True)
@@ -536,14 +581,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     if args.command == "preflight":
-        if not args.groq:
-            raise SystemExit("PREFLIGHT_MODE_MISMATCH: o preflight disponível exige --groq")
+        if args.groq == args.gemini:
+            raise SystemExit("PREFLIGHT_MODE_MISMATCH: escolha somente --groq ou --gemini")
         try:
-            manifest = write_groq_pilot_preflight(
-                _repository_root(),
-                args.output,
-                GroqAgentSettings(),
-            )
+            if args.gemini:
+                manifest = write_gemini_pilot_preflight(
+                    _repository_root(),
+                    args.output,
+                    GeminiEvalSettings(),
+                )
+            else:
+                manifest = write_groq_pilot_preflight(
+                    _repository_root(),
+                    args.output,
+                    GroqAgentSettings(),
+                )
         except PreflightError as exc:
             raise SystemExit(str(exc)) from exc
         print(args.output)

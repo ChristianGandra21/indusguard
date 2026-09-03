@@ -9,12 +9,15 @@ import pytest
 from indusguard_api.groq_gateway import GroqAgentSettings
 
 from indusguard_evals import schedule as schedule_module
+from indusguard_evals.gemini_gateway import GeminiEvalSettings
 from indusguard_evals.pacing import GroqPilotPacingSettings
 from indusguard_evals.preflight import (
     TRANSMITTED_CATEGORIES,
     PreflightError,
+    load_and_validate_gemini_pilot_preflight,
     load_and_validate_groq_pilot_preflight,
     require_persisted_preflight_digest,
+    write_gemini_pilot_preflight,
     write_groq_pilot_preflight,
 )
 
@@ -39,6 +42,11 @@ def _settings(**overrides: object) -> GroqAgentSettings:
     return GroqAgentSettings(**values)  # type: ignore[arg-type]
 
 
+def _gemini_settings(**overrides: object) -> GeminiEvalSettings:
+    values = {"GEMINI_API_KEY": "test-key", **overrides}
+    return GeminiEvalSettings(**values, _env_file=None)  # type: ignore[arg-type]
+
+
 def _pacing(seconds: float = 60) -> GroqPilotPacingSettings:
     return GroqPilotPacingSettings(
         INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS=seconds,
@@ -59,6 +67,9 @@ def test_manifest_rejects_tampering_and_live_configuration_drift(
     assert loaded.runtime_boundaries.active_run_timeout_seconds == 60
     assert loaded.runtime_boundaries.paced_run_timeout_seconds == 540
     assert loaded.runtime_boundaries.max_model_calls == 8
+    assert loaded.schema_version == "external-pilot-preflight-v1"
+    assert loaded.execution_kind == "groq_pilot"
+    assert loaded.model.provider == "groq"
 
     payload = json.loads(output.read_text(encoding="utf-8"))
     payload["schedule"][0]["seed"] = 999
@@ -72,6 +83,38 @@ def test_manifest_rejects_tampering_and_live_configuration_drift(
             REPOSITORY_ROOT,
             output,
             _settings(INDUSGUARD_GROQ_MODEL="different-model"),
+        )
+
+
+def test_gemini_manifest_rejects_tampering_and_live_configuration_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clean_git(monkeypatch)
+    output = tmp_path / "gemini-preflight.json"
+    manifest = write_gemini_pilot_preflight(REPOSITORY_ROOT, output, _gemini_settings())
+
+    loaded = load_and_validate_gemini_pilot_preflight(
+        REPOSITORY_ROOT,
+        output,
+        _gemini_settings(),
+    )
+    assert loaded.manifest_digest == manifest.manifest_digest
+    assert loaded.execution_kind == "gemini_pilot"
+    assert loaded.model.provider == "gemini"
+    assert loaded.model.api_transport == "gemini_openai_compatible"
+    assert loaded.model.base_url == "https://generativelanguage.googleapis.com/v1beta/openai/"
+    assert loaded.model.temperature is None
+    assert loaded.model.reasoning_effort == "minimal"
+
+    with pytest.raises(PreflightError, match="PREFLIGHT_MODE_MISMATCH"):
+        load_and_validate_groq_pilot_preflight(REPOSITORY_ROOT, output, _settings())
+
+    with pytest.raises(PreflightError, match="PREFLIGHT_STALE"):
+        load_and_validate_gemini_pilot_preflight(
+            REPOSITORY_ROOT,
+            output,
+            _gemini_settings(INDUSGUARD_EVAL_GEMINI_MODEL="different-model"),
         )
 
     write_groq_pilot_preflight(REPOSITORY_ROOT, output, _settings(), _pacing(60))
@@ -101,6 +144,18 @@ def test_preflight_rejects_missing_key_and_dirty_worktree_before_writing(
             REPOSITORY_ROOT,
             output,
             GroqAgentSettings(GROQ_API_KEY="   "),
+        )
+    with pytest.raises(PreflightError, match="MODEL_NOT_CONFIGURED"):
+        write_gemini_pilot_preflight(
+            REPOSITORY_ROOT,
+            output,
+            GeminiEvalSettings(GEMINI_API_KEY=None),
+        )
+    with pytest.raises(PreflightError, match="MODEL_NOT_CONFIGURED"):
+        write_gemini_pilot_preflight(
+            REPOSITORY_ROOT,
+            output,
+            _gemini_settings(INDUSGUARD_EVAL_GEMINI_BASE_URL="http://example.test/openai"),
         )
     assert not output.exists()
 

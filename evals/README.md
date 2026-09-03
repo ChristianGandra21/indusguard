@@ -122,52 +122,61 @@ os checkpoints. O bundle `human-review-bundle-v1` contém apenas identidades, no
 método, `calibrated=false` e digests do CSV, chave e rubrica; mensagens, respostas, evidências e
 notas livres ficam de fora. Revisão `assisted` segue o mesmo contrato e continua auxiliar.
 
-`improve` aceita somente `groq_pilot` ou `groq_benchmark` concluído, sem falha de runtime, com todos
-os checkpoints e digests compatíveis com o corpus atual. O artefato `improvement-plan-v1` agrupa
-falhas por cenário, variante e seed, separa agente, policy e runtime e propõe hipóteses, riscos e
-testes. Ele nunca modifica código, banco, golden ou agenda.
+`improve` aceita somente avaliação externa concluída, sem falha de runtime, com todos os
+checkpoints e digests compatíveis com o corpus atual. O artefato `improvement-plan-v1` agrupa falhas
+por cenário, variante e seed, separa agente, policy e runtime e propõe hipóteses, riscos e testes.
+Ele nunca modifica código, banco, golden ou agenda.
 
 Nesta linha de desenvolvimento, `d305451a…` é a baseline concluída para o primeiro diagnóstico.
 `b825a34e…` fica congelado como `partial`: não o retome em um novo commit. Qualquer alteração do
 checkout torna manifestos anteriores obsoletos e exige novo preflight e novo consentimento.
 
-## Piloto Groq autorizado e ressalva de privacidade
+## Piloto externo autorizado e ressalva de privacidade
 
-Somente o piloto de 12 runs pode usar a Groq. Primeiro gere o manifesto em um checkout limpo. Esse
-comando valida localmente chave configurada, catálogo, inputs, modelo e as 12 identidades; não abre
-banco, fixture HTTP, golden ou cliente Groq:
+Somente o piloto de 12 runs pode usar modelo externo. Primeiro gere o manifesto em um checkout
+limpo. Esse comando valida localmente chave configurada, catálogo, inputs, modelo e as 12
+identidades; não abre banco, fixture HTTP, golden ou cliente externo:
 
 ```bash
 export GROQ_API_KEY="sua-chave-local"
 .venv/bin/indusguard-eval preflight --groq \
   --output .data/groq-pilot-preflight.json
+
+export GEMINI_API_KEY="sua-chave-local"
+.venv/bin/indusguard-eval preflight --gemini \
+  --output .data/gemini-pilot-preflight.json
 ```
 
-O manifesto `groq-pilot-preflight-v3` contém commit, digest dos inputs, configuração não secreta do
-modelo, intervalo mínimo entre chamadas, orçamento ativo e timeout pacing-aware, agenda
-contrabalanceada, tamanhos e hashes das mensagens e listas de categorias incluídas e excluídas.
-Ele não duplica texto de ticket, evidência, payload de tool ou chave. Depois de revisar o arquivo,
-autorize a transmissão vinculada àquele manifesto:
+O manifesto `external-pilot-preflight-v1` contém commit, digest dos inputs, provedor, configuração
+não secreta do modelo, intervalo mínimo entre chamadas, orçamento ativo e timeout pacing-aware,
+agenda contrabalanceada, tamanhos e hashes das mensagens e listas de categorias incluídas e
+excluídas. Ele não duplica texto de ticket, evidência, payload de tool ou chave. Depois de revisar o
+arquivo, autorize a transmissão vinculada àquele manifesto:
 
 ```bash
 .venv/bin/indusguard-eval pilot --groq \
   --confirm-external-transmission \
   --preflight-manifest .data/groq-pilot-preflight.json
+
+.venv/bin/indusguard-eval pilot --gemini \
+  --confirm-external-transmission \
+  --preflight-manifest .data/gemini-pilot-preflight.json
 ```
 
-Esse comando envia à Groq mensagens dos tickets, prompts fixos, descrições de domínio/tools,
-resultados redigidos das tools e IDs sintéticos de evidência. Não envia golden, credenciais,
+Esse comando envia ao provedor escolhido mensagens dos tickets, prompts fixos, descrições de
+domínio/tools, resultados redigidos das tools, IDs sintéticos de evidência e metadados opacos de
+continuação exigidos pelo provider quando houver tool calling. Não envia golden, credenciais,
 headers de autenticação, confirmação, digest, payload não redigido ou chain of thought. O CLI
 recalcula o manifesto antes de construir gateway ou banco e responde `PREFLIGHT_STALE` se commit,
-corpus, modelo, agenda ou contrato de transmissão mudou. `run --groq` continua respondendo
+corpus, modelo, agenda ou contrato de transmissão mudou. `run --groq` e `run --gemini` respondem
 `FULL_BENCHMARK_NOT_AUTHORIZED`, mesmo com consentimento e manifesto.
 
 Durante o piloto, cada checkpoint imprime no `stderr` um evento JSON `evaluation_progress` com
 `completed_runs/expected_runs`, identidade, variante e seed. Mensagem, resposta, evidência e
 segredos não entram nesse evento; o resumo final continua no `stdout`.
 
-O gateway do benchmark serializa chamadas e mantém 60 segundos entre seus inícios para não
-reproduzir o teto gratuito de tokens por minuto dentro da mesma identidade. Ajuste somente via
+O gateway do benchmark serializa chamadas e mantém 60 segundos entre seus inícios para reduzir
+risco de limite gratuito de tokens por minuto dentro da mesma identidade. Ajuste somente via
 `INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS`; o valor é validado entre 0 e 300 segundos e
 fica vinculado ao digest do manifesto. O pacing não é aplicado ao runtime da API nem ao fake.
 O piloto preserva 60 segundos de execução ativa e acrescenta uma janela para cada chamada máxima,
@@ -184,16 +193,20 @@ Se a cota gratuita interromper o piloto, o status ficará `partial`, a categoria
 .venv/bin/indusguard-eval resume UUID --groq \
   --confirm-external-transmission \
   --preflight-manifest .data/groq-pilot-preflight.json
+
+.venv/bin/indusguard-eval resume UUID --gemini \
+  --confirm-external-transmission \
+  --preflight-manifest .data/gemini-pilot-preflight.json
 ```
 
-A resposta `Retry-After` da Groq é aceita como segundos ou data HTTP quando aponta para até 24
+A resposta `Retry-After` do provedor é aceita como segundos ou data HTTP quando aponta para até 24
 horas, e convertida em `resume_not_before` UTC no resumo persistido. Antes desse instante, `resume`
 falha localmente sem criar gateway ou cliente externo. Se o provedor não informar um valor válido,
 o CLI registra a categoria, mas declara que não pode sugerir um horário seguro.
 
 A retomada exige o mesmo digest persistido em `evaluation_runs.config`. A identidade
-`case_id × variant × seed` impede duplicar checkpoints concluídos. O piloto Groq é uma observação
-experimental de dois cenários, não evidência suficiente para a hipótese global.
+`case_id × variant × seed` impede duplicar checkpoints concluídos. O piloto externo é uma
+observação experimental de dois cenários, não evidência suficiente para a hipótese global.
 
 Pelo mesmo motivo, `DisabledExternalJudgeGateway` não envia mensagem, resposta ou evidências ao
 modelo `openai/gpt-oss-120b`. As rubricas estão prontas em `rubrics/judge.yaml`, mas DeepEval não

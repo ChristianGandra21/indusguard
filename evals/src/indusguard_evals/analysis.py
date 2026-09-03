@@ -228,9 +228,11 @@ class EvaluationAnalyzer:
         if run.status != "completed" or execution_kind not in {
             EvaluationExecutionKind.GROQ_PILOT.value,
             EvaluationExecutionKind.GROQ_BENCHMARK.value,
+            EvaluationExecutionKind.GEMINI_PILOT.value,
+            EvaluationExecutionKind.GEMINI_BENCHMARK.value,
         }:
             raise EvaluationAnalysisError(
-                "EVALUATION_NOT_ANALYZABLE: use uma avaliação Groq concluída"
+                "EVALUATION_NOT_ANALYZABLE: use uma avaliação externa concluída"
             )
         summary = run.summary or {}
         runtime_failures = summary.get("runtime_failures") or {}

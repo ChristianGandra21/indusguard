@@ -19,6 +19,7 @@ from indusguard_evals.contracts import (
     EvaluationVariant,
 )
 from indusguard_evals.corpus import OfficialCorpus
+from indusguard_evals.gemini_gateway import GeminiEvalModelGateway
 from indusguard_evals.pacing import PacedAgentModelGateway
 from indusguard_evals.report import BenchmarkInterruption, build_summary
 from indusguard_evals.repository import EvaluationRepository
@@ -61,7 +62,7 @@ def test_preflight_writes_auditable_metadata_without_payloads(
 
     payload = json.loads(output.read_text(encoding="utf-8"))
     serialized = json.dumps(payload, ensure_ascii=False)
-    assert payload["schema_version"] == "groq-pilot-preflight-v3"
+    assert payload["schema_version"] == "external-pilot-preflight-v1"
     assert payload["repository"] == {"git_commit": commit, "worktree_clean": True}
     assert payload["corpus"]["version"] == "official-v1"
     assert payload["corpus"]["pilot_scenarios"] == ["CEN-01", "CEN-14"]
@@ -92,10 +93,17 @@ def test_validate_reports_17_tickets_and_16_scenarios(capsys: object) -> None:
     assert "16 cenários" in output
 
 
-def _args(*, fake: bool = False, groq: bool = False, consent: bool = False) -> Namespace:
+def _args(
+    *,
+    fake: bool = False,
+    groq: bool = False,
+    gemini: bool = False,
+    consent: bool = False,
+) -> Namespace:
     return Namespace(
         fake=fake,
         groq=groq,
+        gemini=gemini,
         confirm_external_transmission=consent,
     )
 
@@ -107,6 +115,15 @@ def test_groq_pilot_requires_explicit_external_transmission_consent() -> None:
     kind = _requested_execution_kind(_args(groq=True, consent=True), command="pilot")
 
     assert kind is EvaluationExecutionKind.GROQ_PILOT
+
+
+def test_gemini_pilot_requires_explicit_external_transmission_consent() -> None:
+    with pytest.raises(SystemExit, match="EXTERNAL_TRANSMISSION_CONSENT_REQUIRED"):
+        _requested_execution_kind(_args(gemini=True), command="pilot")
+
+    kind = _requested_execution_kind(_args(gemini=True, consent=True), command="pilot")
+
+    assert kind is EvaluationExecutionKind.GEMINI_PILOT
 
 
 def test_only_the_groq_evaluation_gateway_receives_pacing(
@@ -124,6 +141,19 @@ def test_only_the_groq_evaluation_gateway_receives_pacing(
     assert not isinstance(fake, PacedAgentModelGateway)
 
 
+def test_gemini_evaluation_gateway_receives_pacing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS", "45")
+    settings = eval_cli.GeminiEvalSettings(GEMINI_API_KEY="test-key", _env_file=None)
+
+    gateway = eval_cli._gateway(EvaluationExecutionKind.GEMINI_PILOT, gemini_settings=settings)
+
+    assert isinstance(gateway, PacedAgentModelGateway)
+    assert isinstance(gateway._delegate, GeminiEvalModelGateway)
+    assert gateway.runtime_config.run_timeout_seconds == 420
+
+
 def test_groq_pilot_and_resume_require_preflight_before_external_dependencies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -139,6 +169,7 @@ def test_groq_pilot_and_resume_require_preflight_before_external_dependencies(
             "--groq",
             "--confirm-external-transmission",
         ],
+        ["pilot", "--gemini", "--confirm-external-transmission"],
     ):
         with pytest.raises(SystemExit, match="PILOT_PREFLIGHT_REQUIRED"):
             main(command)
@@ -157,6 +188,11 @@ def test_full_groq_benchmark_remains_blocked_even_with_consent() -> None:
 def test_fake_and_groq_cannot_be_combined() -> None:
     with pytest.raises(SystemExit, match="EVALUATION_MODE_CONFLICT"):
         _requested_execution_kind(_args(fake=True, groq=True, consent=True), command="pilot")
+
+
+def test_groq_and_gemini_cannot_be_combined() -> None:
+    with pytest.raises(SystemExit, match="EVALUATION_MODE_CONFLICT"):
+        _requested_execution_kind(_args(groq=True, gemini=True, consent=True), command="pilot")
 
 
 def test_fake_smoke_does_not_accept_external_transmission_consent() -> None:
@@ -241,7 +277,7 @@ def test_resume_before_retry_after_stops_before_gateway(
         return evaluation_id
 
     evaluation_id = asyncio.run(seed())
-    monkeypatch.setattr(eval_cli, "_validated_preflight", lambda *args: (None, object()))
+    monkeypatch.setattr(eval_cli, "_validated_preflight", lambda *args: (None, None, object()))
     monkeypatch.setattr(eval_cli, "require_persisted_preflight_digest", lambda *args: None)
     monkeypatch.setattr(
         eval_cli,
@@ -252,6 +288,7 @@ def test_resume_before_retry_after_stops_before_gateway(
         command="resume",
         fake=False,
         groq=True,
+        gemini=False,
         confirm_external_transmission=True,
         preflight_manifest=Path("preflight.json"),
         database_url=database_url,

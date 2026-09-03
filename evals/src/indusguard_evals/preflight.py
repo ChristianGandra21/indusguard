@@ -1,4 +1,4 @@
-"""Manifesto auditável que antecede qualquer cliente ou transmissão à Groq."""
+"""Manifesto auditável que antecede qualquer cliente ou transmissão externa."""
 
 from __future__ import annotations
 
@@ -17,23 +17,26 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from indusguard_evals.contracts import EvaluationPhase, EvaluationVariant
 from indusguard_evals.corpus import CorpusValidationError, OfficialCorpus
+from indusguard_evals.gemini_gateway import GeminiEvalSettings
 from indusguard_evals.pacing import (
     GroqPilotPacingSettings,
     pacing_aware_runtime_config,
 )
 from indusguard_evals.schedule import build_schedule
 
-PREFLIGHT_SCHEMA_VERSION = "groq-pilot-preflight-v3"
+PREFLIGHT_SCHEMA_VERSION = "external-pilot-preflight-v1"
 TRANSMITTED_CATEGORIES = [
     "ticket_message",
     "fixed_agent_prompts",
     "domain_and_tool_descriptions",
     "redacted_tool_results",
     "synthetic_evidence_ids",
+    "provider_continuation_signatures",
 ]
 EXCLUDED_CATEGORIES = [
     "goldens",
     "groq_api_key",
+    "gemini_api_key",
     "authentication_headers",
     "confirmation",
     "confirmation_digest",
@@ -60,13 +63,15 @@ class PreflightRepository(BaseModel):
 class PreflightModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    provider: Literal["groq"] = "groq"
+    provider: Literal["groq", "gemini"]
+    api_transport: Literal["groq_openai", "gemini_openai_compatible"]
     name: str
+    base_url: str | None = None
     timeout_seconds: float
     max_retries: int
     max_tokens: int
-    temperature: Literal[0] = 0
-    reasoning_effort: Literal["low"] = "low"
+    temperature: Literal[0] | None = 0
+    reasoning_effort: Literal["minimal", "low"] | None = "low"
     minimum_request_interval_seconds: float = Field(ge=0, le=300)
     api_key_configured: Literal[True]
 
@@ -119,15 +124,15 @@ class PreflightRuntimeBoundaries(BaseModel):
     max_model_calls: int = Field(ge=2)
 
 
-class GroqPilotPreflightManifest(BaseModel):
+class ExternalPilotPreflightManifest(BaseModel):
     """Contrato sem payloads que vincula consentimento à execução planejada."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["groq-pilot-preflight-v3"] = PREFLIGHT_SCHEMA_VERSION
+    schema_version: Literal["external-pilot-preflight-v1"] = PREFLIGHT_SCHEMA_VERSION
     created_at: datetime
     phase: Literal["pilot"] = "pilot"
-    execution_kind: Literal["groq_pilot"] = "groq_pilot"
+    execution_kind: Literal["groq_pilot", "gemini_pilot"]
     repository: PreflightRepository
     model: PreflightModel
     corpus: PreflightCorpus
@@ -185,17 +190,64 @@ def _repository(root: Path) -> PreflightRepository:
     return PreflightRepository(git_commit=commit, worktree_clean=True)
 
 
-def build_groq_pilot_preflight(
-    root: Path,
+GroqPilotPreflightManifest = ExternalPilotPreflightManifest
+
+
+def _groq_preflight_model(
     settings: GroqAgentSettings,
+    pacing: GroqPilotPacingSettings,
+) -> PreflightModel:
+    if settings.api_key is None or not settings.api_key.get_secret_value().strip():
+        raise PreflightError("MODEL_NOT_CONFIGURED", "GROQ_API_KEY precisa estar definida")
+    return PreflightModel(
+        provider="groq",
+        api_transport="groq_openai",
+        name=settings.model,
+        timeout_seconds=settings.timeout_seconds,
+        max_retries=settings.max_retries,
+        max_tokens=settings.max_tokens,
+        temperature=0,
+        reasoning_effort="low",
+        minimum_request_interval_seconds=pacing.minimum_interval_seconds,
+        api_key_configured=True,
+    )
+
+
+def _gemini_preflight_model(
+    settings: GeminiEvalSettings,
+    pacing: GroqPilotPacingSettings,
+) -> PreflightModel:
+    if settings.api_key is None or not settings.api_key.get_secret_value().strip():
+        raise PreflightError("MODEL_NOT_CONFIGURED", "GEMINI_API_KEY precisa estar definida")
+    try:
+        base_url = settings.validated_base_url
+    except Exception as exc:
+        raise PreflightError("MODEL_NOT_CONFIGURED", str(exc)) from exc
+    return PreflightModel(
+        provider="gemini",
+        api_transport="gemini_openai_compatible",
+        name=settings.model,
+        base_url=base_url,
+        timeout_seconds=settings.timeout_seconds,
+        max_retries=settings.max_retries,
+        max_tokens=settings.max_tokens,
+        temperature=None,
+        reasoning_effort=settings.reasoning_effort,
+        minimum_request_interval_seconds=pacing.minimum_interval_seconds,
+        api_key_configured=True,
+    )
+
+
+def _build_external_pilot_preflight(
+    root: Path,
+    model: PreflightModel,
+    execution_kind: Literal["groq_pilot", "gemini_pilot"],
     pacing_settings: GroqPilotPacingSettings | None = None,
     *,
     created_at: datetime | None = None,
-) -> GroqPilotPreflightManifest:
-    """Valida somente fontes locais e não abre banco, golden, fixture HTTP ou cliente Groq."""
+) -> ExternalPilotPreflightManifest:
+    """Valida somente fontes locais e não abre banco, golden, fixture ou cliente externo."""
 
-    if settings.api_key is None or not settings.api_key.get_secret_value().strip():
-        raise PreflightError("MODEL_NOT_CONFIGURED", "GROQ_API_KEY precisa estar definida")
     pacing = pacing_settings or GroqPilotPacingSettings()
     runtime_config = pacing_aware_runtime_config(pacing)
     active_run_timeout_seconds = runtime_config.run_timeout_seconds - (
@@ -234,16 +286,9 @@ def build_groq_pilot_preflight(
         "schema_version": PREFLIGHT_SCHEMA_VERSION,
         "created_at": (created_at or datetime.now(UTC)).isoformat(),
         "phase": "pilot",
-        "execution_kind": "groq_pilot",
+        "execution_kind": execution_kind,
         "repository": repository.model_dump(mode="json"),
-        "model": PreflightModel(
-            name=settings.model,
-            timeout_seconds=settings.timeout_seconds,
-            max_retries=settings.max_retries,
-            max_tokens=settings.max_tokens,
-            minimum_request_interval_seconds=pacing.minimum_interval_seconds,
-            api_key_configured=True,
-        ).model_dump(mode="json"),
+        "model": model.model_dump(mode="json"),
         "corpus": PreflightCorpus(
             version=inputs.version,
             input_digest=inputs.digest,
@@ -263,11 +308,47 @@ def build_groq_pilot_preflight(
             max_model_calls=runtime_config.max_model_calls,
         ).model_dump(mode="json"),
     }
-    normalized = GroqPilotPreflightManifest.model_validate(
+    normalized = ExternalPilotPreflightManifest.model_validate(
         {**unsigned, "manifest_digest": "0" * 64}
     ).model_dump(mode="json", exclude={"manifest_digest"})
-    return GroqPilotPreflightManifest.model_validate(
+    return ExternalPilotPreflightManifest.model_validate(
         {**normalized, "manifest_digest": _manifest_digest(normalized)}
+    )
+
+
+def build_groq_pilot_preflight(
+    root: Path,
+    settings: GroqAgentSettings,
+    pacing_settings: GroqPilotPacingSettings | None = None,
+    *,
+    created_at: datetime | None = None,
+) -> ExternalPilotPreflightManifest:
+    pacing = pacing_settings or GroqPilotPacingSettings()
+    model = _groq_preflight_model(settings, pacing)
+    return _build_external_pilot_preflight(
+        root,
+        model,
+        "groq_pilot",
+        pacing,
+        created_at=created_at,
+    )
+
+
+def build_gemini_pilot_preflight(
+    root: Path,
+    settings: GeminiEvalSettings,
+    pacing_settings: GroqPilotPacingSettings | None = None,
+    *,
+    created_at: datetime | None = None,
+) -> ExternalPilotPreflightManifest:
+    pacing = pacing_settings or GroqPilotPacingSettings()
+    model = _gemini_preflight_model(settings, pacing)
+    return _build_external_pilot_preflight(
+        root,
+        model,
+        "gemini_pilot",
+        pacing,
+        created_at=created_at,
     )
 
 
@@ -276,10 +357,24 @@ def write_groq_pilot_preflight(
     output: Path,
     settings: GroqAgentSettings,
     pacing_settings: GroqPilotPacingSettings | None = None,
-) -> GroqPilotPreflightManifest:
+) -> ExternalPilotPreflightManifest:
     """Grava somente depois de todas as validações para não deixar artefato parcial válido."""
 
     manifest = build_groq_pilot_preflight(root, settings, pacing_settings)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    return manifest
+
+
+def write_gemini_pilot_preflight(
+    root: Path,
+    output: Path,
+    settings: GeminiEvalSettings,
+    pacing_settings: GroqPilotPacingSettings | None = None,
+) -> ExternalPilotPreflightManifest:
+    """Grava manifesto do piloto Gemini depois de todas as validações locais."""
+
+    manifest = build_gemini_pilot_preflight(root, settings, pacing_settings)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
     return manifest
@@ -290,16 +385,18 @@ def load_and_validate_groq_pilot_preflight(
     path: Path,
     settings: GroqAgentSettings,
     pacing_settings: GroqPilotPacingSettings | None = None,
-) -> GroqPilotPreflightManifest:
+) -> ExternalPilotPreflightManifest:
     """Verifica contrato, integridade e igualdade com todas as fontes locais atuais."""
 
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise TypeError("o manifesto precisa conter um objeto JSON")
-        manifest = GroqPilotPreflightManifest.model_validate(raw)
+        manifest = ExternalPilotPreflightManifest.model_validate(raw)
     except (OSError, json.JSONDecodeError, TypeError, ValidationError) as exc:
         raise PreflightError("PREFLIGHT_INVALID", "manifesto ausente ou malformado") from exc
+    if manifest.execution_kind != "groq_pilot" or manifest.model.provider != "groq":
+        raise PreflightError("PREFLIGHT_MODE_MISMATCH", "manifesto não pertence ao piloto Groq")
     serialized = manifest.model_dump(mode="json")
     calculated = _manifest_digest(serialized)
     if not hmac.compare_digest(manifest.manifest_digest, calculated):
@@ -318,8 +415,43 @@ def load_and_validate_groq_pilot_preflight(
     return manifest
 
 
+def load_and_validate_gemini_pilot_preflight(
+    root: Path,
+    path: Path,
+    settings: GeminiEvalSettings,
+    pacing_settings: GroqPilotPacingSettings | None = None,
+) -> ExternalPilotPreflightManifest:
+    """Verifica contrato Gemini, integridade e igualdade com fontes locais atuais."""
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise TypeError("o manifesto precisa conter um objeto JSON")
+        manifest = ExternalPilotPreflightManifest.model_validate(raw)
+    except (OSError, json.JSONDecodeError, TypeError, ValidationError) as exc:
+        raise PreflightError("PREFLIGHT_INVALID", "manifesto ausente ou malformado") from exc
+    if manifest.execution_kind != "gemini_pilot" or manifest.model.provider != "gemini":
+        raise PreflightError("PREFLIGHT_MODE_MISMATCH", "manifesto não pertence ao piloto Gemini")
+    serialized = manifest.model_dump(mode="json")
+    calculated = _manifest_digest(serialized)
+    if not hmac.compare_digest(manifest.manifest_digest, calculated):
+        raise PreflightError("PREFLIGHT_INVALID", "digest do manifesto não confere")
+    expected = build_gemini_pilot_preflight(
+        root,
+        settings,
+        pacing_settings,
+        created_at=manifest.created_at,
+    )
+    if not hmac.compare_digest(manifest.manifest_digest, expected.manifest_digest):
+        raise PreflightError(
+            "PREFLIGHT_STALE",
+            "commit, corpus, modelo, agenda ou contrato de transmissão mudou",
+        )
+    return manifest
+
+
 def require_persisted_preflight_digest(
-    manifest: GroqPilotPreflightManifest,
+    manifest: ExternalPilotPreflightManifest,
     persisted_config: dict[str, Any],
 ) -> None:
     """Impede que uma retomada troque o consentimento que iniciou a avaliação."""
