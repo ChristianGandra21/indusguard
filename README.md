@@ -538,14 +538,26 @@ export GROQ_API_KEY="sua-chave-local"
 export INDUSGUARD_EVAL_FALLBACK_PROVIDERS="eloagents,gemini"
 .venv/bin/indusguard-eval preflight --groq \
   --output .data/groq-pilot-preflight.json
+.venv/bin/indusguard-eval probe-fallbacks \
+  --confirm-external-transmission \
+  --preflight-manifest .data/groq-pilot-preflight.json \
+  --output .data/provider-probe.json
 .venv/bin/indusguard-eval pilot --groq \
   --confirm-external-transmission \
-  --preflight-manifest .data/groq-pilot-preflight.json
+  --preflight-manifest .data/groq-pilot-preflight.json \
+  --provider-probe .data/provider-probe.json
 # em caso de cota: use o UUID impresso
 .venv/bin/indusguard-eval resume UUID --groq \
   --confirm-external-transmission \
-  --preflight-manifest .data/groq-pilot-preflight.json
+  --preflight-manifest .data/groq-pilot-preflight.json \
+  --provider-probe .data/provider-probe.json
 ```
+
+Quando há fallbacks, `probe-fallbacks` envia somente solicitação, domínio, schema e resultado de
+tool fixos e sintéticos. Ele testa classificação estruturada, tool calling e finalização em cada
+API e persiste apenas status, etapa, reason code e uso de tokens. O piloto recusa um probe falho,
+adulterado ou criado para outro commit, manifesto, provedor ou modelo. Sem fallback configurado,
+o probe e `--provider-probe` não são necessários.
 
 Durante `pilot` e `resume`, cada checkpoint emite no `stderr` um evento JSON seguro com progresso,
 cenário, variante e seed, sem mensagem ou resposta. Se a Groq devolver `Retry-After`, o resumo
@@ -562,12 +574,14 @@ O fallback usa a estratégia `whole_run_restart`: mantém um único provedor dur
 limit, indisponibilidade ou timeout preserva a tentativa redigida e reinicia a identidade inteira
 no próximo provedor; uma resposta parcial nunca é transferida entre modelos. O provedor escolhido
 permanece ativo nas runs seguintes até nova falha de infraestrutura. Saída estruturada inválida não
-aciona fallback, pois continua sendo desempenho observável do modelo escolhido.
+aciona fallback, pois continua sendo desempenho observável do modelo escolhido. Por isso essa
+incompatibilidade deve aparecer no probe anterior ao piloto, sem ser reclassificada como falha de
+infraestrutura.
 
 Para tool calling multi-turno no Gemini 3, o adapter preserva apenas a assinatura opaca de
 continuação devolvida pelo provedor e a retransmite no turno seguinte; ela não é interpretada,
 logada ou persistida. Essa categoria e a omissão auditada dos parâmetros de amostragem do Gemini
-3.7 fazem parte do manifesto revisado antes do consentimento.
+via endpoint Google fazem parte do manifesto revisado antes do consentimento.
 
 Cada tentativa do piloto preserva os 60 segundos de orçamento ativo e acrescenta o pior caso de espera
 do pacing compartilhado. Com 8 chamadas máximas e intervalo de 60 segundos, o manifesto registra

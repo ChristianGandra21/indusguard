@@ -178,6 +178,38 @@ def test_fake_mode_rejects_a_preflight_manifest() -> None:
         main(["pilot", "--fake", "--preflight-manifest", "preflight.json"])
 
 
+def test_probe_fallbacks_requires_explicit_external_consent() -> None:
+    with pytest.raises(SystemExit, match="EXTERNAL_TRANSMISSION_CONSENT_REQUIRED"):
+        main(
+            [
+                "probe-fallbacks",
+                "--preflight-manifest",
+                "preflight.json",
+                "--output",
+                "probe.json",
+            ]
+        )
+
+
+def test_fallback_pilot_requires_a_probe_before_gateway_creation() -> None:
+    fallbacks = PilotFallbackSettings(
+        INDUSGUARD_EVAL_FALLBACK_PROVIDERS="gemini",
+        GEMINI_API_KEY="gemini-key",
+        INDUSGUARD_EVAL_GEMINI_MODEL="gemini-model",
+        _env_file=None,
+    )
+    args = Namespace(provider_probe=None)
+
+    with pytest.raises(SystemExit, match="PROVIDER_PROBE_REQUIRED"):
+        eval_cli._validated_provider_probe(
+            args,
+            EvaluationExecutionKind.GROQ_PILOT,
+            Path.cwd(),
+            fallbacks,
+            object(),
+        )
+
+
 def test_full_groq_benchmark_remains_blocked_even_with_consent() -> None:
     with pytest.raises(SystemExit, match="FULL_BENCHMARK_NOT_AUTHORIZED"):
         _requested_execution_kind(_args(groq=True, consent=True), command="run")

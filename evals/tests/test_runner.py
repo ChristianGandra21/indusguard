@@ -155,8 +155,10 @@ def test_rate_limit_creates_partial_checkpoint_and_resume_finishes_12_runs(
     assert identity_count == 12
 
 
-def test_evaluation_persists_the_authorized_preflight_digest(tmp_path: Path) -> None:
-    async def exercise() -> str | None:
+def test_evaluation_persists_authorized_preflight_and_provider_probe_digests(
+    tmp_path: Path,
+) -> None:
+    async def exercise() -> tuple[str | None, str | None]:
         engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'preflight.db'}")
         async with engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
@@ -177,13 +179,17 @@ def test_evaluation_persists_the_authorized_preflight_digest(tmp_path: Path) -> 
             model="openai/gpt-oss-20b",
             git_commit="a" * 40,
             preflight_manifest_digest="b" * 64,
+            provider_probe_digest="c" * 64,
         )
         persisted = await repository.get(evaluation_id)
         await engine.dispose()
         assert persisted is not None
-        return persisted.config.get("preflight_manifest_digest")
+        return (
+            persisted.config.get("preflight_manifest_digest"),
+            persisted.config.get("provider_probe_digest"),
+        )
 
-    assert asyncio.run(exercise()) == "b" * 64
+    assert asyncio.run(exercise()) == ("b" * 64, "c" * 64)
 
 
 def test_runtime_failure_stops_and_invalidates_the_schedule(tmp_path: Path) -> None:

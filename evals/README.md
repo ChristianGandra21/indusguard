@@ -154,8 +154,10 @@ INDUSGUARD_EVAL_ELOAGENTS_BASE_URL=
 INDUSGUARD_EVAL_ELOAGENTS_MODEL=
 GEMINI_API_KEY=
 INDUSGUARD_EVAL_GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
-INDUSGUARD_EVAL_GEMINI_MODEL=gemini-3.7-flash
-INDUSGUARD_EVAL_GEMINI_TEMPERATURE=1
+INDUSGUARD_EVAL_GEMINI_MODEL=gemini-3.6-flash
+INDUSGUARD_EVAL_FALLBACK_TIMEOUT_SECONDS=60
+INDUSGUARD_EVAL_FALLBACK_MAX_RETRIES=0
+INDUSGUARD_EVAL_FALLBACK_MAX_TOKENS=2048
 ```
 
 O EloAgents precisa informar um endpoint OpenAI-compatible e o ID técnico do modelo. Nomes da
@@ -167,19 +169,41 @@ falha localmente como `MODEL_NOT_CONFIGURED`, antes de qualquer transmissão.
 O adapter preserva em memória somente a `thought_signature` opaca que o Gemini 3 devolve em um
 tool call e a retransmite no turno seguinte para o mesmo provedor. A assinatura não é interpretada,
 logada nem persistida. O manifesto registra `temperature=null`: o adapter omite esse parâmetro e
-usa a amostragem padrão exigida pelo Gemini 3.7.
+usa a amostragem padrão do Gemini.
 
 O manifesto `groq-pilot-preflight-v4` contém commit, digest dos inputs, Groq primário, ordem dos
 fallbacks, modelos, endpoints sem credenciais, intervalo mínimo entre chamadas, orçamento ativo e
 timeout pacing-aware, agenda contrabalanceada, tamanhos e hashes das mensagens e listas de
 categorias incluídas e excluídas. Ele não duplica texto de ticket, evidência, payload de tool ou
-qualquer chave. Depois de revisar o arquivo, autorize a transmissão vinculada àquele manifesto:
+qualquer chave. Quando houver fallback, execute primeiro o probe dos contratos vinculados ao mesmo
+manifesto:
+
+```bash
+.venv/bin/indusguard-eval probe-fallbacks \
+  --confirm-external-transmission \
+  --preflight-manifest .data/groq-pilot-preflight.json \
+  --output .data/provider-probe.json
+```
+
+O probe transmite somente um ativo, domínio, schema de tool e resultado de tool fixos e sintéticos;
+não transmite tickets do piloto, goldens, credenciais nem payloads reais. Cada API precisa passar
+classificação estruturada, chamada da única tool permitida com o ID confiável e finalização
+estruturada que cite a evidência sintética. O artefato guarda somente metadados redigidos e fica
+vinculado ao commit, ao digest do manifesto e à ordem de provedor/modelo. Uma ferramenta interna ou
+inventada pelo provedor é rejeitada como `MODEL_TOOL_CONTRACT_INVALID`.
+
+Depois de revisar os dois arquivos, autorize a transmissão do piloto:
 
 ```bash
 .venv/bin/indusguard-eval pilot --groq \
   --confirm-external-transmission \
-  --preflight-manifest .data/groq-pilot-preflight.json
+  --preflight-manifest .data/groq-pilot-preflight.json \
+  --provider-probe .data/provider-probe.json
 ```
+
+Se o manifesto não declarar fallback, `probe-fallbacks` e `--provider-probe` devem ser omitidos. Se
+declarar, o CLI recusa probe ausente, falho, adulterado ou criado para outra configuração. O mesmo
+arquivo deve ser informado em `resume`.
 
 Esse comando envia ao primeiro provedor disponível mensagens dos tickets, prompts fixos,
 descrições de domínio/tools, resultados redigidos das tools, IDs sintéticos de evidência e, quando
