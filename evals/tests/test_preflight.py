@@ -77,7 +77,7 @@ def test_manifest_binds_fallback_order_without_serializing_credentials(
     assert manifest.schema_version == "groq-pilot-preflight-v4"
     assert manifest.fallback_strategy == "whole_run_restart"
     assert [item.provider for item in manifest.fallback_models] == ["eloagents", "gemini"]
-    assert [item.temperature for item in manifest.fallback_models] == [0, 1]
+    assert [item.temperature for item in manifest.fallback_models] == [0, None]
     assert "provider_continuation_signatures" in manifest.transmission.included_categories
     assert manifest.runtime_boundaries.max_provider_attempts_per_identity == 3
     assert manifest.runtime_boundaries.maximum_identity_timeout_seconds == 1620

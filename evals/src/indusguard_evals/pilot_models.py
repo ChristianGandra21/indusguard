@@ -52,7 +52,7 @@ class OpenAICompatibleProviderConfig(BaseModel):
     timeout_seconds: float = Field(gt=0, le=120)
     max_retries: int = Field(ge=0, le=2)
     max_tokens: int = Field(ge=128, le=8192)
-    temperature: float = Field(ge=0, le=2)
+    temperature: float | None = Field(default=None, ge=0, le=2)
 
 
 class PilotFallbackSettings(BaseSettings):
@@ -87,12 +87,6 @@ class PilotFallbackSettings(BaseSettings):
     gemini_model: str = Field(
         default="",
         validation_alias="INDUSGUARD_EVAL_GEMINI_MODEL",
-    )
-    gemini_temperature: float = Field(
-        default=1,
-        ge=0,
-        le=2,
-        validation_alias="INDUSGUARD_EVAL_GEMINI_TEMPERATURE",
     )
     timeout_seconds: float = Field(
         default=30,
@@ -156,9 +150,7 @@ class PilotFallbackSettings(BaseSettings):
             timeout_seconds=self.timeout_seconds,
             max_retries=self.max_retries,
             max_tokens=self.max_tokens,
-            temperature=(
-                self.gemini_temperature if provider is PilotFallbackProvider.GEMINI else 0
-            ),
+            temperature=None if provider is PilotFallbackProvider.GEMINI else 0,
         )
 
 
@@ -254,6 +246,7 @@ class ContinuationAwareChatOpenAI(ChatOpenAI):
         # O endpoint Google/Gemini não suporta o parâmetro 'seed' no payload OpenAI-compatible
         if self.openai_api_base and "generativelanguage.googleapis.com" in self.openai_api_base:
             payload.pop("seed", None)
+            payload.pop("temperature", None)
         outgoing = payload.get("messages")
         if not isinstance(outgoing, list):
             return payload

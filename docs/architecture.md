@@ -380,8 +380,8 @@ estruturada continuam pontuáveis e nunca provocam troca de provider.
 O adapter OpenAI-compatible retém no histórico transitório somente a assinatura opaca de
 continuação associada ao ID de um tool call e a devolve exclusivamente ao mesmo provedor no turno
 seguinte. Esse campo atende ao contrato multi-turno do Gemini 3 sem entrar em traces, checkpoints,
-relatórios ou chain of thought. A categoria de transmissão e a temperatura de cada fallback ficam
-vinculadas ao manifesto.
+relatórios ou chain of thought. A categoria de transmissão e os parâmetros de amostragem efetivos
+de cada fallback ficam vinculados ao manifesto; para Gemini 3.7, `temperature` é omitida.
 
 Uma leitura que alcança o upstream e recebe HTTP 4xx não transitório por recurso ou argumento
 inválido permanece comportamento observável do agente: gera `TOOL_INPUT_REJECTED`, permite

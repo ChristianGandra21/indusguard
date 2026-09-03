@@ -85,7 +85,7 @@ class PreflightFallbackModel(BaseModel):
     timeout_seconds: float
     max_retries: int
     max_tokens: int
-    temperature: float = Field(ge=0, le=2)
+    temperature: float | None = Field(default=None, ge=0, le=2)
     api_key_configured: Literal[True]
 
 

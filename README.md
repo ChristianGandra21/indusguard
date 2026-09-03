@@ -566,8 +566,8 @@ aciona fallback, pois continua sendo desempenho observável do modelo escolhido.
 
 Para tool calling multi-turno no Gemini 3, o adapter preserva apenas a assinatura opaca de
 continuação devolvida pelo provedor e a retransmite no turno seguinte; ela não é interpretada,
-logada ou persistida. Essa categoria e a temperatura do Gemini (`1` por default) fazem parte do
-manifesto revisado antes do consentimento.
+logada ou persistida. Essa categoria e a omissão auditada dos parâmetros de amostragem do Gemini
+3.7 fazem parte do manifesto revisado antes do consentimento.
 
 Cada tentativa do piloto preserva os 60 segundos de orçamento ativo e acrescenta o pior caso de espera
 do pacing compartilhado. Com 8 chamadas máximas e intervalo de 60 segundos, o manifesto registra

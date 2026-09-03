@@ -177,7 +177,7 @@ def test_openai_compatible_rate_limit_is_redacted_and_retains_retry_after() -> N
         timeout_seconds=30,
         max_retries=0,
         max_tokens=2048,
-        temperature=1,
+        temperature=None,
     )
     gateway = OpenAICompatibleAgentModelGateway(config)
     chat = gateway._create_openai_chat(42)
@@ -194,7 +194,7 @@ def test_openai_compatible_rate_limit_is_redacted_and_retains_retry_after() -> N
     assert gateway.model_name == "gemini:gemini-test"
     assert chat.seed == 42
     assert chat.max_tokens == 2048
-    assert chat.temperature == 1
+    assert chat.temperature is None
 
 
 def test_openai_compatible_chat_round_trips_gemini_tool_call_signature() -> None:
@@ -244,4 +244,6 @@ def test_openai_compatible_chat_round_trips_gemini_tool_call_signature() -> None
     assert payload["messages"][1]["tool_calls"][0]["extra_content"] == {
         "google": {"thought_signature": "opaque-signature"}
     }
+    assert "temperature" not in payload
+    assert "seed" not in payload
     assert "opaque-signature" not in repr(provider_message.tool_calls)
