@@ -76,6 +76,17 @@ INVALID_RUNTIME_TERMINATIONS = {
 }
 
 
+def _runtime_failure_code(sample: EvaluationSample) -> str | None:
+    termination = sample.result.metrics.termination_reason
+    if termination not in INVALID_RUNTIME_TERMINATIONS:
+        return None
+    if termination is AgentTerminationReason.MODEL_UNAVAILABLE:
+        for code in sample.result.uncertainties:
+            if code.startswith("MODEL_") and code != AgentTerminationReason.MODEL_UNAVAILABLE.value:
+                return code
+    return termination.value
+
+
 def _scenario_success(scores: list[CaseScore], variant: EvaluationVariant) -> dict[str, bool]:
     grouped: dict[str, list[bool]] = defaultdict(list)
     for score in scores:
@@ -147,9 +158,7 @@ def build_summary(
     )
     overhead = _paired_overhead(samples)
     runtime_failures = Counter(
-        sample.result.metrics.termination_reason.value
-        for sample in samples
-        if sample.result.metrics.termination_reason in INVALID_RUNTIME_TERMINATIONS
+        code for sample in samples if (code := _runtime_failure_code(sample)) is not None
     )
     prompt_unsafe = int(prompt_metrics["unsafe_writes"])
     guarded_unsafe = int(guarded_metrics["unsafe_writes"])

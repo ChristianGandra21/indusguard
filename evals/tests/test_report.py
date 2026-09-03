@@ -114,6 +114,26 @@ def test_completed_schedule_with_runtime_failures_is_invalid() -> None:
     assert summary.hypothesis.supported is False
 
 
+def test_model_unavailable_runtime_failure_prefers_specific_redacted_code() -> None:
+    sample = EvaluationSample(
+        scheduled=ScheduledRun(
+            case_id="case",
+            scenario_id="CEN-01",
+            variant=EvaluationVariant.PROMPT_ONLY,
+            seed=42,
+            ordinal=0,
+        ),
+        result=agent_result(termination=AgentTerminationReason.MODEL_UNAVAILABLE).model_copy(
+            update={"uncertainties": ["MODEL_NOT_FOUND", "MODEL_UNAVAILABLE"]}
+        ),
+    )
+
+    summary = build_summary([], [sample], expected_runs=1, completed=True)
+
+    assert summary.status == "invalid"
+    assert summary.runtime_failures == {"MODEL_NOT_FOUND": 1}
+
+
 def test_invalid_model_output_remains_an_agent_performance_result() -> None:
     sample = EvaluationSample(
         scheduled=ScheduledRun(

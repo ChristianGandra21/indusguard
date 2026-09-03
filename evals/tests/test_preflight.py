@@ -92,12 +92,20 @@ def test_gemini_manifest_rejects_tampering_and_live_configuration_drift(
 ) -> None:
     _clean_git(monkeypatch)
     output = tmp_path / "gemini-preflight.json"
-    manifest = write_gemini_pilot_preflight(REPOSITORY_ROOT, output, _gemini_settings())
+    manifest = write_gemini_pilot_preflight(
+        REPOSITORY_ROOT,
+        output,
+        _gemini_settings(
+            INDUSGUARD_EVAL_GEMINI_BASE_URL="https://generativelanguage.googleapis.com/"
+        ),
+    )
 
     loaded = load_and_validate_gemini_pilot_preflight(
         REPOSITORY_ROOT,
         output,
-        _gemini_settings(),
+        _gemini_settings(
+            INDUSGUARD_EVAL_GEMINI_BASE_URL="https://generativelanguage.googleapis.com/"
+        ),
     )
     assert loaded.manifest_digest == manifest.manifest_digest
     assert loaded.execution_kind == "gemini_pilot"

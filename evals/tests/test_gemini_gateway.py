@@ -30,6 +30,23 @@ def test_gemini_settings_require_key_and_https_base_url() -> None:
     with pytest.raises(AgentConfigurationError, match="URL HTTPS"):
         _ = settings.validated_base_url
 
+    root_settings = GeminiEvalSettings(
+        GEMINI_API_KEY="secret",
+        INDUSGUARD_EVAL_GEMINI_BASE_URL="https://generativelanguage.googleapis.com/",
+        _env_file=None,
+    )
+    assert (
+        root_settings.validated_base_url
+        == "https://generativelanguage.googleapis.com/v1beta/openai/"
+    )
+
+    with pytest.raises(AgentConfigurationError, match="v1beta/openai"):
+        _ = GeminiEvalSettings(
+            GEMINI_API_KEY="secret",
+            INDUSGUARD_EVAL_GEMINI_BASE_URL="https://generativelanguage.googleapis.com/v1beta/models",
+            _env_file=None,
+        ).validated_base_url
+
 
 def test_gemini_chat_strips_unsupported_parameters_and_preserves_tool_signature() -> None:
     chat = GeminiCompatibleChatOpenAI(

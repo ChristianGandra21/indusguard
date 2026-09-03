@@ -29,7 +29,7 @@ class GeminiEvalSettings(BaseSettings):
 
     api_key: SecretStr | None = Field(default=None, validation_alias="GEMINI_API_KEY")
     model: str = Field(
-        default="gemini-3-flash-preview",
+        default="gemini-3.1-flash-lite",
         validation_alias="INDUSGUARD_EVAL_GEMINI_MODEL",
     )
     base_url: str = Field(
@@ -61,7 +61,7 @@ class GeminiEvalSettings(BaseSettings):
 
     @property
     def validated_base_url(self) -> str:
-        """Exige URL HTTPS sem credenciais e normaliza barra final."""
+        """Exige URL HTTPS sem credenciais e normaliza o endpoint OpenAI-compatible."""
 
         normalized = self.base_url.strip()
         parsed = urlsplit(normalized)
@@ -77,6 +77,15 @@ class GeminiEvalSettings(BaseSettings):
                 "INDUSGUARD_EVAL_GEMINI_BASE_URL precisa ser uma URL HTTPS "
                 "sem credenciais, query ou fragmento"
             )
+        if parsed.netloc == "generativelanguage.googleapis.com":
+            path = parsed.path.rstrip("/")
+            if path in {"", "/v1beta"}:
+                return "https://generativelanguage.googleapis.com/v1beta/openai/"
+            if path != "/v1beta/openai":
+                raise AgentConfigurationError(
+                    "INDUSGUARD_EVAL_GEMINI_BASE_URL precisa apontar para "
+                    "https://generativelanguage.googleapis.com/v1beta/openai/"
+                )
         return normalized.rstrip("/") + "/"
 
 
