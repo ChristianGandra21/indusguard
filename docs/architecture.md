@@ -381,8 +381,8 @@ O adapter OpenAI-compatible retém no histórico transitório somente a assinatu
 continuação associada ao ID de um tool call e a devolve exclusivamente ao mesmo provedor no turno
 seguinte. Esse campo atende ao contrato multi-turno do Gemini 3 sem entrar em traces, checkpoints,
 relatórios ou chain of thought. A categoria de transmissão e os parâmetros de amostragem efetivos
-de cada fallback ficam vinculados ao manifesto; para o endpoint Google/Gemini, `temperature` é
-omitida e `reasoning_effort=low` limita latência e consumo no piloto.
+de cada fallback ficam vinculados ao manifesto. O EloAgents usa OpenAI-compatible; o Gemini usa o
+SDK nativo, omite `temperature` e aplica `thinking_level=minimal` para limitar latência e consumo.
 
 Uma leitura que alcança o upstream e recebe HTTP 4xx não transitório por recurso ou argumento
 inválido permanece comportamento observável do agente: gera `TOOL_INPUT_REJECTED`, permite

@@ -27,9 +27,9 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, ConfigDict, Field
 
 from indusguard_evals.pilot_models import (
-    OpenAICompatibleAgentModelGateway,
     OpenAICompatibleProviderConfig,
     PilotFallbackProvider,
+    build_fallback_gateway,
 )
 
 PROVIDER_PROBE_SCHEMA_VERSION = "provider-compatibility-probe-v1"
@@ -110,7 +110,7 @@ def _probe_tool() -> AgentToolDefinition:
         description="Consulta o ativo solicitado e retorna sua condição observada.",
         input_schema={
             "type": "object",
-            "properties": {"asset_id": {"type": "string", "const": "asset-probe"}},
+            "properties": {"asset_id": {"type": "string"}},
             "required": ["asset_id"],
             "additionalProperties": False,
         },
@@ -351,7 +351,7 @@ async def build_provider_probe_report(
 
     if not configs:
         raise ValueError("provider probe exige ao menos um fallback configurado")
-    factory = gateway_factory or OpenAICompatibleAgentModelGateway
+    factory = gateway_factory or build_fallback_gateway
     results = [await probe_provider(config, factory(config)) for config in configs]
     report = ProviderProbeReport(
         created_at=datetime.now(UTC),

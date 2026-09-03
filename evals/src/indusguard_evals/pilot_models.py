@@ -9,6 +9,7 @@ from typing import Any, Literal, TypeVar, cast
 from urllib.parse import urlsplit
 
 import openai
+from google.genai import errors as google_errors
 from indusguard_api.agent import (
     AgentConfigurationError,
     AgentFinalAnswer,
@@ -28,6 +29,7 @@ from indusguard_api.schemas import ConnectorDomain
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langchain_core.outputs import ChatResult
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -53,7 +55,7 @@ class OpenAICompatibleProviderConfig(BaseModel):
     max_retries: int = Field(ge=0, le=2)
     max_tokens: int = Field(ge=128, le=8192)
     temperature: float | None = Field(default=None, ge=0, le=2)
-    reasoning_effort: Literal["low"] | None = None
+    reasoning_effort: Literal["minimal", "low"] | None = None
 
 
 class PilotFallbackSettings(BaseSettings):
@@ -82,12 +84,16 @@ class PilotFallbackSettings(BaseSettings):
         validation_alias="GEMINI_API_KEY",
     )
     gemini_base_url: str = Field(
-        default="https://generativelanguage.googleapis.com/v1beta/openai/",
+        default="https://generativelanguage.googleapis.com/",
         validation_alias="INDUSGUARD_EVAL_GEMINI_BASE_URL",
     )
     gemini_model: str = Field(
         default="",
         validation_alias="INDUSGUARD_EVAL_GEMINI_MODEL",
+    )
+    gemini_reasoning_effort: Literal["minimal", "low"] = Field(
+        default="minimal",
+        validation_alias="INDUSGUARD_EVAL_GEMINI_REASONING_EFFORT",
     )
     timeout_seconds: float = Field(
         default=30,
@@ -152,7 +158,9 @@ class PilotFallbackSettings(BaseSettings):
             max_retries=self.max_retries,
             max_tokens=self.max_tokens,
             temperature=None if provider is PilotFallbackProvider.GEMINI else 0,
-            reasoning_effort="low" if provider is PilotFallbackProvider.GEMINI else None,
+            reasoning_effort=(
+                self.gemini_reasoning_effort if provider is PilotFallbackProvider.GEMINI else None
+            ),
         )
 
 
@@ -337,6 +345,93 @@ class OpenAICompatibleAgentModelGateway(GroqAgentModelGateway):
         super()._raise_gateway_error(exc)
 
 
+class NativeGeminiChatGoogleGenerativeAI(ChatGoogleGenerativeAI):
+    """Adapta somente a opção não suportada pelo transporte nativo do Google."""
+
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any]],
+        tool_config: dict[str, Any] | None = None,
+        *,
+        tool_choice: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        # O runtime já serializa as chamadas; o SDK nativo rejeita esta opção OpenAI.
+        kwargs.pop("parallel_tool_calls", None)
+        return super().bind_tools(
+            tools,
+            tool_config=tool_config,
+            tool_choice=tool_choice,
+            **kwargs,
+        )
+
+
+class GeminiAgentModelGateway(GroqAgentModelGateway):
+    """Reutiliza prompts/contratos pelo SDK nativo do Gemini, exclusivo do piloto."""
+
+    def __init__(self, config: OpenAICompatibleProviderConfig) -> None:
+        if config.provider is not PilotFallbackProvider.GEMINI:
+            raise ValueError("GeminiAgentModelGateway exige configuração Gemini")
+        self._provider_config = config
+        settings = GroqAgentSettings(
+            GROQ_API_KEY=None,
+            INDUSGUARD_GROQ_MODEL=config.model,
+            INDUSGUARD_GROQ_TIMEOUT_SECONDS=min(config.timeout_seconds, 60),
+            INDUSGUARD_GROQ_MAX_RETRIES=config.max_retries,
+            INDUSGUARD_GROQ_MAX_TOKENS=config.max_tokens,
+            _env_file=None,
+        )
+        super().__init__(settings, chat_factory=self._create_gemini_chat)
+
+    def _create_gemini_chat(self, seed: int) -> BaseChatModel:
+        config = self._provider_config
+        return NativeGeminiChatGoogleGenerativeAI(
+            model=config.model,
+            api_key=config.api_key,
+            base_url=config.base_url.rstrip("/"),
+            api_version="v1beta",
+            temperature=config.temperature,
+            thinking_level=config.reasoning_effort,
+            request_timeout=config.timeout_seconds,
+            retries=config.max_retries,
+            max_tokens=config.max_tokens,
+            seed=seed,
+        )
+
+    @property
+    def model_name(self) -> str:
+        return f"gemini:{self._provider_config.model}"
+
+    def _raise_gateway_error(self, exc: Exception) -> None:
+        if isinstance(exc, google_errors.APIError):
+            status_code = exc.code
+            if status_code == 429:
+                raise ModelRateLimitedError("GEMINI está temporariamente limitado.") from exc
+            if status_code in {401, 403}:
+                reason_code = "MODEL_AUTHENTICATION_ERROR"
+            elif status_code == 404:
+                reason_code = "MODEL_NOT_FOUND"
+            elif status_code in {408, 504}:
+                reason_code = "MODEL_TIMEOUT"
+            elif 400 <= status_code < 500:
+                reason_code = "MODEL_PROVIDER_CLIENT_ERROR"
+            else:
+                reason_code = "MODEL_PROVIDER_SERVER_ERROR"
+            raise ModelUnavailableError(
+                "GEMINI rejeitou ou não conseguiu processar a solicitação.",
+                reason_code=reason_code,
+            ) from exc
+        super()._raise_gateway_error(exc)
+
+
+def build_fallback_gateway(config: OpenAICompatibleProviderConfig) -> AgentModelGateway:
+    """Seleciona explicitamente o transporte auditado de cada API externa."""
+
+    if config.provider is PilotFallbackProvider.GEMINI:
+        return GeminiAgentModelGateway(config)
+    return OpenAICompatibleAgentModelGateway(config)
+
+
 class WholeRunFallbackGateway:
     """Mantém um provider por run e só avança após reinício explícito da identidade."""
 
@@ -443,7 +538,7 @@ def build_pilot_model_gateway(
 ) -> AgentModelGateway:
     """Monta a cadeia somente quando o opt-in contém fallbacks configurados."""
 
-    fallbacks = [OpenAICompatibleAgentModelGateway(item) for item in settings.provider_configs()]
+    fallbacks = [build_fallback_gateway(item) for item in settings.provider_configs()]
     if not fallbacks:
         return primary
     return WholeRunFallbackGateway([primary, *fallbacks])

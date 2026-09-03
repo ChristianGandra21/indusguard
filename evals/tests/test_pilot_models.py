@@ -7,6 +7,7 @@ from typing import Any, cast
 import httpx
 import openai
 import pytest
+from google.genai import errors as google_errors
 from indusguard_api.agent import (
     AgentConfigurationError,
     AgentIntentDecision,
@@ -21,11 +22,14 @@ from pydantic import SecretStr
 
 from indusguard_evals.pilot_models import (
     ContinuationAwareChatOpenAI,
+    GeminiAgentModelGateway,
+    NativeGeminiChatGoogleGenerativeAI,
     OpenAICompatibleAgentModelGateway,
     OpenAICompatibleProviderConfig,
     PilotFallbackProvider,
     PilotFallbackSettings,
     WholeRunFallbackGateway,
+    build_fallback_gateway,
     build_pilot_model_gateway,
 )
 
@@ -74,7 +78,7 @@ def test_settings_require_complete_opt_in_without_exposing_keys() -> None:
         PilotFallbackProvider.GEMINI,
     ]
     assert providers[0].base_url == "https://elo.example/v1/"
-    assert [item.reasoning_effort for item in providers] == [None, "low"]
+    assert [item.reasoning_effort for item in providers] == [None, "minimal"]
     serialized = repr(providers)
     assert "elo-secret" not in serialized
     assert "gemini-secret" not in serialized
@@ -250,3 +254,69 @@ def test_openai_compatible_chat_round_trips_gemini_tool_call_signature() -> None
     assert "temperature" not in payload
     assert "seed" not in payload
     assert "opaque-signature" not in repr(provider_message.tool_calls)
+
+
+def test_gemini_fallback_uses_native_transport_with_bounded_generation() -> None:
+    config = OpenAICompatibleProviderConfig(
+        provider=PilotFallbackProvider.GEMINI,
+        base_url="https://generativelanguage.googleapis.com/",
+        model="gemini-test",
+        api_key=SecretStr("test-key"),
+        timeout_seconds=30,
+        max_retries=1,
+        max_tokens=2048,
+        temperature=None,
+        reasoning_effort="minimal",
+    )
+
+    gateway = build_fallback_gateway(config)
+
+    assert isinstance(gateway, GeminiAgentModelGateway)
+    chat = gateway._create_gemini_chat(42)
+    assert isinstance(chat, NativeGeminiChatGoogleGenerativeAI)
+    assert chat.base_url == "https://generativelanguage.googleapis.com"
+    assert chat.api_version == "v1beta"
+    assert chat.reasoning_effort == "minimal"
+    assert chat.timeout == 30
+    assert chat.max_retries == 1
+    assert chat.max_output_tokens == 2048
+    assert chat.seed == 42
+    bound = chat.bind_tools(
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_asset",
+                    "description": "Get asset",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        parallel_tool_calls=False,
+    )
+    assert "parallel_tool_calls" not in bound.kwargs
+
+
+def test_gemini_native_errors_are_redacted_and_classified() -> None:
+    config = OpenAICompatibleProviderConfig(
+        provider=PilotFallbackProvider.GEMINI,
+        base_url="https://generativelanguage.googleapis.com/",
+        model="gemini-test",
+        api_key=SecretStr("test-key"),
+        timeout_seconds=30,
+        max_retries=1,
+        max_tokens=2048,
+        temperature=None,
+        reasoning_effort="minimal",
+    )
+    gateway = GeminiAgentModelGateway(config)
+    error = google_errors.ServerError(
+        503,
+        {"error": {"code": 503, "message": "private provider body"}},
+    )
+
+    with pytest.raises(ModelUnavailableError) as captured:
+        gateway._raise_gateway_error(error)
+
+    assert captured.value.reason_code == "MODEL_PROVIDER_SERVER_ERROR"
+    assert "private provider body" not in str(captured.value)

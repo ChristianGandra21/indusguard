@@ -153,26 +153,27 @@ ELOAGENTS_API_KEY=
 INDUSGUARD_EVAL_ELOAGENTS_BASE_URL=
 INDUSGUARD_EVAL_ELOAGENTS_MODEL=
 GEMINI_API_KEY=
-INDUSGUARD_EVAL_GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
-INDUSGUARD_EVAL_GEMINI_MODEL=gemini-3.6-flash
-INDUSGUARD_EVAL_FALLBACK_TIMEOUT_SECONDS=60
-INDUSGUARD_EVAL_FALLBACK_MAX_RETRIES=0
+INDUSGUARD_EVAL_GEMINI_BASE_URL=https://generativelanguage.googleapis.com/
+INDUSGUARD_EVAL_GEMINI_MODEL=gemini-3.1-flash-lite
+INDUSGUARD_EVAL_GEMINI_REASONING_EFFORT=minimal
+INDUSGUARD_EVAL_FALLBACK_TIMEOUT_SECONDS=30
+INDUSGUARD_EVAL_FALLBACK_MAX_RETRIES=1
 INDUSGUARD_EVAL_FALLBACK_MAX_TOKENS=2048
 ```
 
 O EloAgents precisa informar um endpoint OpenAI-compatible e o ID técnico do modelo. Nomes da
 interface como “Gemini 3.1 Pro (Preview)” são apenas rótulos e não são inferidos pelo código. O
-endpoint Gemini acima é o documentado pelo
-[Google AI for Developers](https://ai.google.dev/gemini-api/docs/openai); consulte a lista da sua
+endpoint Gemini acima usa o SDK nativo documentado pelo
+[Google AI for Developers](https://ai.google.dev/gemini-api/docs/quickstart); consulte a lista da sua
 conta antes de trocar o modelo. Campo vazio, URL sem HTTPS, provedor desconhecido ou duplicado
 falha localmente como `MODEL_NOT_CONFIGURED`, antes de qualquer transmissão.
 O adapter preserva em memória somente a `thought_signature` opaca que o Gemini 3 devolve em um
 tool call e a retransmite no turno seguinte para o mesmo provedor. A assinatura não é interpretada,
-logada nem persistida. O manifesto registra `temperature=null` e `reasoning_effort=low`: o adapter
-omite a amostragem e limita o raciocínio do Gemini para reduzir latência e consumo no probe e no
-piloto.
+logada nem persistida. O manifesto registra `api_transport=google_genai_native`,
+`temperature=null` e `reasoning_effort=minimal`: o adapter omite a amostragem e limita o raciocínio
+do Gemini para reduzir latência e consumo no probe e no piloto.
 
-O manifesto `groq-pilot-preflight-v5` contém commit, digest dos inputs, Groq primário, ordem dos
+O manifesto `groq-pilot-preflight-v6` contém commit, digest dos inputs, Groq primário, ordem dos
 fallbacks, modelos, endpoints sem credenciais, intervalo mínimo entre chamadas, orçamento ativo e
 timeout pacing-aware, agenda contrabalanceada, tamanhos e hashes das mensagens e listas de
 categorias incluídas e excluídas. Ele não duplica texto de ticket, evidência, payload de tool ou

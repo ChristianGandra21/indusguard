@@ -25,7 +25,7 @@ from indusguard_evals.pacing import (
 from indusguard_evals.pilot_models import PilotFallbackSettings
 from indusguard_evals.schedule import build_schedule
 
-PREFLIGHT_SCHEMA_VERSION = "groq-pilot-preflight-v5"
+PREFLIGHT_SCHEMA_VERSION = "groq-pilot-preflight-v6"
 TRANSMITTED_CATEGORIES = [
     "ticket_message",
     "fixed_agent_prompts",
@@ -80,13 +80,14 @@ class PreflightFallbackModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     provider: Literal["eloagents", "gemini"]
+    api_transport: Literal["openai_compatible", "google_genai_native"]
     name: str
     base_url: str
     timeout_seconds: float
     max_retries: int
     max_tokens: int
     temperature: float | None = Field(default=None, ge=0, le=2)
-    reasoning_effort: Literal["low"] | None = None
+    reasoning_effort: Literal["minimal", "low"] | None = None
     api_key_configured: Literal[True]
 
 
@@ -145,7 +146,7 @@ class GroqPilotPreflightManifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    schema_version: Literal["groq-pilot-preflight-v5"] = PREFLIGHT_SCHEMA_VERSION
+    schema_version: Literal["groq-pilot-preflight-v6"] = PREFLIGHT_SCHEMA_VERSION
     created_at: datetime
     phase: Literal["pilot"] = "pilot"
     execution_kind: Literal["groq_pilot"] = "groq_pilot"
@@ -276,6 +277,11 @@ def build_groq_pilot_preflight(
         "fallback_models": [
             PreflightFallbackModel(
                 provider=item.provider.value,
+                api_transport=(
+                    "google_genai_native"
+                    if item.provider.value == "gemini"
+                    else "openai_compatible"
+                ),
                 name=item.model,
                 base_url=item.base_url,
                 timeout_seconds=item.timeout_seconds,
