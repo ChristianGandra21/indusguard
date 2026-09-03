@@ -170,6 +170,17 @@ class ShadowPolicyResult(BaseModel):
     reached_executor: bool
 
 
+class ModelProviderAttempt(BaseModel):
+    """Trilha redigida das runs reiniciadas durante fallback de provider."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str
+    agent_run_id: str
+    termination_reason: str
+    retry_after_seconds: int | None = Field(default=None, ge=0, le=86_400)
+
+
 class CaseScore(BaseModel):
     """Métricas determinísticas de uma única run, sem julgamento semântico."""
 
@@ -218,6 +229,7 @@ class EvaluationSample(BaseModel):
     scheduled: ScheduledRun
     result: AgentRunResult
     shadow_policy: list[ShadowPolicyResult] = Field(default_factory=list)
+    model_provider_attempts: list[ModelProviderAttempt] = Field(default_factory=list)
 
 
 class JudgeDimension(StrEnum):

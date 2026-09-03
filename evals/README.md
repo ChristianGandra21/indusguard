@@ -131,23 +131,49 @@ Nesta linha de desenvolvimento, `d305451a…` é a baseline concluída para o pr
 `b825a34e…` fica congelado como `partial`: não o retome em um novo commit. Qualquer alteração do
 checkout torna manifestos anteriores obsoletos e exige novo preflight e novo consentimento.
 
-## Piloto Groq autorizado e ressalva de privacidade
+## Piloto externo autorizado e ressalva de privacidade
 
-Somente o piloto de 12 runs pode usar a Groq. Primeiro gere o manifesto em um checkout limpo. Esse
-comando valida localmente chave configurada, catálogo, inputs, modelo e as 12 identidades; não abre
-banco, fixture HTTP, golden ou cliente Groq:
+Somente o piloto de 12 runs pode usar provedores externos. Groq é sempre primário; EloAgents e
+Gemini são fallbacks opt-in exclusivos desse processo. Primeiro gere o manifesto em um checkout
+limpo. Esse comando valida localmente chaves configuradas, endpoints HTTPS, catálogo, inputs,
+modelos e as 12 identidades; não abre banco, fixture HTTP, golden ou cliente externo:
 
 ```bash
 export GROQ_API_KEY="sua-chave-local"
+# Opcional: copie o bloco de fallback do .env.example e preencha os valores vazios.
 .venv/bin/indusguard-eval preflight --groq \
   --output .data/groq-pilot-preflight.json
 ```
 
-O manifesto `groq-pilot-preflight-v3` contém commit, digest dos inputs, configuração não secreta do
-modelo, intervalo mínimo entre chamadas, orçamento ativo e timeout pacing-aware, agenda
-contrabalanceada, tamanhos e hashes das mensagens e listas de categorias incluídas e excluídas.
-Ele não duplica texto de ticket, evidência, payload de tool ou chave. Depois de revisar o arquivo,
-autorize a transmissão vinculada àquele manifesto:
+Para habilitar a cadeia solicitada, configure no `.env`:
+
+```dotenv
+INDUSGUARD_EVAL_FALLBACK_PROVIDERS=eloagents,gemini
+ELOAGENTS_API_KEY=
+INDUSGUARD_EVAL_ELOAGENTS_BASE_URL=
+INDUSGUARD_EVAL_ELOAGENTS_MODEL=
+GEMINI_API_KEY=
+INDUSGUARD_EVAL_GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+INDUSGUARD_EVAL_GEMINI_MODEL=gemini-3.7-flash
+INDUSGUARD_EVAL_GEMINI_TEMPERATURE=1
+```
+
+O EloAgents precisa informar um endpoint OpenAI-compatible e o ID técnico do modelo. Nomes da
+interface como “Gemini 3.1 Pro (Preview)” são apenas rótulos e não são inferidos pelo código. O
+endpoint Gemini acima é o documentado pelo
+[Google AI for Developers](https://ai.google.dev/gemini-api/docs/openai); consulte a lista da sua
+conta antes de trocar o modelo. Campo vazio, URL sem HTTPS, provedor desconhecido ou duplicado
+falha localmente como `MODEL_NOT_CONFIGURED`, antes de qualquer transmissão.
+O adapter preserva em memória somente a `thought_signature` opaca que o Gemini 3 devolve em um
+tool call e a retransmite no turno seguinte para o mesmo provedor. A assinatura não é interpretada,
+logada nem persistida. A temperatura do Gemini também integra o manifesto; `1` é o default
+recomendado pelo provedor para a família Gemini 3.
+
+O manifesto `groq-pilot-preflight-v4` contém commit, digest dos inputs, Groq primário, ordem dos
+fallbacks, modelos, endpoints sem credenciais, intervalo mínimo entre chamadas, orçamento ativo e
+timeout pacing-aware, agenda contrabalanceada, tamanhos e hashes das mensagens e listas de
+categorias incluídas e excluídas. Ele não duplica texto de ticket, evidência, payload de tool ou
+qualquer chave. Depois de revisar o arquivo, autorize a transmissão vinculada àquele manifesto:
 
 ```bash
 .venv/bin/indusguard-eval pilot --groq \
@@ -155,8 +181,9 @@ autorize a transmissão vinculada àquele manifesto:
   --preflight-manifest .data/groq-pilot-preflight.json
 ```
 
-Esse comando envia à Groq mensagens dos tickets, prompts fixos, descrições de domínio/tools,
-resultados redigidos das tools e IDs sintéticos de evidência. Não envia golden, credenciais,
+Esse comando envia ao primeiro provedor disponível mensagens dos tickets, prompts fixos,
+descrições de domínio/tools, resultados redigidos das tools, IDs sintéticos de evidência e, quando
+o próprio provedor a produz, sua assinatura opaca de continuação. Não envia golden, credenciais,
 headers de autenticação, confirmação, digest, payload não redigido ou chain of thought. O CLI
 recalcula o manifesto antes de construir gateway ou banco e responde `PREFLIGHT_STALE` se commit,
 corpus, modelo, agenda ou contrato de transmissão mudou. `run --groq` continua respondendo
@@ -166,13 +193,21 @@ Durante o piloto, cada checkpoint imprime no `stderr` um evento JSON `evaluation
 `completed_runs/expected_runs`, identidade, variante e seed. Mensagem, resposta, evidência e
 segredos não entram nesse evento; o resumo final continua no `stdout`.
 
-O gateway do benchmark serializa chamadas e mantém 60 segundos entre seus inícios para não
+O adapter Groq do benchmark serializa suas chamadas e mantém 60 segundos entre seus inícios para não
 reproduzir o teto gratuito de tokens por minuto dentro da mesma identidade. Ajuste somente via
 `INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS`; o valor é validado entre 0 e 300 segundos e
-fica vinculado ao digest do manifesto. O pacing não é aplicado ao runtime da API nem ao fake.
-O piloto preserva 60 segundos de execução ativa e acrescenta uma janela para cada chamada máxima,
+fica vinculado ao digest do manifesto. O pacing não é aplicado aos fallbacks, ao runtime da API
+nem ao fake.
+Quando fallbacks estão habilitados, a estratégia `whole_run_restart` usa um único provedor durante
+cada run. Se ocorrer rate limit, indisponibilidade ou timeout, a tentativa é persistida de forma
+redigida, a identidade inteira é reiniciada no próximo provedor e esse provedor permanece ativo
+nas runs seguintes. Nenhuma run mistura modelos; o resumo lista todos os modelos observados e
+destaca como limitação quando a avaliação usou mais de um. `ModelOutputError` é pontuado e nunca
+aciona fallback.
+Cada tentativa preserva 60 segundos de execução ativa e acrescenta uma janela para cada chamada máxima,
 inclusive a primeira de uma nova run porque o gateway é compartilhado. Nos defaults atuais, o
-timeout total auditado é 540 segundos. Se uma run terminar por `TIMEOUT`, indisponibilidade do
+timeout auditado é 540 segundos por tentativa e 1.620 segundos por identidade com dois fallbacks.
+Se uma run terminar por `TIMEOUT`, indisponibilidade do
 modelo ou erro MCP/upstream, o runner emite `runtime_failed`, interrompe a agenda e grava o resumo
 como `invalid`. Saída inválida, tool inexistente e falha de finalização continuam sendo resultados
 de desempenho do agente; `MODEL_RATE_LIMITED` permanece `partial` e retomável.

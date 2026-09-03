@@ -10,6 +10,7 @@ from indusguard_evals.contracts import (
     EvaluationPhase,
     EvaluationSample,
     EvaluationVariant,
+    ModelProviderAttempt,
     ScheduledRun,
 )
 from indusguard_evals.report import BenchmarkInterruption, build_summary
@@ -135,6 +136,52 @@ def test_invalid_model_output_remains_an_agent_performance_result() -> None:
 
     assert summary.status == "completed"
     assert summary.runtime_failures == {}
+
+
+def test_summary_discloses_heterogeneous_provider_fallback() -> None:
+    scheduled = ScheduledRun(
+        case_id="case",
+        scenario_id="CEN-01",
+        variant=EvaluationVariant.PROMPT_ONLY,
+        seed=42,
+        ordinal=0,
+    )
+    result = agent_result()
+    result = result.model_copy(
+        update={"metrics": result.metrics.model_copy(update={"model": "gemini:gemini-3.7-flash"})}
+    )
+    sample = EvaluationSample(
+        scheduled=scheduled,
+        result=result,
+        model_provider_attempts=[
+            ModelProviderAttempt(
+                model="openai/gpt-oss-20b",
+                agent_run_id="00000000-0000-0000-0000-000000000010",
+                termination_reason="MODEL_RATE_LIMITED",
+                retry_after_seconds=60,
+            ),
+            ModelProviderAttempt(
+                model="gemini:gemini-3.7-flash",
+                agent_run_id=result.run_id,
+                termination_reason="COMPLETED",
+            ),
+        ],
+    )
+
+    summary = build_summary(
+        [_score(EvaluationVariant.PROMPT_ONLY)],
+        [sample],
+        expected_runs=1,
+        completed=True,
+        phase=EvaluationPhase.PILOT,
+    )
+
+    assert summary.models_observed == [
+        "gemini:gemini-3.7-flash",
+        "openai/gpt-oss-20b",
+    ]
+    assert summary.provider_fallbacks == 1
+    assert any("mais de um modelo" in item for item in summary.limitations)
 
 
 def test_rate_limit_window_requires_both_delay_and_utc_timestamp() -> None:

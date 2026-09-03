@@ -143,3 +143,17 @@ def test_zero_interval_keeps_calls_unpaced_but_serialized() -> None:
 
     assert sleeps == []
     assert max_active_calls == 1
+
+
+def test_pacing_propagates_whole_run_provider_advance() -> None:
+    clock = VirtualClock()
+    delegate = WindowLimitedGateway(clock)
+    delegate.advance_after_failure = lambda: True  # type: ignore[attr-defined]
+    gateway = PacedAgentModelGateway(
+        delegate,
+        minimum_interval_seconds=60,
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    assert gateway.advance_after_failure() is True

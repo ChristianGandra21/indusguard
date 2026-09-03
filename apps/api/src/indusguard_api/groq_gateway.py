@@ -259,6 +259,11 @@ class GroqAgentModelGateway(AgentModelGateway):
             model_kwargs={"seed": seed},
         )
 
+    def _raise_gateway_error(self, exc: Exception) -> None:
+        """Permite que adapters experimentais traduzam erros sem duplicar os prompts."""
+
+        _raise_gateway_error(exc)
+
     async def classify(
         self,
         *,
@@ -301,7 +306,7 @@ class GroqAgentModelGateway(AgentModelGateway):
             )
             response = await runnable.ainvoke(messages)
         except Exception as exc:
-            _raise_gateway_error(exc)
+            self._raise_gateway_error(exc)
         parsed = response.get("parsed") if isinstance(response, dict) else None
         raw = response.get("raw") if isinstance(response, dict) else None
         parsing_error = response.get("parsing_error") if isinstance(response, dict) else None
@@ -348,7 +353,7 @@ class GroqAgentModelGateway(AgentModelGateway):
             )
             response = await runnable.ainvoke([system, *messages])
         except Exception as exc:
-            _raise_gateway_error(exc)
+            self._raise_gateway_error(exc)
         if not isinstance(response, AIMessage):
             raise ModelOutputError("O planejador não retornou uma mensagem de modelo válida.")
         calls: list[AgentPlannedToolCall] = []
@@ -368,7 +373,10 @@ class GroqAgentModelGateway(AgentModelGateway):
             )
         except Exception as exc:
             raise ModelOutputError("O planejador retornou tool calls inválidas.") from exc
-        return GatewayResult(step, _usage(response))
+        # A mensagem permanece apenas no histórico transitório do runtime. Isso permite que
+        # adapters compatíveis preservem metadados opacos exigidos em turnos com tools sem
+        # armazená-los no resultado auditável.
+        return GatewayResult(step, _usage(response), provider_message=response)
 
     async def finalize(
         self,
@@ -418,7 +426,7 @@ class GroqAgentModelGateway(AgentModelGateway):
             )
             response = await runnable.ainvoke([system, *messages, final_instruction])
         except Exception as exc:
-            _raise_gateway_error(exc)
+            self._raise_gateway_error(exc)
         parsed = response.get("parsed") if isinstance(response, dict) else None
         raw = response.get("raw") if isinstance(response, dict) else None
         parsing_error = response.get("parsing_error") if isinstance(response, dict) else None

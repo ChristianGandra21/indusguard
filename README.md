@@ -31,7 +31,7 @@ prontos, incluindo um E2E inteiramente offline.
 | MCP interno com 20 tools OpenAPI | Pronto e testado em memória |
 | Escrita real | Bloqueada intencionalmente |
 | Agente LangGraph stateless | Pronto internamente e testado offline |
-| Adapter Groq Free (`openai/gpt-oss-20b`) | Pronto; smoke real é manual |
+| Modelos externos | Groq na API; EloAgents/Gemini disponíveis somente como fallback do piloto |
 | SQLAlchemy, Alembic, SQLite/PostgreSQL | Pronto internamente |
 | OpenTelemetry, JSONL e OTLP opcional | Pronto internamente |
 | Frontend Next.js estático | Pronto: sistema, conectores, avaliações e trace |
@@ -460,8 +460,9 @@ Para o smoke manual com a faixa gratuita da Groq:
 .venv/bin/pytest apps/api/tests/test_agent_runtime.py -m live -q
 ```
 
-Não existe fallback para Ollama ou modelo pago. Um rate limit termina com
-`MODEL_RATE_LIMITED`, sem nova tentativa em outro provedor.
+O runtime público não possui fallback para outro provedor. EloAgents e Gemini existem somente no
+pacote isolado de evals e nunca são importados pela wheel da API. Fora do piloto, um rate limit
+termina com `MODEL_RATE_LIMITED`, sem nova tentativa em outro provedor.
 
 ## Persistência e observabilidade implementadas
 
@@ -525,12 +526,16 @@ assistida é evidência auxiliar, nunca release gate. `improve` recusa smoke fak
 `partial`/`invalid`, falhas de runtime, checkpoints incompletos e digests divergentes. O plano
 classifica falhas do agente, efeitos da policy e falhas de runtime por cenário, variante e seed.
 
-Somente o piloto de 12 runs está autorizado a usar Groq. Antes de qualquer cliente externo, gere
-um manifesto auditável em um checkout limpo. Ele registra commit, corpus, modelo, agenda, hashes
-das mensagens e fronteiras de transmissão, mas não copia tickets, evidências ou segredos:
+Somente o piloto de 12 runs está autorizado a usar provedores externos. Groq permanece primário;
+EloAgents e Gemini podem ser habilitados, nessa ordem, exclusivamente como fallback. Antes de
+qualquer cliente externo, gere um manifesto auditável em um checkout limpo. Ele registra commit,
+corpus, ordem dos provedores, modelos, endpoints, agenda, hashes das mensagens e fronteiras de
+transmissão, mas não copia tickets, evidências ou segredos:
 
 ```bash
 export GROQ_API_KEY="sua-chave-local"
+# Opt-in opcional; configure também as chaves, modelos e o base URL HTTPS do EloAgents no .env.
+export INDUSGUARD_EVAL_FALLBACK_PROVIDERS="eloagents,gemini"
 .venv/bin/indusguard-eval preflight --groq \
   --output .data/groq-pilot-preflight.json
 .venv/bin/indusguard-eval pilot --groq \
@@ -549,13 +554,25 @@ esse instante é bloqueada antes da criação do gateway; sem o header, o CLI n�
 
 Para não recriar o limite de tokens dentro da mesma run, o piloto serializa as chamadas Groq e
 mantém por padrão 60 segundos entre seus inícios. O intervalo é configurável por
-`INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS`, aparece no manifesto `v3` e não afeta o
+`INDUSGUARD_EVAL_GROQ_MIN_REQUEST_INTERVAL_SECONDS`, aparece no manifesto `v4` e não afeta o
 playground, a API pública ou o smoke fake. Alterá-lo exige gerar outro manifesto e iniciar outra
 avaliação; não misture checkpoints produzidos com configurações diferentes.
 
-O runtime do piloto preserva os 60 segundos de orçamento ativo e acrescenta o pior caso de espera
+O fallback usa a estratégia `whole_run_restart`: mantém um único provedor durante cada run. Rate
+limit, indisponibilidade ou timeout preserva a tentativa redigida e reinicia a identidade inteira
+no próximo provedor; uma resposta parcial nunca é transferida entre modelos. O provedor escolhido
+permanece ativo nas runs seguintes até nova falha de infraestrutura. Saída estruturada inválida não
+aciona fallback, pois continua sendo desempenho observável do modelo escolhido.
+
+Para tool calling multi-turno no Gemini 3, o adapter preserva apenas a assinatura opaca de
+continuação devolvida pelo provedor e a retransmite no turno seguinte; ela não é interpretada,
+logada ou persistida. Essa categoria e a temperatura do Gemini (`1` por default) fazem parte do
+manifesto revisado antes do consentimento.
+
+Cada tentativa do piloto preserva os 60 segundos de orçamento ativo e acrescenta o pior caso de espera
 do pacing compartilhado. Com 8 chamadas máximas e intervalo de 60 segundos, o manifesto registra
-540 segundos de timeout total por run. Falhas de infraestrutura como `TIMEOUT`, indisponibilidade
+540 segundos por tentativa e, com dois fallbacks, até 1.620 segundos por identidade. Falhas de
+infraestrutura como `TIMEOUT`, indisponibilidade
 do modelo ou erro MCP/upstream interrompem a agenda com `runtime_failed` e tornam o resumo
 `invalid`; falhas atribuíveis à saída do agente continuam sendo medidas como desempenho.
 Um HTTP 4xx não transitório por ID ou argumento inexistente é atribuído ao agente como

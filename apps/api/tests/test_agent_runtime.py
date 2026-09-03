@@ -1214,6 +1214,8 @@ def test_groq_adapter_separates_strict_outputs_from_sequential_tool_calling() ->
     assert classified.usage.total_tokens == 7
     assert planned.value.tool_calls[0].alias == "synthetic__getWidget"
     assert planned.value.tool_calls[0].call_id == "call-1"
+    assert planned.provider_message is not None
+    assert planned.provider_message.content == "Vou consultar o widget."
     assert finalized.value.evidence_ids == ["ev-001"]
     assert finalized.usage.total_tokens == 7
     assert seeds == [17, 17, 17]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Protocol
 
 from indusguard_api.agent import (
     AgentModelGateway,
@@ -10,6 +11,7 @@ from indusguard_api.agent import (
     AgentRunRequest,
     AgentRuntime,
     AgentRuntimeConfig,
+    AgentTerminationReason,
     TrustedRunContext,
 )
 from indusguard_api.connectors import ConnectorCatalog
@@ -21,6 +23,7 @@ from indusguard_evals.contracts import (
     EvaluationCaseInput,
     EvaluationSample,
     EvaluationVariant,
+    ModelProviderAttempt,
     ScheduledRun,
     ShadowPolicyResult,
 )
@@ -120,6 +123,67 @@ class VariantRuntime:
             result=result,
             shadow_policy=list(self._probe.observations),
         )
+
+
+class ModelFallbackController(Protocol):
+    """Controle mínimo que troca provider somente entre duas runs completas."""
+
+    def advance_after_failure(self) -> bool:
+        """Retorna true quando a identidade deve ser reiniciada no próximo provider."""
+
+
+class FallbackVariantRuntime:
+    """Reinicia a mesma identidade após falha de infraestrutura do modelo."""
+
+    _RETRYABLE_TERMINATIONS = {
+        AgentTerminationReason.MODEL_RATE_LIMITED,
+        AgentTerminationReason.MODEL_UNAVAILABLE,
+        AgentTerminationReason.TIMEOUT,
+    }
+
+    def __init__(
+        self,
+        delegate: VariantRuntime,
+        controller: ModelFallbackController,
+    ) -> None:
+        self.variant = delegate.variant
+        self._delegate = delegate
+        self._controller = controller
+
+    async def run(
+        self,
+        scheduled: ScheduledRun,
+        case: EvaluationCaseInput,
+    ) -> EvaluationSample:
+        attempts: list[ModelProviderAttempt] = []
+        retry_after_seconds: list[int] = []
+        while True:
+            sample = await self._delegate.run(scheduled, case)
+            termination = sample.result.metrics.termination_reason
+            delay = sample.result.metrics.retry_after_seconds
+            attempts.append(
+                ModelProviderAttempt(
+                    model=sample.result.metrics.model,
+                    agent_run_id=sample.result.run_id,
+                    termination_reason=termination.value,
+                    retry_after_seconds=delay,
+                )
+            )
+            if delay is not None:
+                retry_after_seconds.append(delay)
+            if (
+                termination in self._RETRYABLE_TERMINATIONS
+                and self._controller.advance_after_failure()
+            ):
+                continue
+            if termination is AgentTerminationReason.MODEL_RATE_LIMITED and retry_after_seconds:
+                metrics = sample.result.metrics.model_copy(
+                    update={"retry_after_seconds": max(retry_after_seconds)}
+                )
+                sample = sample.model_copy(
+                    update={"result": sample.result.model_copy(update={"metrics": metrics})}
+                )
+            return sample.model_copy(update={"model_provider_attempts": attempts})
 
 
 def create_variant_runtime(

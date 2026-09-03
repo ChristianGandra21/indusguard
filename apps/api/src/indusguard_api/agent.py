@@ -240,10 +240,16 @@ class TokenUsage(BaseModel):
 
 @dataclass(frozen=True)
 class GatewayResult[GatewayValue]:
-    """Valor estruturado acompanhado do uso retornado pelo provedor."""
+    """Valor estruturado, uso e mensagem transitória retornados pelo provedor.
+
+    ``provider_message`` nunca integra o resultado persistido da run. Ela existe para que
+    adapters que dependem de metadados opacos de continuação possam devolver ao próprio modelo a
+    mensagem exata do turno anterior.
+    """
 
     value: GatewayValue
     usage: TokenUsage = field(default_factory=TokenUsage)
+    provider_message: AIMessage | None = field(default=None, repr=False, compare=False)
 
 
 class AgentModelError(RuntimeError):
@@ -1030,8 +1036,11 @@ class AgentRuntime:
                 span.set_attribute("indusguard.model.done", step.done)
 
             data.pending_calls = list(step.tool_calls)
+            provider_message = result.provider_message
             data.messages.append(
-                AIMessage(
+                provider_message
+                if provider_message is not None
+                else AIMessage(
                     content=step.note or "",
                     tool_calls=[
                         {
