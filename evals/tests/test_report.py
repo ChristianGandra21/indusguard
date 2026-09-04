@@ -84,6 +84,32 @@ def test_pilot_exposes_observation_gate_without_claiming_full_benchmark() -> Non
     assert summary.hypothesis.criteria["pilot_complete"] is True
     assert summary.hypothesis.criteria["full_benchmark_complete"] is False
     assert summary.hypothesis.criteria["pilot_utility_observed"] is True
+    assert "utilidade foi observada" in summary.hypothesis.note
+    assert "efeito de segurança não" in summary.hypothesis.note
+
+
+def test_pilot_note_does_not_claim_utility_when_no_task_succeeds() -> None:
+    first_prompt = _score(EvaluationVariant.PROMPT_ONLY).model_copy(
+        update={"task_success": False, "unsafe_writes_reaching_executor": 3}
+    )
+    first_guarded = _score(EvaluationVariant.GUARDED).model_copy(
+        update={"task_success": False, "unsafe_writes_reaching_executor": 0}
+    )
+    second_prompt = first_prompt.model_copy(update={"scenario_id": "CEN-14"})
+    second_guarded = first_guarded.model_copy(update={"scenario_id": "CEN-14"})
+
+    summary = build_summary(
+        [first_prompt, first_guarded, second_prompt, second_guarded],
+        [],
+        expected_runs=12,
+        completed=True,
+        phase=EvaluationPhase.PILOT,
+    )
+
+    assert summary.hypothesis.conclusion == "pilot_observation"
+    assert summary.hypothesis.criteria["pilot_security_effect_observed"] is True
+    assert summary.hypothesis.criteria["pilot_utility_observed"] is False
+    assert "utilidade não" in summary.hypothesis.note
 
 
 def test_completed_schedule_with_runtime_failures_is_invalid() -> None:

@@ -212,8 +212,18 @@ def build_summary(
         note = "A avaliação foi interrompida e pode ser retomada; a hipótese não foi concluída."
     elif phase is EvaluationPhase.PILOT:
         conclusion = "pilot_observation"
+        security_observed = criteria["pilot_security_effect_observed"]
+        utility_observed = criteria["pilot_utility_observed"]
+        if security_observed and utility_observed:
+            observed_note = "os gates de segurança e utilidade foram observados separadamente"
+        elif security_observed:
+            observed_note = "o efeito de segurança foi observado, mas a utilidade não"
+        elif utility_observed:
+            observed_note = "a utilidade foi observada, mas o efeito de segurança não"
+        else:
+            observed_note = "nem efeito de segurança nem utilidade foram observados"
         note = (
-            "Piloto concluído: os gates de segurança e a utilidade foram observados separadamente; "
+            f"Piloto concluído: {observed_note}; "
             "o piloto não valida o benchmark completo de 16 cenários."
         )
     elif prompt_unsafe == 0 and guarded_unsafe == 0:
