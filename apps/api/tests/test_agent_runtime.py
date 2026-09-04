@@ -1173,6 +1173,7 @@ def test_groq_adapter_separates_strict_outputs_from_sequential_tool_calling() ->
     assert all(isinstance(messages[0], SystemMessage) for messages in chat.invocations)
     assert "não confiáveis" in str(chat.invocations[1][0].content)
     assert "não confiáveis" in str(chat.invocations[2][0].content)
+    assert "pedido de especialista da Tractian" in str(chat.invocations[0][0].content)
 
 
 def test_groq_planner_receives_allowlisted_context_for_resource_ids() -> None:
@@ -1225,6 +1226,9 @@ def test_groq_planner_receives_allowlisted_context_for_resource_ids() -> None:
     assert "getDataQuality" in prompt
     assert "getRmsSeries" in prompt
     assert "identidade do ativo, baseline, qualidade dos dados" in prompt
+    assert "falha não notificada" in prompt
+    assert "sem chamar escalateCase" in prompt
+    assert "Operações de evidência relevantes ainda não consultadas" in prompt
     assert "requestSpecialistAnalysis" in prompt
     assert "escalateCase" in prompt
     assert "credential" not in prompt
@@ -1271,8 +1275,58 @@ def test_groq_planner_receives_completed_operation_history() -> None:
 
     prompt = str(chat.invocations[0][0].content)
     assert "Histórico de operações concluídas: tractian__getAsset, tractian__getBaseline" in prompt
+    assert "Operações de evidência relevantes ainda não consultadas" in prompt
+    assert "getAsset" not in prompt.split(
+        "Operações de evidência relevantes ainda não consultadas: ", 1
+    )[1].split(".\n", 1)[0]
     assert "não repetir no resumo" not in prompt
     assert "também não repetir" not in prompt
+
+
+def test_groq_planner_requires_action_evidence_before_specialist_request() -> None:
+    """Pedido de especialista é act, mas ainda precisa de contexto técnico mínimo."""
+
+    chat = RecordingChatModel(
+        structured=[],
+        planned=[AIMessage(content="", tool_calls=[])],
+    )
+    gateway = GroqAgentModelGateway(
+        GroqAgentSettings(_env_file=None),
+        chat_factory=lambda _: chat,
+    )
+    domain = _catalog().get_domain("tractian")
+    assert domain is not None
+
+    asyncio.run(
+        gateway.plan(
+            request=AgentRunRequest(
+                connector_id="tractian",
+                message="Quero que um especialista da Tractian veja.",
+            ),
+            domain=domain,
+            intent=AgentIntentDecision(intent_id="agir"),
+            planning_context=AgentPlanningContext(direct_request=True),
+            messages=[
+                HumanMessage(content="Quero que um especialista da Tractian veja."),
+                ToolMessage(
+                    content='{"payload":"não copiar"}',
+                    tool_call_id="call-1",
+                    name="tractian__listAnalyses",
+                ),
+            ],
+            tools=[],
+        )
+    )
+
+    prompt = str(chat.invocations[0][0].content)
+    pending = prompt.split(
+        "Operações de evidência relevantes ainda não consultadas: ", 1
+    )[1].split(".\n", 1)[0]
+    assert "getAnalysis" in pending
+    assert "getBaseline" in pending
+    assert "listAnalyses" not in pending
+    assert "requestSpecialistAnalysis é análise técnica especializada" in prompt
+    assert "Decisão canônica ao realizar esta intenção: act" in prompt
 
 
 def test_groq_finalizer_receives_domain_decision_semantics() -> None:
@@ -1323,6 +1377,8 @@ def test_groq_finalizer_receives_domain_decision_semantics() -> None:
 
     prompt = str(chat.invocations[0][0].content)
     assert "Decisão canônica ao realizar esta intenção: act" in prompt
+    assert "preserve a decisão canônica dessa intenção" in prompt
+    assert "não converta requestSpecialistAnalysis" in prompt
     assert "requestSpecialistAnalysis" in prompt
     assert "escalateCase" in prompt
     assert "encaminhamento humano" in prompt

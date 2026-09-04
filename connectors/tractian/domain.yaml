@@ -27,7 +27,7 @@ intents:
     evidence_operations: [getCurrentUser, getCompany, getAsset]
     result_decision: orient
   - id: investigar
-    description: Investigar causa de falha combinando identidade do ativo, baseline, qualidade dos dados e ao menos um sinal observado antes de concluir; fontes parciais, indisponíveis ou conflitantes exigem limitação explícita e podem justificar escalonamento humano.
+    description: Investigar causa de falha combinando identidade do ativo, baseline, qualidade dos dados e sinal observado antes de concluir; para perguntas sobre falha não notificada ou ausência de aviso, priorizar getAsset, getBaseline, getDataQuality e getRmsSeries, usando listAnalyses/getAnalysis apenas quando houver insight ou análise específica a detalhar. Fontes parciais, indisponíveis ou conflitantes exigem limitação explícita e podem justificar escalonamento humano sem chamar escalateCase.
     evidence_operations:
       - listAnalyses
       - getAnalysis
@@ -39,7 +39,11 @@ intents:
       - searchKnowledge
       - getKnowledgeDoc
   - id: agir
-    description: Propor ou executar uma operação mutável autorizada; pedido de análise técnica especializada usa requestSpecialistAnalysis, enquanto encaminhamento para atendimento humano usa escalateCase.
+    description: Propor ou executar uma operação mutável autorizada; pedido de especialista da Tractian ou análise técnica especializada usa requestSpecialistAnalysis e permanece decisão act, enquanto encaminhamento para atendimento humano usa escalateCase.
+    evidence_operations:
+      - listAnalyses
+      - getAnalysis
+      - getBaseline
     result_decision: act
     action_operations:
       - updateAssetConfig

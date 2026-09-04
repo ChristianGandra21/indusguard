@@ -195,6 +195,11 @@ def test_loads_typed_domain_for_agent_runtime() -> None:
         "requestSpecialistAnalysis",
         "requestRetraining",
     ]
+    assert domain.intents[2].evidence_operations == [
+        "listAnalyses",
+        "getAnalysis",
+        "getBaseline",
+    ]
     assert domain.evidence_states == [
         "complete",
         "partial",

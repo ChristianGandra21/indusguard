@@ -125,14 +125,21 @@ def _intent_guidance(
     selected = next((item for item in domain.intents if item.id == intent.intent_id), None)
     if selected is None:
         return "Intenção selecionada não possui orientação de domínio validada."
-    history = list(
-        dict.fromkeys(
-            message.name
-            for message in messages
-            if isinstance(message, ToolMessage) and message.name
-        )
-    )
+    history = [
+        message.name
+        for message in messages
+        if isinstance(message, ToolMessage) and message.name
+    ]
+    history = list(dict.fromkeys(history))
+    completed_operation_ids = {
+        name.split("__", 1)[1] if "__" in name else name.rsplit(".", 1)[-1] for name in history
+    }
     evidence_operations = ", ".join(selected.evidence_operations) or "nenhuma"
+    pending_evidence = [
+        operation
+        for operation in selected.evidence_operations
+        if operation not in completed_operation_ids
+    ]
     action_operations = ", ".join(selected.action_operations) or "nenhuma"
     decision = selected.result_decision or "não fixada; depende das evidências"
     terminology = "\n".join(
@@ -151,12 +158,19 @@ def _intent_guidance(
     return (
         f"Descrição da intenção selecionada: {selected.description}\n"
         f"Operações de evidência relevantes: {evidence_operations}.\n"
+        "Operações de evidência relevantes ainda não consultadas: "
+        f"{', '.join(pending_evidence) if pending_evidence else 'nenhuma'}.\n"
         f"Ações relevantes: {action_operations}.\n"
         f"Decisão canônica ao realizar esta intenção: {decision}.\n"
         "Histórico de operações concluídas: "
         f"{', '.join(history) if history else 'nenhuma'}.\n"
         f"Terminologia do domínio:\n{terminology or '- nenhuma'}\n"
-        f"Semântica de ações do domínio:\n{serialized_actions}"
+        f"Semântica de ações do domínio:\n{serialized_actions}\n"
+        "Regra de planejamento: consulte evidências relevantes ainda ausentes antes de concluir "
+        "ou propor uma ação; não repita operação já concluída para o mesmo recurso sem "
+        "necessidade. "
+        "Não chame ações fora da intenção selecionada. requestSpecialistAnalysis é análise técnica "
+        "especializada e mantém decisão act; escalateCase é apenas encaminhamento humano explícito."
     )
 
 
@@ -280,6 +294,10 @@ class GroqAgentModelGateway(AgentModelGateway):
                 content=(
                     "Classifique somente a intenção explícita da solicitação. "
                     "Não produza raciocínio interno. Use null quando houver ambiguidade.\n"
+                    "Fronteiras de intenção: pedido de especialista da Tractian, análise técnica "
+                    "especializada ou revisão técnica é agir; encaminhamento para atendimento "
+                    "humano do caso é escalar; pergunta de causa, diagnóstico ou ausência de "
+                    "aviso é investigar.\n"
                     f"Intenções permitidas:\n{intents}"
                 )
             ),
@@ -388,6 +406,9 @@ class GroqAgentModelGateway(AgentModelGateway):
                 "indisponíveis ou conflitantes e não invente valores ausentes. Não exponha "
                 "raciocínio "
                 "interno.\n"
+                "Quando a trajetória chamou uma ação relevante da intenção selecionada, preserve "
+                "a decisão canônica dessa intenção no campo decision; não converta "
+                "requestSpecialistAnalysis em escalateCase nem em decisão escalate.\n"
                 f"{_intent_guidance(domain, intent, messages)}\n"
                 f"{_trusted_context_guidance(planning_context, domain.context_fields)}"
             )
