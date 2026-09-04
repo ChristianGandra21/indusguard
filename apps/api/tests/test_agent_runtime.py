@@ -546,6 +546,142 @@ def test_unknown_model_tool_is_partial_result_without_mcp_or_network() -> None:
     assert upstream_requests == []
 
 
+def test_rejects_unobserved_analysis_id_before_calling_upstream() -> None:
+    """analysisId precisa vir de listAnalyses/getAnalysis antes de nova tool de análise."""
+
+    gateway = ScriptedAgentModelGateway(
+        classification=AgentIntentDecision(intent_id="agir"),
+        plans=[
+            AgentPlanStep(
+                tool_calls=[
+                    AgentPlannedToolCall(
+                        alias="tractian__getAnalysis",
+                        arguments={"path": {"analysisId": "an_asset_C710_001"}},
+                    )
+                ]
+            )
+        ],
+        final_answer=AgentFinalAnswer(
+            answer="Não há análise observada para consultar.",
+            decision=AgentDecision.ESCALATE,
+            uncertainties=["MODEL_TOOL_REFERENCE_NOT_OBSERVED"],
+        ),
+    )
+
+    result, upstream_requests = _run_agent(
+        gateway,
+        request=AgentRunRequest(
+            connector_id="tractian",
+            message="Quero que um especialista da Tractian veja.",
+        ),
+        trusted_context=TrustedRunContext(
+            principal=PolicyPrincipal(
+                id="usr_sofia",
+                permissions=["action_low"],
+                scopes={"company_id": "comp_petro_delta"},
+            ),
+            execution_context={
+                "user_id": "usr_sofia",
+                "company_id": "comp_petro_delta",
+                "asset_id": "asset_C710",
+            },
+            resource_scopes={"company_id": "comp_petro_delta"},
+            direct_request=True,
+        ),
+    )
+
+    assert result.status == "partial"
+    assert result.metrics.termination_reason == "MODEL_TOOL_ERROR"
+    assert result.tool_calls[0].mcp_tool_name == "tractian.getAnalysis"
+    assert result.tool_calls[0].outcome == "MODEL_TOOL_REFERENCE_NOT_OBSERVED"
+    assert "MODEL_TOOL_REFERENCE_NOT_OBSERVED" in result.uncertainties
+    assert result.evidence == []
+    assert upstream_requests == []
+
+
+def test_allows_analysis_id_observed_from_prior_evidence() -> None:
+    """ID retornado pela API conectada pode ser usado em chamadas de detalhe."""
+
+    gateway = ScriptedAgentModelGateway(
+        classification=AgentIntentDecision(intent_id="agir"),
+        plans=[
+            AgentPlanStep(
+                tool_calls=[
+                    AgentPlannedToolCall(
+                        alias="tractian__listAnalyses",
+                        arguments={"path": {"assetId": "asset_C710"}},
+                    )
+                ]
+            ),
+            AgentPlanStep(
+                tool_calls=[
+                    AgentPlannedToolCall(
+                        alias="tractian__getAnalysis",
+                        arguments={"path": {"analysisId": "an_9902"}},
+                    )
+                ]
+            ),
+            AgentPlanStep(done=True),
+        ],
+        final_answer=AgentFinalAnswer(
+            answer="A análise foi localizada [ev-001] [ev-002].",
+            decision=AgentDecision.ACT,
+            evidence_ids=["ev-001", "ev-002"],
+        ),
+    )
+
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/assets/asset_C710/analyses":
+            return httpx.Response(
+                200,
+                json={
+                    "mode": "complete",
+                    "notes": None,
+                    "data": {"analyses": [{"id": "an_9902", "status": "pending"}]},
+                },
+            )
+        if request.url.path == "/analyses/an_9902":
+            return httpx.Response(
+                200,
+                json={
+                    "mode": "complete",
+                    "notes": None,
+                    "data": {"id": "an_9902", "status": "pending"},
+                },
+            )
+        return httpx.Response(404, json={"message": "not found"})
+
+    result, upstream_requests = _run_agent(
+        gateway,
+        request=AgentRunRequest(
+            connector_id="tractian",
+            message="Quero que um especialista da Tractian veja.",
+        ),
+        trusted_context=TrustedRunContext(
+            principal=PolicyPrincipal(
+                id="usr_sofia",
+                permissions=["action_low"],
+                scopes={"company_id": "comp_petro_delta"},
+            ),
+            execution_context={
+                "user_id": "usr_sofia",
+                "company_id": "comp_petro_delta",
+                "asset_id": "asset_C710",
+            },
+            resource_scopes={"company_id": "comp_petro_delta"},
+            direct_request=True,
+        ),
+        upstream=upstream,
+    )
+
+    assert result.status == "completed"
+    assert result.metrics.termination_reason == "COMPLETED"
+    assert [request.url.path for request in upstream_requests] == [
+        "/assets/asset_C710/analyses",
+        "/analyses/an_9902",
+    ]
+
+
 def test_preserves_upstream_failure_as_partial_structured_run() -> None:
     """HTTP 5xx continua distinto de erro MCP e mantém as evidências já obtidas."""
 

@@ -52,6 +52,9 @@ from indusguard_api.schemas import (
 
 PROMPT_VERSION = "agent-v1"
 POLICY_VERSION = "policy-v1"
+_ANALYSIS_ID_OPERATIONS = frozenset(
+    {"getAnalysis", "reprocessAnalysis", "requestSpecialistAnalysis"}
+)
 
 
 class AgentDecision(StrEnum):
@@ -613,6 +616,81 @@ def _find_evidence_states(value: Any, allowed: frozenset[str]) -> set[str]:
             found.update(_find_evidence_states(child, allowed))
     elif isinstance(value, str) and value in allowed:
         found.add(value)
+    return found
+
+
+def _operation_id_from_alias(alias: str) -> str:
+    """Extrai o operationId do alias seguro publicado ao modelo."""
+
+    return alias.split("__", 1)[1] if "__" in alias else alias
+
+
+def _analysis_id_argument(arguments: Mapping[str, Any]) -> str | None:
+    """Lê analysisId do payload planejado sem aceitar inferências em texto livre."""
+
+    path = arguments.get("path")
+    if not isinstance(path, Mapping):
+        return None
+    value = path.get("analysisId") or path.get("analysis_id")
+    return value if isinstance(value, str) else None
+
+
+def _arguments_with_run_seed(
+    arguments: Mapping[str, Any],
+    tool: AgentToolDefinition,
+    seed: int,
+) -> dict[str, Any]:
+    """Propaga o seed da run para tools que declaram esse query param."""
+
+    if not _tool_accepts_query_seed(tool):
+        return dict(arguments)
+    query = arguments.get("query")
+    seeded_query = dict(query) if isinstance(query, Mapping) else {}
+    seeded_query.setdefault("seed", str(seed))
+    return {**arguments, "query": seeded_query}
+
+
+def _tool_accepts_query_seed(tool: AgentToolDefinition) -> bool:
+    """Inspeciona o schema MCP já resolvido em vez de depender de nomes de operação."""
+
+    properties = tool.input_schema.get("properties")
+    if not isinstance(properties, Mapping):
+        return False
+    query = properties.get("query")
+    if not isinstance(query, Mapping):
+        return False
+    query_properties = query.get("properties")
+    return isinstance(query_properties, Mapping) and "seed" in query_properties
+
+
+def _observed_analysis_ids(evidences: Sequence[AgentEvidence]) -> set[str]:
+    """Retorna IDs de análise presentes em evidências estruturadas já coletadas."""
+
+    observed: set[str] = set()
+    for evidence in evidences:
+        execution = evidence.result.get("execution")
+        if not isinstance(execution, Mapping):
+            continue
+        observed.update(_find_analysis_ids(execution.get("data")))
+    return observed
+
+
+def _find_analysis_ids(value: Any) -> set[str]:
+    """Percorre payloads de API e coleta somente IDs com prefixo canônico de análise."""
+
+    found: set[str] = set()
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            if (
+                key in {"id", "analysis_id", "analysisId"}
+                and isinstance(child, str)
+                and child.startswith("an_")
+            ):
+                found.add(child)
+            found.update(_find_analysis_ids(child))
+    elif isinstance(value, list):
+        for child in value:
+            found.update(_find_analysis_ids(child))
     return found
 
 
@@ -1230,8 +1308,52 @@ class AgentRuntime:
             _add_uncertainty(data, "MODEL_TOOL_NOT_FOUND")
             return
 
+        effective_arguments = _arguments_with_run_seed(
+            planned.arguments,
+            definition,
+            data.request.seed,
+        )
+        operation_id = _operation_id_from_alias(planned.alias)
+        if operation_id in _ANALYSIS_ID_OPERATIONS:
+            analysis_id = _analysis_id_argument(effective_arguments)
+            if not analysis_id or analysis_id not in _observed_analysis_ids(data.evidence):
+                latency = (perf_counter() - started) * 1000
+                data.tool_calls.append(
+                    AgentToolCall(
+                        tool_alias=planned.alias,
+                        mcp_tool_name=definition.mcp_name,
+                        arguments=_redact_arguments(
+                            effective_arguments,
+                            _DEFAULT_REDACT_FIELDS,
+                        ),
+                        status="error",
+                        outcome="MODEL_TOOL_REFERENCE_NOT_OBSERVED",
+                        latency_ms=latency,
+                    )
+                )
+                data.messages.append(
+                    ToolMessage(
+                        content=json.dumps(
+                            {
+                                "code": "MODEL_TOOL_REFERENCE_NOT_OBSERVED",
+                                "message": (
+                                    "analysisId deve vir de evidência observada antes "
+                                    "de consultar ou acionar uma análise."
+                                ),
+                            },
+                            ensure_ascii=False,
+                        ),
+                        tool_call_id=planned.call_id,
+                        name=planned.alias,
+                    )
+                )
+                data.termination = AgentTerminationReason.MODEL_TOOL_ERROR
+                data.stop_planning = True
+                _add_uncertainty(data, "MODEL_TOOL_REFERENCE_NOT_OBSERVED")
+                return
+
         try:
-            result = await client.call_tool(definition.mcp_name, planned.arguments)
+            result = await client.call_tool(definition.mcp_name, effective_arguments)
             raw_payload = result.structured_content
             payload = (
                 dict(raw_payload)
@@ -1308,7 +1430,7 @@ class AgentRuntime:
             else frozenset()
         )
         arguments = _redact_arguments(
-            planned.arguments,
+            effective_arguments,
             declared_fields | _DEFAULT_REDACT_FIELDS,
         )
         latency = (perf_counter() - started) * 1000
