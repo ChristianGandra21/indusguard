@@ -14,6 +14,15 @@ A API deve estar em `http://127.0.0.1:8000`. Para outro endereço, altere
 `NEXT_PUBLIC_INDUSGUARD_API_URL` antes do build: a exportação estática incorpora esse valor no
 JavaScript entregue ao navegador.
 
+Para o fluxo Tractian local completo, rode na raiz:
+
+```bash
+make dev-tractian-playground
+```
+
+Nesse modo, a fixture industrial fica em `8000`, a API IndusGuard em `8766` e o web em `3100`,
+com `NEXT_PUBLIC_INDUSGUARD_API_URL=http://127.0.0.1:8766`.
+
 Comandos principais:
 
 - `npm run dev`: desenvolvimento em `http://localhost:3000`;

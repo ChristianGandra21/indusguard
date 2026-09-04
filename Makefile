@@ -1,4 +1,4 @@
-.PHONY: setup dev-api dev-web test test-web lint lint-web format validate eval-validate eval-pilot-fake migrate migration-check contracts e2e-api
+.PHONY: setup dev-api dev-web dev-tractian-playground test test-web lint lint-web format validate eval-validate eval-pilot-fake migrate migration-check contracts e2e-api
 
 # Os comandos chamam executáveis dentro de .venv diretamente; ativar o ambiente é opcional.
 setup:
@@ -14,6 +14,23 @@ dev-api:
 
 dev-web:
 	npm --prefix apps/web run dev
+
+# Ambiente manual do proprietário para testar Tractian no playground.
+# Sobe fixture industrial em 8000, API em 8766 e web em 3100; Ctrl+C encerra os três.
+dev-tractian-playground:
+	mkdir -p .data
+	INDUSGUARD_DATABASE_URL=sqlite+aiosqlite:///./.data/tractian-playground.db .venv/bin/alembic -c apps/api/alembic.ini upgrade head
+	bash -c '\
+		set -euo pipefail; \
+		cleanup() { kill "$${fixture_pid:-}" "$${api_pid:-}" "$${web_pid:-}" 2>/dev/null || true; wait 2>/dev/null || true; }; \
+		trap "cleanup" INT TERM EXIT; \
+		.venv/bin/python -c "from pathlib import Path; import uvicorn; from indusguard_evals.tractian_fixture import store; store.configure_data_dir(Path(\"evals/corpus/official-v1/fixture/data\")); from indusguard_evals.tractian_fixture.main import app; uvicorn.run(app, host=\"127.0.0.1\", port=8000)" & \
+		fixture_pid=$$!; \
+		INDUSGUARD_DATABASE_URL=sqlite+aiosqlite:///./.data/tractian-playground.db TRACTIAN_API_URL=http://127.0.0.1:8000 .venv/bin/uvicorn tractian_playground_app:app --app-dir apps/api/scripts --host 127.0.0.1 --port 8766 & \
+		api_pid=$$!; \
+		NEXT_PUBLIC_INDUSGUARD_API_URL=http://127.0.0.1:8766 npm --prefix apps/web run dev -- --hostname 127.0.0.1 --port 3100 & \
+		web_pid=$$!; \
+		wait'
 
 test:
 	.venv/bin/pytest apps/api --cov=indusguard_api --cov-report=term-missing

@@ -202,6 +202,37 @@ Acesse `http://localhost:3000`. O frontend é exportável como arquivos estátic
 FastAPI diretamente do navegador. A origem precisa estar na allowlist
 `INDUSGUARD_CORS_ALLOWED_ORIGINS`.
 
+### 8. Iniciar o playground Tractian local
+
+Para testar o fluxo industrial completo em ambiente do proprietário:
+
+```bash
+make dev-tractian-playground
+```
+
+Esse alvo sobe três processos juntos:
+
+| Serviço | URL | Função |
+|---|---|---|
+| Fixture Tractian | `http://127.0.0.1:8000` | API industrial sintética com dados oficiais locais. |
+| API IndusGuard | `http://127.0.0.1:8766` | `POST /api/v1/runs`, trace e catálogo publicados para o playground. |
+| Web | `http://127.0.0.1:3100` | Interface `/playground` e `/trace` apontando para a API local. |
+
+O token padrão para uso manual é:
+
+```text
+local-tractian-owner-token-with-at-least-thirty-two-chars
+```
+
+Para usar outro token sem versionar segredo:
+
+```bash
+INDUSGUARD_OWNER_TOKEN="token-local-com-pelo-menos-32-caracteres" make dev-tractian-playground
+```
+
+O playground fica em modo `simulate`: mesmo pedidos diretos de ação atravessam policy e runtime,
+mas escritas reais continuam bloqueadas.
+
 ## Experimentar pelo terminal
 
 Com a API rodando em outro terminal:

@@ -88,6 +88,15 @@ Depois de `make setup`:
   --reload
 ```
 
+Para o playground Tractian local, use a raiz do monorepo:
+
+```bash
+make dev-tractian-playground
+```
+
+Esse alvo sobe a fixture Tractian em `8000`, a API IndusGuard em `8766`, aplica migração no banco
+`.data/tractian-playground.db` e deixa o conector `tractian` publicado somente em `simulate`.
+
 ## Rotas
 
 | Método e path | Significado |
