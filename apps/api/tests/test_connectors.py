@@ -179,15 +179,10 @@ def test_loads_typed_domain_for_agent_runtime() -> None:
         "escalar",
     ]
     assert domain.intents[1].evidence_operations == [
-        "listAnalyses",
-        "getAnalysis",
+        "getAsset",
         "getBaseline",
-        "getRmsSeries",
-        "getSpectrum",
         "getDataQuality",
-        "getModel",
-        "searchKnowledge",
-        "getKnowledgeDoc",
+        "getRmsSeries",
     ]
     assert domain.intents[2].action_operations == [
         "updateAssetConfig",

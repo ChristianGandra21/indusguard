@@ -27,19 +27,14 @@ intents:
     evidence_operations: [getCurrentUser, getCompany, getAsset]
     result_decision: orient
   - id: investigar
-    description: Investigar causa de falha combinando identidade do ativo, baseline, qualidade dos dados e sinal observado antes de concluir; para perguntas sobre falha não notificada ou ausência de aviso, priorizar getAsset, getBaseline, getDataQuality e getRmsSeries, usando listAnalyses/getAnalysis apenas quando houver insight ou análise específica a detalhar. Fontes parciais, indisponíveis ou conflitantes exigem limitação explícita e podem justificar escalonamento humano sem chamar escalateCase.
+    description: Investigar causa de falha combinando identidade do ativo, baseline, qualidade dos dados e sinal observado antes de concluir; para perguntas sobre falha não notificada ou ausência de aviso, usar getAsset, getBaseline, getDataQuality e getRmsSeries, sem consultar análises quando o pedido não mencionar insight específico. Fontes parciais, indisponíveis ou conflitantes exigem limitação explícita e podem justificar escalonamento humano sem chamar escalateCase.
     evidence_operations:
-      - listAnalyses
-      - getAnalysis
+      - getAsset
       - getBaseline
-      - getRmsSeries
-      - getSpectrum
       - getDataQuality
-      - getModel
-      - searchKnowledge
-      - getKnowledgeDoc
+      - getRmsSeries
   - id: agir
-    description: Propor ou executar uma operação mutável autorizada; pedido de especialista da Tractian ou análise técnica especializada usa requestSpecialistAnalysis e permanece decisão act, enquanto encaminhamento para atendimento humano usa escalateCase.
+    description: Propor ou executar uma operação mutável autorizada; pedido de especialista da Tractian ou análise técnica especializada usa requestSpecialistAnalysis e permanece decisão act, enquanto encaminhamento para atendimento humano usa escalateCase. Para requestSpecialistAnalysis, descubra a análise com listAnalyses, detalhe-a com getAnalysis e use somente o id de análise retornado, como an_9902; nunca use case_id, asset_id ou id de baseline como analysisId.
     evidence_operations:
       - listAnalyses
       - getAnalysis

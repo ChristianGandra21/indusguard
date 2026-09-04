@@ -1225,6 +1225,15 @@ def test_groq_planner_receives_allowlisted_context_for_resource_ids() -> None:
     assert "getBaseline" in prompt
     assert "getDataQuality" in prompt
     assert "getRmsSeries" in prompt
+    pending = prompt.split("Operações de evidência relevantes ainda não consultadas: ", 1)[1].split(
+        ".\n", 1
+    )[0]
+    assert "getAsset" in pending
+    assert "getBaseline" in pending
+    assert "getDataQuality" in pending
+    assert "getRmsSeries" in pending
+    assert "listAnalyses" not in pending
+    assert "getAnalysis" not in pending
     assert "identidade do ativo, baseline, qualidade dos dados" in prompt
     assert "falha não notificada" in prompt
     assert "sem chamar escalateCase" in prompt
@@ -1276,9 +1285,12 @@ def test_groq_planner_receives_completed_operation_history() -> None:
     prompt = str(chat.invocations[0][0].content)
     assert "Histórico de operações concluídas: tractian__getAsset, tractian__getBaseline" in prompt
     assert "Operações de evidência relevantes ainda não consultadas" in prompt
-    assert "getAsset" not in prompt.split(
-        "Operações de evidência relevantes ainda não consultadas: ", 1
-    )[1].split(".\n", 1)[0]
+    assert (
+        "getAsset"
+        not in prompt.split("Operações de evidência relevantes ainda não consultadas: ", 1)[
+            1
+        ].split(".\n", 1)[0]
+    )
     assert "não repetir no resumo" not in prompt
     assert "também não repetir" not in prompt
 
@@ -1319,13 +1331,16 @@ def test_groq_planner_requires_action_evidence_before_specialist_request() -> No
     )
 
     prompt = str(chat.invocations[0][0].content)
-    pending = prompt.split(
-        "Operações de evidência relevantes ainda não consultadas: ", 1
-    )[1].split(".\n", 1)[0]
+    pending = prompt.split("Operações de evidência relevantes ainda não consultadas: ", 1)[1].split(
+        ".\n", 1
+    )[0]
     assert "getAnalysis" in pending
     assert "getBaseline" in pending
     assert "listAnalyses" not in pending
     assert "requestSpecialistAnalysis é análise técnica especializada" in prompt
+    assert "use somente IDs de análise observados" in prompt
+    assert "nunca use case_id, asset_id, point_id" in prompt
+    assert "id de baseline" in prompt
     assert "Decisão canônica ao realizar esta intenção: act" in prompt
 
 

@@ -126,9 +126,7 @@ def _intent_guidance(
     if selected is None:
         return "Intenção selecionada não possui orientação de domínio validada."
     history = [
-        message.name
-        for message in messages
-        if isinstance(message, ToolMessage) and message.name
+        message.name for message in messages if isinstance(message, ToolMessage) and message.name
     ]
     history = list(dict.fromkeys(history))
     completed_operation_ids = {
@@ -170,7 +168,11 @@ def _intent_guidance(
         "ou propor uma ação; não repita operação já concluída para o mesmo recurso sem "
         "necessidade. "
         "Não chame ações fora da intenção selecionada. requestSpecialistAnalysis é análise técnica "
-        "especializada e mantém decisão act; escalateCase é apenas encaminhamento humano explícito."
+        "especializada e mantém decisão act; escalateCase é apenas encaminhamento humano "
+        "explícito. "
+        "Para ações cujo path exige analysisId, use somente IDs de análise observados em "
+        "listAnalyses/getAnalysis, por exemplo an_9902; nunca use case_id, asset_id, point_id "
+        "ou id de baseline como analysisId."
     )
 
 
