@@ -478,10 +478,17 @@ class PublicRunHost:
         # Mesmo se o cliente enviar ``user_id``, a autoridade continua no servidor.
         if "user_id" in domain.context_fields:
             execution_context["user_id"] = self._owner_id
+        resource_scopes = {
+            key: value for key, value in execution_context.items() if key != "user_id"
+        }
         return TrustedRunContext(
-            principal=PolicyPrincipal(id=self._owner_id, permissions=["action_high"]),
+            principal=PolicyPrincipal(
+                id=self._owner_id,
+                permissions=["read", "action_low", "action_high", "escalate"],
+                scopes=resource_scopes,
+            ),
             execution_context=execution_context,
-            resource_scopes={},
+            resource_scopes=resource_scopes,
             direct_request=request.direct_request,
             confirmation=None,
         )

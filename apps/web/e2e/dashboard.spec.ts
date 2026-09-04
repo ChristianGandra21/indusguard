@@ -26,7 +26,7 @@ test("navega pelo dashboard seguro até um trace público", async ({ page }) => 
     "e2e-owner-token-with-at-least-thirty-two-chars",
   );
   await page.getByRole("button", { name: "Salvar acesso nesta sessão" }).click();
-  await page.getByLabel("ID do widget").fill("widget-1");
+  await page.getByLabel("widget_id").selectOption("widget-1");
   await page.getByLabel("Solicitação").fill("Qual é o estado do widget widget-1?");
   await page.getByRole("button", { name: "Executar agente protegido" }).click();
 
@@ -34,4 +34,10 @@ test("navega pelo dashboard seguro até um trace público", async ({ page }) => 
   await expect(page.getByText("synthetic__getWidget")).toBeVisible();
   await expect(page.getByText("READ_APPROVED", { exact: true })).toBeVisible();
   await expect(page.getByText("e2e-owner-token-with-at-least-thirty-two-chars")).not.toBeVisible();
+
+  await page.getByRole("link", { name: "Ver trace" }).click();
+  await expect(page.getByRole("heading", { name: "Veja o caminho. Não o conteúdo." })).toBeVisible();
+  await expect(page.getByLabel("Runs recentes")).toBeEnabled();
+  await expect(page.getByLabel("ID da run")).not.toHaveValue("");
+  await expect(page.getByText("synthetic__getWidget")).toBeVisible();
 });

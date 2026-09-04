@@ -8,6 +8,7 @@ import {
   playgroundConfigSchema,
   publicRunResultSchema,
   readySchema,
+  recentRunSummarySchema,
   runTraceSchema,
   versionSchema,
 } from "./schemas";
@@ -105,6 +106,7 @@ export const api = {
   operations: (connectorId: string) =>
     get(`/api/v1/connectors/${encodeURIComponent(connectorId)}/operations`, z.array(operationSchema)),
   latestEvaluation: () => get("/api/v1/evaluations/latest", evaluationDashboardSchema),
+  recentRuns: () => get("/api/v1/runs/recent", z.array(recentRunSummarySchema)),
   trace: (runId: string) =>
     get(`/api/v1/runs/${encodeURIComponent(runId)}/trace`, runTraceSchema),
   playgroundConfig: () => get("/api/v1/playground/config", playgroundConfigSchema),

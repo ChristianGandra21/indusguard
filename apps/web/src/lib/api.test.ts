@@ -33,6 +33,53 @@ const trace = {
 afterEach(() => vi.restoreAllMocks());
 
 describe("cliente público", () => {
+  it("aceita a lista segura de runs recentes", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            run_id: trace.run_id,
+            connector_id: "synthetic",
+            status: "completed",
+            intent_id: "inspect",
+            decision: "orient",
+            termination_reason: "COMPLETED",
+            model: "fake",
+            started_at: "2026-08-24T12:00:00Z",
+            completed_at: "2026-08-24T12:00:01Z",
+          },
+        ]),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    await expect(api.recentRuns()).resolves.toMatchObject([{ run_id: trace.run_id }]);
+  });
+
+  it("rejeita conteúdo livre na lista de runs recentes", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          {
+            run_id: trace.run_id,
+            connector_id: "synthetic",
+            status: "completed",
+            intent_id: "inspect",
+            decision: "orient",
+            termination_reason: "COMPLETED",
+            model: "fake",
+            started_at: "2026-08-24T12:00:00Z",
+            completed_at: "2026-08-24T12:00:01Z",
+            request_message: "não pode chegar ao browser",
+          },
+        ]),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    await expect(api.recentRuns()).rejects.toMatchObject({ code: "CONTRACT_INVALID" });
+  });
+
   it("aceita uma projeção de trace válida", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify(trace), { status: 200, headers: { "content-type": "application/json" } }),

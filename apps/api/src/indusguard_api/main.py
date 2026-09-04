@@ -5,13 +5,14 @@ As rotas permitem verificar catálogo e dashboard, além de iniciar uma run stat
 autenticação, quota, contexto confiável e observabilidade antes de alcançar o runtime.
 """
 
+import os
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from time import perf_counter
 
 import httpx
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +25,7 @@ from indusguard_api.connectors import ConnectorCatalog
 from indusguard_api.dashboard import (
     DashboardReader,
     PublicEvaluationDashboard,
+    PublicRecentRunSummary,
     PublicRunTrace,
     SqlAlchemyDashboardReader,
 )
@@ -48,6 +50,27 @@ from indusguard_api.schemas import (
 )
 from indusguard_api.settings import Settings
 from indusguard_api.synthetic_upstream import create_synthetic_upstream
+
+
+class _PublicRunTransport(httpx.AsyncBaseTransport):
+    """Roteia synthetic em memória e deixa outros destinos seguirem para a rede configurada."""
+
+    def __init__(self) -> None:
+        self._synthetic = httpx.ASGITransport(app=create_synthetic_upstream())
+        self._network = httpx.AsyncHTTPTransport()
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        if (
+            request.url.scheme == "http"
+            and request.url.host in {"localhost", "127.0.0.1"}
+            and request.url.port == 9000
+        ):
+            return await self._synthetic.handle_async_request(request)
+        return await self._network.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        await self._synthetic.aclose()
+        await self._network.aclose()
 
 
 def create_app(
@@ -75,11 +98,11 @@ def create_app(
     owns_telemetry = telemetry is None
     runtime_host: InternalAgentHost | None = None
     quota_store: SqlAlchemyPublicRunQuota | None = None
-    synthetic_client: httpx.AsyncClient | None = None
+    public_run_client: httpx.AsyncClient | None = None
 
     @asynccontextmanager
     async def lifespan(application: FastAPI):
-        nonlocal runtime_host, quota_store, synthetic_client
+        nonlocal runtime_host, quota_store, public_run_client
         # Carregar no startup implementa o comportamento fail-fast: um conector inválido impede
         # que o serviço anuncie readiness com um catálogo incompleto.
         catalog.load()
@@ -103,16 +126,17 @@ def create_app(
                         # modelo precisa ser configurado, sem registrar exceção ou ambiente.
                         model_gateway = None
                 if model_gateway is not None:
-                    synthetic_client = httpx.AsyncClient(
-                        transport=httpx.ASGITransport(app=create_synthetic_upstream()),
-                        base_url="http://localhost:9000",
-                    )
+                    runtime_environment = {"SYNTHETIC_API_URL": "http://localhost:9000"}
+                    tractian_api_url = os.environ.get("TRACTIAN_API_URL")
+                    if tractian_api_url:
+                        runtime_environment["TRACTIAN_API_URL"] = tractian_api_url
+                    public_run_client = httpx.AsyncClient(transport=_PublicRunTransport())
                     runtime_host = create_internal_agent_host(
                         catalog=catalog,
                         model_gateway=model_gateway,
                         settings=current_settings,
-                        http_client=synthetic_client,
-                        environment={"SYNTHETIC_API_URL": "http://localhost:9000"},
+                        http_client=public_run_client,
+                        environment=runtime_environment,
                         telemetry=current_telemetry,
                     )
                     runtime = runtime_host.runtime
@@ -126,6 +150,7 @@ def create_app(
                 execution_mode=current_settings.execution_mode,
                 rate_limit_per_hour=current_settings.public_run_rate_limit_per_hour,
                 concurrency_limit=current_settings.public_run_concurrency,
+                owner_id=current_settings.public_run_owner_id,
                 telemetry=current_telemetry,
             )
         try:
@@ -133,8 +158,8 @@ def create_app(
         finally:
             if runtime_host is not None:
                 await runtime_host.close()
-            if synthetic_client is not None:
-                await synthetic_client.aclose()
+            if public_run_client is not None:
+                await public_run_client.aclose()
             if quota_store is not None:
                 await quota_store.close()
             # Um reader injetado pertence ao chamador; somente a instância criada pela aplicação
@@ -327,6 +352,28 @@ def create_app(
                 },
             )
         return evaluation
+
+    @application.get(
+        f"{current_settings.api_prefix}/runs/recent",
+        response_model=list[PublicRecentRunSummary],
+        tags=["dashboard"],
+    )
+    async def recent_runs(
+        request: Request,
+        limit: int = Query(default=20, ge=1, le=100),
+    ) -> list[PublicRecentRunSummary]:
+        """Lista runs recentes por metadados seguros para navegação até o trace público."""
+
+        try:
+            return await request.app.state.dashboard_reader.recent_runs(limit=limit)
+        except SQLAlchemyError as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={
+                    "code": "DATASTORE_UNAVAILABLE",
+                    "message": "Os dados do dashboard estão temporariamente indisponíveis.",
+                },
+            ) from error
 
     @application.get(
         f"{current_settings.api_prefix}/runs/{{run_id}}/trace",

@@ -34,13 +34,14 @@ observabilidade internas.
 26. autentica o proprietário com Bearer comparado em tempo constante;
 27. limita o playground a três runs por hora e duas runs simultâneas;
 28. sobrescreve identidade e injeta permissões fora do request controlado pelo cliente;
-29. executa somente o conector `synthetic` por um upstream ASGI interno;
+29. publica conectores permitidos por configuração, com `synthetic` em ASGI interno;
 30. publica respostas redigidas sem token, confirmação ou digest da ação.
 
 O MCP continua interno e não abre porta. A única rota do agente é o `POST /runs` protegido do
-proprietário; ela aceita apenas `synthetic` e continua simulando toda escrita. Os testes usam
-modelo fake e cliente MCP real em memória. A composição real só cria o adapter Groq quando
-`GROQ_API_KEY` está configurada.
+proprietário; ela publica `synthetic` por default e aceita `tractian` somente quando
+`INDUSGUARD_PUBLIC_CONNECTOR_IDS` o declara. O processo continua em `simulate`, então toda escrita
+é simulada. Os testes usam modelo fake e cliente MCP real em memória. A composição real só cria o
+adapter Groq quando `GROQ_API_KEY` está configurada.
 
 ## Arquivos
 
@@ -97,15 +98,17 @@ Depois de `make setup`:
 | `GET /api/v1/connectors` | Resumo das integrações. |
 | `GET /api/v1/connectors/{id}/operations` | Operações e políticas consolidadas. |
 | `GET /api/v1/evaluations/latest` | Resumo e runs da avaliação mais recente. |
+| `GET /api/v1/runs/recent` | Runs recentes por metadados seguros para seleção de trace. |
 | `GET /api/v1/runs/{run_id}/trace` | Timeline operacional sem conteúdo livre. |
 | `GET /api/v1/playground/config` | Limites e campos públicos, sem segredos. |
-| `POST /api/v1/runs` | Run stateless autenticada, apenas no conector synthetic. |
+| `POST /api/v1/runs` | Run stateless autenticada, limitada aos conectores públicos configurados. |
 
 Swagger UI: `http://127.0.0.1:8000/docs`.
 
 As rotas de dashboard retornam `404` quando não há registro e `503/DATASTORE_UNAVAILABLE` quando
-o banco falha. O trace omite mensagem, resposta, argumentos, resultados, incertezas e digest. A
-consulta usa `load_only`, portanto esses campos não são carregados para depois serem redigidos.
+o banco falha. O trace e a lista de runs recentes omitem mensagem, resposta, argumentos, resultados,
+incertezas e digest. A consulta usa `load_only`, portanto esses campos não são carregados para
+depois serem redigidos.
 CORS aceita somente origens configuradas em `INDUSGUARD_CORS_ALLOWED_ORIGINS`; isso habilita o
 navegador, mas não é tratado como autenticação.
 
@@ -191,7 +194,8 @@ digest são propriedades proibidas. Respostas usam `Cache-Control: no-store`.
 A quota é persistida na tabela `public_run_quota`; reiniciar o processo não zera a janela de uma
 hora. O limite de duas runs simultâneas é local ao processo e uma recusa por concorrência não
 consome quota. O upstream `synthetic` executa GET em memória com `ASGITransport`; PATCH é
-interrompido pela simulação antes desse transporte.
+interrompido pela simulação antes desse transporte. Para publicar `tractian`, configure também
+`TRACTIAN_API_URL` com uma URL-base presente na allowlist do profile do conector.
 
 ## Servidor MCP interno
 

@@ -38,14 +38,16 @@ prontos, incluindo um E2E inteiramente offline.
 | Benchmark `prompt_only × guarded` | Smoke offline e piloto Groq consentido; passe completo bloqueado |
 | Diagnóstico e revisão de evals | Prontos; plano somente leitura e bundle redigido |
 | Dashboard de avaliações | Pronto; diferencia smoke, piloto, falha de runtime e benchmark válido |
-| `POST /runs` do proprietário | Pronto; Bearer, quota, concorrência e synthetic apenas |
+| `POST /runs` do proprietário | Pronto; Bearer, quota, concorrência e conectores públicos configuráveis |
 | Página `/playground` | Pronta; token somente em `sessionStorage` |
 | Escritas pelo playground | Sempre simuladas, com zero rede |
 | Docker/Render/Neon/Grafana | Artefatos prontos; nenhum recurso provisionado |
 
 Importante: o MCP continua interno, sem porta ou subprocesso. O agente possui uma única rota
-protegida, exclusiva do proprietário e do conector `synthetic`. A suíte padrão usa modelo fake e
-não acessa Groq nem APIs externas. Mesmo uma confirmação válida recebe `REAL_WRITE_DISABLED`.
+protegida e exclusiva do proprietário. O conector `synthetic` é o default offline; `tractian` só é
+publicado quando `INDUSGUARD_PUBLIC_CONNECTOR_IDS` o declara e `TRACTIAN_API_URL` aponta para um
+destino permitido. A suíte padrão usa modelo fake e não acessa Groq nem APIs externas. Mesmo uma
+confirmação válida recebe `REAL_WRITE_DISABLED`.
 
 ## Por que começar pelo catálogo?
 
@@ -251,6 +253,7 @@ integração parcialmente carregada como saudável.
 | `GET /api/v1/connectors` | Lista integrações sem segredos. |
 | `GET /api/v1/connectors/{id}/operations` | Lista operações e políticas consolidadas. |
 | `GET /api/v1/evaluations/latest` | Último resumo e runs, sem golden ou corpus. |
+| `GET /api/v1/runs/recent` | Runs recentes por metadados seguros para navegar até o trace. |
 | `GET /api/v1/runs/{run_id}/trace` | Timeline sem mensagens, argumentos ou payloads. |
 | `GET /api/v1/playground/config` | Conectores e limites públicos, nunca o token. |
 | `POST /api/v1/runs` | Run stateless do proprietário no conector `synthetic`. |
@@ -585,8 +588,8 @@ tipos, roda Vitest, build estático e Playwright contra FastAPI + SQLite sintét
 `out/` não contém corpus, Parquet ou golden set.
 
 No playground, o token nunca participa de query keys nem do build. O Playwright usa um fake apenas
-no lugar da Groq e atravessa a cadeia real FastAPI → `PublicRunHost` → LangGraph → MCP → policy →
-ASGI synthetic.
+no lugar da Groq e atravessa a cadeia real FastAPI → `PublicRunHost` → LangGraph → MCP → policy.
+O `synthetic` usa ASGI interno; `tractian` depende de publicação explícita e upstream configurado.
 
 ## Roteiro de estudo recomendado
 

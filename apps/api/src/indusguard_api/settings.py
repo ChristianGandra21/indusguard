@@ -6,11 +6,14 @@ devolvida nos endpoints de catálogo.
 """
 
 from pathlib import Path
+from typing import Final
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from indusguard_api.schemas import ExecutionMode
+
+PUBLIC_RUN_CONNECTOR_ALLOWLIST: Final = frozenset({"synthetic", "tractian"})
 
 
 def default_connectors_dir() -> Path:
@@ -64,6 +67,7 @@ class Settings(BaseSettings):
     # nenhum deles é parâmetro do frontend nem parte da OpenAPI.
     public_runs_enabled: bool = False
     public_connector_ids: list[str] = Field(default_factory=lambda: ["synthetic"])
+    public_run_owner_id: str = Field(default="portfolio-owner", pattern=r"^[A-Za-z0-9_-]{1,128}$")
     owner_token: SecretStr | None = None
     public_run_rate_limit_per_hour: int = Field(default=3, ge=1, le=100)
     public_run_concurrency: int = Field(default=2, ge=1, le=10)
@@ -84,8 +88,10 @@ class Settings(BaseSettings):
             raise ValueError("public_connector_ids não aceita duplicatas")
         if not self.public_connector_ids:
             raise ValueError("public_connector_ids precisa declarar ao menos um conector")
-        if set(self.public_connector_ids) - {"synthetic"}:
-            raise ValueError("neste incremento somente o conector synthetic pode ser público")
+        unsupported = set(self.public_connector_ids) - PUBLIC_RUN_CONNECTOR_ALLOWLIST
+        if unsupported:
+            supported = ", ".join(sorted(PUBLIC_RUN_CONNECTOR_ALLOWLIST))
+            raise ValueError(f"public_connector_ids contém conectores não suportados: {supported}")
         if self.public_runs_enabled and (
             self.owner_token is None or len(self.owner_token.get_secret_value()) < 32
         ):

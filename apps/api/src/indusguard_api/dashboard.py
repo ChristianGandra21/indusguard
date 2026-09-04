@@ -202,12 +202,28 @@ class PublicRunTrace(BaseModel):
     policy_decisions: list[PublicTracePolicyDecision]
 
 
+class PublicRecentRunSummary(BaseModel):
+    """Item seguro para seleção de traces recentes, sem conteúdo livre da run."""
+
+    run_id: str
+    connector_id: str
+    status: str
+    intent_id: str | None
+    decision: str
+    termination_reason: str
+    model: str
+    started_at: datetime
+    completed_at: datetime
+
+
 class DashboardReader(Protocol):
     """Interface mínima consumida pelas rotas públicas e por seus testes."""
 
     async def latest_evaluation(self) -> PublicEvaluationDashboard | None: ...
 
     async def trace(self, run_id: str) -> PublicRunTrace | None: ...
+
+    async def recent_runs(self, limit: int = 20) -> list[PublicRecentRunSummary]: ...
 
     async def ready(self) -> bool: ...
 
@@ -337,6 +353,29 @@ class SqlAlchemyDashboardReader:
             row = (await session.execute(statement)).scalar_one_or_none()
         return self._trace_projection(row) if row is not None else None
 
+    async def recent_runs(self, limit: int = 20) -> list[PublicRecentRunSummary]:
+        statement = (
+            select(AgentRunRow)
+            .options(
+                load_only(
+                    AgentRunRow.run_id,
+                    AgentRunRow.connector_id,
+                    AgentRunRow.status,
+                    AgentRunRow.intent,
+                    AgentRunRow.decision,
+                    AgentRunRow.model,
+                    AgentRunRow.termination_reason,
+                    AgentRunRow.started_at,
+                    AgentRunRow.completed_at,
+                )
+            )
+            .order_by(AgentRunRow.started_at.desc(), AgentRunRow.run_id.desc())
+            .limit(limit)
+        )
+        async with self._sessions() as session:
+            rows = (await session.execute(statement)).scalars().all()
+        return [self._recent_run_projection(row) for row in rows]
+
     @staticmethod
     def _evaluation_projection(row: EvaluationRunRow) -> PublicEvaluationDashboard:
         summary = None
@@ -458,6 +497,21 @@ class SqlAlchemyDashboardReader:
                 )
                 for item in sorted(row.policy_decisions, key=lambda item: item.tool_sequence)
             ],
+        )
+
+    @staticmethod
+    def _recent_run_projection(row: AgentRunRow) -> PublicRecentRunSummary:
+        intent_id = row.intent.get("intent_id") if isinstance(row.intent, dict) else None
+        return PublicRecentRunSummary(
+            run_id=row.run_id,
+            connector_id=row.connector_id,
+            status=row.status,
+            intent_id=str(intent_id) if intent_id is not None else None,
+            decision=row.decision,
+            termination_reason=row.termination_reason,
+            model=row.model,
+            started_at=_as_utc(row.started_at),
+            completed_at=_as_utc(row.completed_at),
         )
 
 

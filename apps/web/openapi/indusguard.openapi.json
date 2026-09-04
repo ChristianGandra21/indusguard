@@ -74,6 +74,8 @@
           "offline_smoke",
           "groq_pilot",
           "groq_benchmark",
+          "gemini_pilot",
+          "gemini_benchmark",
           "unknown"
         ],
         "title": "EvaluationExecutionKind",
@@ -683,6 +685,69 @@
           "concurrency_limit"
         ],
         "title": "PublicPlaygroundConfig",
+        "type": "object"
+      },
+      "PublicRecentRunSummary": {
+        "description": "Item seguro para seleção de traces recentes, sem conteúdo livre da run.",
+        "properties": {
+          "completed_at": {
+            "format": "date-time",
+            "title": "Completed At",
+            "type": "string"
+          },
+          "connector_id": {
+            "title": "Connector Id",
+            "type": "string"
+          },
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "intent_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Intent Id"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "termination_reason": {
+            "title": "Termination Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "connector_id",
+          "status",
+          "intent_id",
+          "decision",
+          "termination_reason",
+          "model",
+          "started_at",
+          "completed_at"
+        ],
+        "title": "PublicRecentRunSummary",
         "type": "object"
       },
       "PublicRunEvidence": {
@@ -1796,6 +1861,56 @@
         "summary": "Create Public Run",
         "tags": [
           "playground"
+        ]
+      }
+    },
+    "/api/v1/runs/recent": {
+      "get": {
+        "description": "Lista runs recentes por metadados seguros para navegação até o trace público.",
+        "operationId": "recent_runs_api_v1_runs_recent_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 20,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/PublicRecentRunSummary"
+                  },
+                  "title": "Response Recent Runs Api V1 Runs Recent Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Recent Runs",
+        "tags": [
+          "dashboard"
         ]
       }
     },

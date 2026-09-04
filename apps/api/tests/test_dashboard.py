@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from indusguard_api.dashboard import (
     EvaluationExecutionKind,
     PublicEvaluationDashboard,
+    PublicRecentRunSummary,
     PublicRunTrace,
     SqlAlchemyDashboardReader,
 )
@@ -221,14 +222,22 @@ async def _seed_dashboard(
 
 
 def test_sql_reader_returns_latest_safe_projections(tmp_path: Path) -> None:
-    async def scenario() -> tuple[PublicEvaluationDashboard | None, PublicRunTrace | None]:
+    async def scenario() -> tuple[
+        PublicEvaluationDashboard | None,
+        PublicRunTrace | None,
+        list[PublicRecentRunSummary],
+    ]:
         reader = await _seed_dashboard(tmp_path / "dashboard.db")
         try:
-            return await reader.latest_evaluation(), await reader.trace(RUN_ID)
+            return (
+                await reader.latest_evaluation(),
+                await reader.trace(RUN_ID),
+                await reader.recent_runs(),
+            )
         finally:
             await reader.close()
 
-    evaluation, trace = asyncio.run(scenario())
+    evaluation, trace, recent_runs = asyncio.run(scenario())
 
     assert evaluation is not None
     assert evaluation.evaluation_id == EVALUATION_ID
@@ -245,10 +254,14 @@ def test_sql_reader_returns_latest_safe_projections(tmp_path: Path) -> None:
     assert evaluation.results[0].warning_codes == ["STABLE_WARNING"]
     assert trace is not None
     assert trace.policy_decisions[0].reason_codes == ["READ_ALLOWED"]
+    assert recent_runs[0].run_id == RUN_ID
+    assert recent_runs[0].connector_id == "synthetic"
+    assert recent_runs[0].intent_id == "inspect"
     serialized = json.dumps(
         {
             "evaluation": evaluation.model_dump(mode="json"),
             "trace": trace.model_dump(mode="json"),
+            "recent_runs": [item.model_dump(mode="json") for item in recent_runs],
         }
     )
     for private_value in (
@@ -321,11 +334,13 @@ class StubDashboardReader:
         *,
         evaluation: PublicEvaluationDashboard | None = None,
         trace: PublicRunTrace | None = None,
+        recent_runs: list[PublicRecentRunSummary] | None = None,
         error: SQLAlchemyError | None = None,
         ready: bool = True,
     ) -> None:
         self.evaluation = evaluation
         self.run_trace = trace
+        self.recent = recent_runs or []
         self.error = error
         self.is_ready = ready
 
@@ -339,6 +354,12 @@ class StubDashboardReader:
         if self.error:
             raise self.error
         return self.run_trace
+
+    async def recent_runs(self, limit: int = 20) -> list[PublicRecentRunSummary]:
+        del limit
+        if self.error:
+            raise self.error
+        return self.recent
 
     async def ready(self) -> bool:
         if self.error:
@@ -360,21 +381,28 @@ def test_dashboard_routes_return_stable_not_found_errors() -> None:
 
     evaluation = client.get("/api/v1/evaluations/latest")
     trace = client.get(f"/api/v1/runs/{RUN_ID}/trace")
+    recent_runs = client.get("/api/v1/runs/recent")
 
     assert evaluation.status_code == 404
     assert evaluation.json()["detail"]["code"] == "EVALUATION_NOT_FOUND"
     assert trace.status_code == 404
     assert trace.json()["detail"]["code"] == "TRACE_NOT_FOUND"
+    assert recent_runs.status_code == 200
+    assert recent_runs.json() == []
 
 
 def test_dashboard_routes_redact_database_failure() -> None:
     client = _client(StubDashboardReader(error=SQLAlchemyError("password=database-secret")))
 
     response = client.get("/api/v1/evaluations/latest")
+    recent_runs = client.get("/api/v1/runs/recent")
 
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "DATASTORE_UNAVAILABLE"
     assert "database-secret" not in response.text
+    assert recent_runs.status_code == 503
+    assert recent_runs.json()["detail"]["code"] == "DATASTORE_UNAVAILABLE"
+    assert "database-secret" not in recent_runs.text
 
 
 def test_cors_allows_only_configured_frontend() -> None:

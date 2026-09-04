@@ -144,6 +144,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/runs/recent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Recent Runs
+         * @description Lista runs recentes por metadados seguros para navegação até o trace público.
+         */
+        get: operations["recent_runs_api_v1_runs_recent_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/runs/{run_id}/trace": {
         parameters: {
             query?: never;
@@ -224,7 +244,7 @@ export interface components {
          * @description Origem da avaliação, para não apresentar um smoke fake como evidência científica.
          * @enum {string}
          */
-        EvaluationExecutionKind: "offline_smoke" | "groq_pilot" | "groq_benchmark" | "unknown";
+        EvaluationExecutionKind: "offline_smoke" | "groq_pilot" | "groq_benchmark" | "gemini_pilot" | "gemini_benchmark" | "unknown";
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -448,6 +468,36 @@ export interface components {
             model_configured: boolean;
             /** Rate Limit Per Hour */
             rate_limit_per_hour: number;
+        };
+        /**
+         * PublicRecentRunSummary
+         * @description Item seguro para seleção de traces recentes, sem conteúdo livre da run.
+         */
+        PublicRecentRunSummary: {
+            /**
+             * Completed At
+             * Format: date-time
+             */
+            completed_at: string;
+            /** Connector Id */
+            connector_id: string;
+            /** Decision */
+            decision: string;
+            /** Intent Id */
+            intent_id: string | null;
+            /** Model */
+            model: string;
+            /** Run Id */
+            run_id: string;
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Status */
+            status: string;
+            /** Termination Reason */
+            termination_reason: string;
         };
         /** PublicRunEvidence */
         PublicRunEvidence: {
@@ -945,6 +995,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PublicRunResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    recent_runs_api_v1_runs_recent_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicRecentRunSummary"][];
                 };
             };
             /** @description Validation Error */

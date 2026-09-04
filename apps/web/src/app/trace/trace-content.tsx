@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, Braces, Clock3, EyeOff, Search } from "lucide-react";
+import { ArrowRight, Braces, Clock3, EyeOff, ListFilter, Search } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { type FormEvent, useState } from "react";
 
@@ -11,25 +11,36 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Panel, PanelContent, PanelHeader, PanelTitle } from "@/components/ui/panel";
 import { ApiError, api } from "@/lib/api";
-import type { RunTrace } from "@/lib/schemas";
+import type { RecentRunSummary, RunTrace } from "@/lib/schemas";
 import { formatDate, formatDuration } from "@/lib/utils";
 
 export function TraceContent() {
   const params = useSearchParams();
   const router = useRouter();
   const runId = params.get("run_id")?.trim() ?? "";
-  const [input, setInput] = useState(runId);
+  const [draft, setDraft] = useState({ runId, value: runId });
+  const input = draft.runId === runId ? draft.value : runId;
 
+  const recentRuns = useQuery({
+    queryKey: ["trace", "recent-runs"],
+    queryFn: api.recentRuns,
+  });
   const trace = useQuery({
     queryKey: ["trace", runId],
     queryFn: () => api.trace(runId),
     enabled: Boolean(runId),
   });
+  const selectedRecentRun = recentRuns.data?.find((run) => run.run_id === runId);
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const normalized = input.trim();
     router.push(normalized ? `/trace?run_id=${encodeURIComponent(normalized)}` : "/trace");
+  }
+
+  function selectRun(nextRunId: string) {
+    setDraft({ runId: nextRunId, value: nextRunId });
+    router.push(nextRunId ? `/trace?run_id=${encodeURIComponent(nextRunId)}` : "/trace");
   }
 
   return (
@@ -41,17 +52,61 @@ export function TraceContent() {
         actions={<Badge tone="good"><EyeOff size={11} /> conteúdo omitido</Badge>}
       />
 
-      <form onSubmit={submit} className="mb-6 flex flex-col gap-2 sm:flex-row" role="search">
-        <label htmlFor="run-id" className="sr-only">ID da run</label>
-        <div className="flex min-w-0 flex-1 items-center gap-3 border border-line bg-panel px-4 focus-within:border-signal/60">
-          <Search size={16} className="shrink-0 text-dim" />
-          <input id="run-id" value={input} onChange={(event) => setInput(event.target.value)} placeholder="Cole um run_id, por exemplo 1b94…" className="h-11 min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-dim" />
-        </div>
-        <Button type="submit">Carregar trace <ArrowRight size={14} /></Button>
+      <form
+        onSubmit={submit}
+        className="mb-6 grid gap-3 xl:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_auto]"
+        role="search"
+      >
+        <label htmlFor="recent-run-id" className="min-w-0">
+          <span className="field-label">Runs recentes</span>
+          <div className="relative mt-2">
+            <ListFilter
+              aria-hidden="true"
+              size={16}
+              className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-dim"
+            />
+            <select
+              id="recent-run-id"
+              value={selectedRecentRun?.run_id ?? ""}
+              onChange={(event) => selectRun(event.target.value)}
+              className="field-control pl-10 font-mono text-xs"
+              disabled={recentRuns.isLoading || recentRuns.isError || !recentRuns.data?.length}
+            >
+              <option value="">
+                {recentRuns.isLoading
+                  ? "Carregando runs recentes"
+                  : recentRuns.isError
+                    ? "Runs recentes indisponíveis"
+                    : "Selecione uma run"}
+              </option>
+              {(recentRuns.data ?? []).map((run) => (
+                <option key={run.run_id} value={run.run_id}>
+                  {runOptionLabel(run)}
+                </option>
+              ))}
+            </select>
+          </div>
+        </label>
+
+        <label htmlFor="run-id" className="min-w-0">
+          <span className="field-label">ID da run</span>
+          <div className="mt-2 flex min-w-0 items-center gap-3 border border-line bg-panel px-4 focus-within:border-signal/60">
+            <Search size={16} className="shrink-0 text-dim" />
+            <input
+              id="run-id"
+              value={input}
+              onChange={(event) => setDraft({ runId, value: event.target.value })}
+              placeholder="Cole um run_id"
+              className="h-11 min-w-0 flex-1 bg-transparent font-mono text-xs text-foreground outline-none placeholder:text-dim"
+            />
+          </div>
+        </label>
+
+        <Button type="submit" className="xl:self-end">Carregar trace <ArrowRight size={14} /></Button>
       </form>
 
       {!runId ? (
-        <EmptyState title="Informe uma run" message="Abra uma run pela página de avaliações ou cole um UUID conhecido. Não existe listagem pública de conversas." />
+        <EmptyState title="Informe uma run" message="Escolha uma run recente ou cole um UUID conhecido." />
       ) : trace.isLoading ? (
         <LoadingState label="Consultando timeline segura" />
       ) : trace.error instanceof ApiError && trace.error.code === "TRACE_NOT_FOUND" ? (
@@ -63,6 +118,17 @@ export function TraceContent() {
       ) : null}
     </>
   );
+}
+
+function runOptionLabel(run: RecentRunSummary) {
+  const intent = run.intent_id ?? "sem intenção";
+  const startedAt = new Date(run.started_at).toLocaleString("pt-BR", {
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "2-digit",
+  });
+  return `${run.connector_id} · ${run.decision} · ${intent} · ${run.status} · ${startedAt} · ${run.run_id.slice(0, 8)}`;
 }
 
 function TraceView({ trace }: { trace: RunTrace }) {

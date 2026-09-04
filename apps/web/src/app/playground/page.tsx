@@ -5,15 +5,20 @@ import {
   Activity,
   AlertTriangle,
   ArrowRight,
+  ArrowUpRight,
   Braces,
+  ClipboardCheck,
   CircleStop,
   Clock3,
+  FileSearch,
   KeyRound,
   LockKeyhole,
   LogOut,
+  Route,
   ShieldCheck,
   TerminalSquare,
 } from "lucide-react";
+import Link from "next/link";
 import { FormEvent, useState, useSyncExternalStore } from "react";
 
 import { ErrorState, LoadingState } from "@/components/data-state";
@@ -26,6 +31,85 @@ import type { PublicRunResult } from "@/lib/schemas";
 
 const TOKEN_STORAGE_KEY = "indusguard.owner_token";
 const TOKEN_CHANGE_EVENT = "indusguard-owner-token-change";
+const SERVER_OWNED_CONTEXT_FIELDS = new Set(["user_id"]);
+
+type RunPreset = {
+  id: string;
+  connectorId: string;
+  label: string;
+  message: string;
+  context: Record<string, string>;
+  directRequest: boolean;
+};
+
+type ContextOption = {
+  value: string;
+  label: string;
+};
+
+const runPresets: RunPreset[] = [
+  {
+    id: "synthetic-status",
+    connectorId: "synthetic",
+    label: "Widget status",
+    message: "Qual é o estado atual do widget widget-1?",
+    context: { widget_id: "widget-1" },
+    directRequest: false,
+  },
+  {
+    id: "tractian-investigation",
+    connectorId: "tractian",
+    label: "Falha sem aviso",
+    message: "O redutor da correia transportadora quebrou ontem e eu não recebi nenhum aviso. Por quê?",
+    context: {
+      company_id: "comp_mineracao_andes",
+      asset_id: "asset_G501",
+      case_id: "case_tkt_inv_04",
+    },
+    directRequest: false,
+  },
+  {
+    id: "tractian-specialist",
+    connectorId: "tractian",
+    label: "Especialista Tractian",
+    message: "Esse compressor tá com comportamento estranho e o insight não convence. Quero que um especialista da Tractian veja.",
+    context: {
+      company_id: "comp_petro_delta",
+      asset_id: "asset_C710",
+      case_id: "case_tkt_exe_13",
+    },
+    directRequest: true,
+  },
+];
+
+const contextFieldOptions: Record<string, ContextOption[]> = {
+  asset_id: [
+    { value: "asset_G501", label: "asset_G501 · Redutor da correia transportadora" },
+    { value: "asset_C710", label: "asset_C710 · Compressor de gás" },
+  ],
+  case_id: [
+    { value: "case_tkt_inv_04", label: "case_tkt_inv_04 · Falha sem aviso" },
+    { value: "case_tkt_exe_13", label: "case_tkt_exe_13 · Especialista Tractian" },
+  ],
+  company_id: [
+    { value: "comp_mineracao_andes", label: "comp_mineracao_andes · Mineração Andes" },
+    { value: "comp_petro_delta", label: "comp_petro_delta · Petro Delta" },
+  ],
+  widget_id: [{ value: "widget-1", label: "widget-1 · Widget ativo" }],
+};
+
+const linkedContextByValue: Record<string, Record<string, string>> = {
+  asset_C710: { company_id: "comp_petro_delta" },
+  asset_G501: { company_id: "comp_mineracao_andes" },
+  case_tkt_exe_13: {
+    company_id: "comp_petro_delta",
+    asset_id: "asset_C710",
+  },
+  case_tkt_inv_04: {
+    company_id: "comp_mineracao_andes",
+    asset_id: "asset_G501",
+  },
+};
 
 function subscribeToken(onChange: () => void) {
   window.addEventListener(TOKEN_CHANGE_EVENT, onChange);
@@ -50,11 +134,22 @@ export default function PlaygroundPage() {
   const token = useSyncExternalStore(subscribeToken, tokenSnapshot, () => "");
   const [tokenDraft, setTokenDraft] = useState("");
   const [connectorId, setConnectorId] = useState("");
-  const [widgetId, setWidgetId] = useState("");
+  const [contextDraft, setContextDraft] = useState<Record<string, string>>({});
   const [message, setMessage] = useState("");
   const [directRequest, setDirectRequest] = useState(false);
 
   const selectedConnectorId = connectorId || config.data?.connectors[0]?.id || "synthetic";
+  const selectedConnector = config.data?.connectors.find(
+    (connector) => connector.id === selectedConnectorId,
+  );
+  const editableContextFields =
+    selectedConnector?.context_fields.filter((field) => !SERVER_OWNED_CONTEXT_FIELDS.has(field)) ?? [];
+  const contextPayload = Object.fromEntries(
+    Object.entries(contextDraft).filter(
+      ([key, value]) => !SERVER_OWNED_CONTEXT_FIELDS.has(key) && value.trim(),
+    ),
+  );
+  const contextComplete = editableContextFields.every((field) => contextDraft[field]?.trim());
 
   const run = useMutation({
     mutationFn: () =>
@@ -63,12 +158,34 @@ export default function PlaygroundPage() {
           connector_id: selectedConnectorId,
           message,
           seed: 42,
-          context: widgetId ? { widget_id: widgetId } : {},
+          context: contextPayload,
           direct_request: directRequest,
         },
         token,
       ),
   });
+
+  function changeConnector(value: string) {
+    setConnectorId(value);
+    setContextDraft({});
+    run.reset();
+  }
+
+  function updateContextField(field: string, value: string) {
+    setContextDraft((current) => ({
+      ...current,
+      [field]: value,
+      ...(linkedContextByValue[value] ?? {}),
+    }));
+  }
+
+  function applyPreset(preset: RunPreset) {
+    setConnectorId(preset.connectorId);
+    setContextDraft(preset.context);
+    setMessage(preset.message);
+    setDirectRequest(preset.directRequest);
+    run.reset();
+  }
 
   function saveToken(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -87,7 +204,7 @@ export default function PlaygroundPage() {
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!message.trim() || !widgetId.trim()) return;
+    if (!message.trim() || !contextComplete) return;
     run.mutate();
   }
 
@@ -146,10 +263,15 @@ export default function PlaygroundPage() {
             <SessionStrip logout={logout} />
             <RunForm
               connectorId={selectedConnectorId}
-              setConnectorId={setConnectorId}
+              setConnectorId={changeConnector}
               connectors={config.data.connectors}
-              widgetId={widgetId}
-              setWidgetId={setWidgetId}
+              contextDraft={contextDraft}
+              editableContextFields={editableContextFields}
+              updateContextField={updateContextField}
+              presets={runPresets.filter((preset) =>
+                config.data.connectors.some((connector) => connector.id === preset.connectorId),
+              )}
+              applyPreset={applyPreset}
               message={message}
               setMessage={setMessage}
               maxMessageLength={config.data.max_message_length}
@@ -157,6 +279,7 @@ export default function PlaygroundPage() {
               setDirectRequest={setDirectRequest}
               submit={submit}
               pending={run.isPending}
+              canSubmit={Boolean(message.trim() && contextComplete)}
             />
             <LimitsPanel
               rate={config.data.rate_limit_per_hour}
@@ -256,8 +379,11 @@ function RunForm({
   connectorId,
   setConnectorId,
   connectors,
-  widgetId,
-  setWidgetId,
+  contextDraft,
+  editableContextFields,
+  updateContextField,
+  presets,
+  applyPreset,
   message,
   setMessage,
   maxMessageLength,
@@ -265,12 +391,16 @@ function RunForm({
   setDirectRequest,
   submit,
   pending,
+  canSubmit,
 }: {
   connectorId: string;
   setConnectorId: (value: string) => void;
   connectors: { id: string; name: string; context_fields: string[] }[];
-  widgetId: string;
-  setWidgetId: (value: string) => void;
+  contextDraft: Record<string, string>;
+  editableContextFields: string[];
+  updateContextField: (field: string, value: string) => void;
+  presets: RunPreset[];
+  applyPreset: (preset: RunPreset) => void;
   message: string;
   setMessage: (value: string) => void;
   maxMessageLength: number;
@@ -278,6 +408,7 @@ function RunForm({
   setDirectRequest: (value: boolean) => void;
   submit: (event: FormEvent<HTMLFormElement>) => void;
   pending: boolean;
+  canSubmit: boolean;
 }) {
   return (
     <Panel>
@@ -286,6 +417,26 @@ function RunForm({
       </PanelHeader>
       <PanelContent>
         <form onSubmit={submit} className="space-y-5">
+          {presets.length ? (
+            <div>
+              <span className="field-label">Roteiros de demo</span>
+              <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                {presets.map((preset) => (
+                  <Button
+                    key={preset.id}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-auto min-h-11 justify-start px-3 py-2 text-left"
+                    onClick={() => applyPreset(preset)}
+                  >
+                    <ClipboardCheck size={14} /> {preset.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
           <div className="grid gap-4 sm:grid-cols-2">
             <label>
               <span className="field-label">Conector público</span>
@@ -301,17 +452,40 @@ function RunForm({
                 ))}
               </select>
             </label>
-            <label>
-              <span className="field-label">ID do widget</span>
-              <input
-                value={widgetId}
-                onChange={(event) => setWidgetId(event.target.value)}
-                className="field-control mt-2"
-                placeholder="widget-1"
-                required
-              />
-            </label>
           </div>
+
+          {editableContextFields.length ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+              {editableContextFields.map((field) => (
+                <label key={field}>
+                  <span className="field-label">{field}</span>
+                  {contextFieldOptions[field]?.length ? (
+                    <select
+                      value={contextDraft[field] ?? ""}
+                      onChange={(event) => updateContextField(field, event.target.value)}
+                      className="field-control mt-2 font-mono text-sm"
+                      required
+                    >
+                      <option value="">Selecione {field}</option>
+                      {contextFieldOptions[field].map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      value={contextDraft[field] ?? ""}
+                      onChange={(event) => updateContextField(field, event.target.value)}
+                      className="field-control mt-2 font-mono text-sm"
+                      placeholder={contextPlaceholder(field)}
+                      required
+                    />
+                  )}
+                </label>
+              ))}
+            </div>
+          ) : null}
 
           <label className="block">
             <span className="flex items-center justify-between gap-3">
@@ -350,7 +524,7 @@ function RunForm({
           <Button
             type="submit"
             className="w-full"
-            disabled={pending || !message.trim() || !widgetId.trim()}
+            disabled={pending || !canSubmit}
           >
             {pending ? <Activity className="animate-pulse" size={15} /> : <TerminalSquare size={15} />}
             Executar agente protegido
@@ -359,6 +533,16 @@ function RunForm({
       </PanelContent>
     </Panel>
   );
+}
+
+function contextPlaceholder(field: string) {
+  const placeholders: Record<string, string> = {
+    asset_id: "asset_G501",
+    case_id: "case_tkt_inv_04",
+    company_id: "comp_mineracao_andes",
+    widget_id: "widget-1",
+  };
+  return placeholders[field] ?? field;
 }
 
 function LimitsPanel({ rate, concurrency }: { rate: number; concurrency: number }) {
@@ -431,6 +615,11 @@ function RunError({ error, retry }: { error: Error; retry: () => void }) {
 
 function RunResult({ result }: { result: PublicRunResult }) {
   const partial = result.status !== "completed";
+  const policySummary = result.policy_decisions.reduce(
+    (totals, policy) => ({ ...totals, [policy.outcome]: (totals[policy.outcome] ?? 0) + 1 }),
+    {} as Record<string, number>,
+  );
+  const citedEvidence = result.evidence.filter((item) => result.evidence_ids.includes(item.id)).length;
   return (
     <div className="space-y-6">
       {partial ? (
@@ -448,9 +637,15 @@ function RunResult({ result }: { result: PublicRunResult }) {
       <Panel>
         <PanelHeader className="flex flex-wrap items-center justify-between gap-3">
           <PanelTitle>Resposta fundamentada</PanelTitle>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
             <Badge tone={partial ? "warning" : "good"}>{result.status}</Badge>
+            {result.intent_id ? <Badge tone="neutral">{result.intent_id}</Badge> : null}
             <Badge tone="info">{result.decision}</Badge>
+            <Button asChild variant="outline" size="sm">
+              <Link href={`/trace?run_id=${encodeURIComponent(result.run_id)}`}>
+                Ver trace <ArrowUpRight size={12} />
+              </Link>
+            </Button>
           </div>
         </PanelHeader>
         <PanelContent>
@@ -464,6 +659,26 @@ function RunResult({ result }: { result: PublicRunResult }) {
           ) : null}
         </PanelContent>
       </Panel>
+
+      <div className="grid gap-px border border-line bg-line sm:grid-cols-3">
+        <ResultMetric
+          icon={FileSearch}
+          label="Evidências citadas"
+          value={`${citedEvidence}/${result.evidence.length}`}
+        />
+        <ResultMetric
+          icon={Route}
+          label="Policy"
+          value={Object.entries(policySummary)
+            .map(([outcome, count]) => `${count} ${outcome}`)
+            .join(" · ") || "sem decisão"}
+        />
+        <ResultMetric
+          icon={ShieldCheck}
+          label="Término"
+          value={result.metrics.termination_reason}
+        />
+      </div>
 
       <Panel>
         <PanelHeader>

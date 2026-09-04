@@ -19,11 +19,13 @@ from indusguard_api.agent import (
     AgentPlannedToolCall,
     AgentPlanStep,
     AgentRunMetrics,
+    AgentRunRequest,
     AgentRunResult,
     AgentRunStatus,
     AgentRuntime,
     AgentTerminationReason,
     ScriptedAgentModelGateway,
+    TrustedRunContext,
 )
 from indusguard_api.connectors import ConnectorCatalog
 from indusguard_api.executor import HttpExecutor
@@ -88,16 +90,40 @@ class DenyQuota(AlwaysAllowQuota):
         )
 
 
-def _minimal_result() -> AgentRunResult:
+class CapturingRuntime:
+    def __init__(self) -> None:
+        self.requests: list[AgentRunRequest] = []
+        self.trusted_contexts: list[TrustedRunContext] = []
+
+    async def run(
+        self,
+        request: AgentRunRequest,
+        trusted_context: TrustedRunContext,
+    ) -> AgentRunResult:
+        self.requests.append(request)
+        self.trusted_contexts.append(trusted_context)
+        return _minimal_result(
+            connector_id=request.connector_id,
+            intent_id="agir",
+            decision=AgentDecision.ACT,
+        )
+
+
+def _minimal_result(
+    *,
+    connector_id: str = "synthetic",
+    intent_id: str = "consultar",
+    decision: AgentDecision = AgentDecision.ORIENT,
+) -> AgentRunResult:
     now = datetime.now(UTC)
     return AgentRunResult(
         run_id=str(uuid4()),
         started_at=now,
         completed_at=now,
-        connector_id="synthetic",
+        connector_id=connector_id,
         status=AgentRunStatus.COMPLETED,
-        intent=AgentIntentDecision(intent_id="consultar"),
-        decision=AgentDecision.ORIENT,
+        intent=AgentIntentDecision(intent_id=intent_id),
+        decision=decision,
         answer="Execução concluída.",
         evidence_ids=[],
         evidence=[],
@@ -327,11 +353,13 @@ def test_rate_limit_returns_stable_code_and_retry_after(tmp_path: Path) -> None:
     assert response.headers["retry-after"] == "300"
 
 
-def test_public_settings_require_strong_token_and_synthetic_connector() -> None:
+def test_public_settings_require_strong_token_and_known_public_connector() -> None:
     with pytest.raises(ValidationError, match="ao menos 32 caracteres"):
         Settings(_env_file=None, public_runs_enabled=True, owner_token="short")
-    with pytest.raises(ValidationError, match="somente o conector synthetic"):
-        Settings(_env_file=None, public_connector_ids=["tractian"])
+    settings = Settings(_env_file=None, public_connector_ids=["synthetic", "tractian"])
+    assert settings.public_connector_ids == ["synthetic", "tractian"]
+    with pytest.raises(ValidationError, match="conectores não suportados"):
+        Settings(_env_file=None, public_connector_ids=["unknown"])
     with pytest.raises(ValidationError, match="EXECUTION_MODE=simulate"):
         Settings(
             _env_file=None,
@@ -339,6 +367,78 @@ def test_public_settings_require_strong_token_and_synthetic_connector() -> None:
             owner_token=OWNER_TOKEN,
             execution_mode="execute",
         )
+
+
+def test_public_tractian_connector_uses_server_context_and_hidden_user_claim(
+    tmp_path: Path,
+) -> None:
+    async def scenario() -> tuple[httpx.Response, httpx.Response, CapturingRuntime]:
+        catalog = ConnectorCatalog(REPOSITORY_ROOT / "connectors")
+        catalog.load()
+        runtime = CapturingRuntime()
+        host = PublicRunHost(
+            catalog=catalog,
+            runtime=runtime,
+            quota=AlwaysAllowQuota(),
+            enabled=True,
+            owner_token=OWNER_TOKEN,
+            public_connector_ids=["synthetic", "tractian"],
+        )
+        application = create_app(settings=_settings(tmp_path), public_run_host=host)
+        async with (
+            application.router.lifespan_context(application),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=application),
+                base_url="http://testserver",
+            ) as client,
+        ):
+            config = await client.get("/api/v1/playground/config")
+            response = await client.post(
+                "/api/v1/runs",
+                headers={"Authorization": f"Bearer {OWNER_TOKEN}"},
+                json={
+                    "connector_id": "tractian",
+                    "message": "Quero análise especializada desse compressor.",
+                    "context": {
+                        "user_id": "browser-controlled",
+                        "company_id": "comp_petro_delta",
+                        "asset_id": "asset_C710",
+                        "case_id": "case_tkt_exe_13",
+                    },
+                    "direct_request": True,
+                },
+            )
+        return config, response, runtime
+
+    config, response, runtime = asyncio.run(scenario())
+
+    assert config.status_code == 200
+    connectors = {item["id"]: item for item in config.json()["connectors"]}
+    assert connectors["tractian"]["context_fields"] == ["company_id", "asset_id", "case_id"]
+    assert response.status_code == 200
+    assert response.json()["connector_id"] == "tractian"
+    assert runtime.requests[0].connector_id == "tractian"
+    trusted = runtime.trusted_contexts[0]
+    assert trusted.execution_context == {
+        "user_id": "portfolio-owner",
+        "company_id": "comp_petro_delta",
+        "asset_id": "asset_C710",
+        "case_id": "case_tkt_exe_13",
+    }
+    assert trusted.resource_scopes == {
+        "company_id": "comp_petro_delta",
+        "asset_id": "asset_C710",
+        "case_id": "case_tkt_exe_13",
+    }
+    assert trusted.principal is not None
+    assert trusted.principal.permissions == ["read", "action_low", "action_high", "escalate"]
+    assert trusted.principal.scopes == {
+        "company_id": "comp_petro_delta",
+        "asset_id": "asset_C710",
+        "case_id": "case_tkt_exe_13",
+    }
+    assert trusted.direct_request is True
+    assert "browser-controlled" not in response.text
 
 
 def test_persistent_quota_allows_three_runs_and_resets_after_one_hour(tmp_path: Path) -> None:

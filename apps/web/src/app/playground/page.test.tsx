@@ -122,7 +122,7 @@ describe("playground protegido", () => {
     await user.click(screen.getByRole("button", { name: "Salvar acesso nesta sessão" }));
     expect(sessionStorage.getItem("indusguard.owner_token")).toBe("owner-session-token");
 
-    await user.type(screen.getByLabelText("ID do widget"), "widget-1");
+    await user.selectOptions(screen.getByLabelText("widget_id"), "widget-1");
     await user.type(screen.getByLabelText("Solicitação"), "Qual é o estado do widget?");
     await user.click(screen.getByRole("button", { name: "Executar agente protegido" }));
 
@@ -130,6 +130,12 @@ describe("playground protegido", () => {
     expect(screen.getByText("READ_APPROVED")).toBeInTheDocument();
     expect(screen.getByText("synthetic__getWidget")).toBeInTheDocument();
     expect(screen.getByText("15 tokens")).toBeInTheDocument();
+    expect(screen.getByText("1/1")).toBeInTheDocument();
+    expect(screen.getByText("1 allow")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Ver trace" })).toHaveAttribute(
+      "href",
+      `/trace?run_id=${encodeURIComponent(result.run_id)}`,
+    );
     expect(run).toHaveBeenCalledWith(
       {
         connector_id: "synthetic",
@@ -155,7 +161,7 @@ describe("playground protegido", () => {
     const user = userEvent.setup();
 
     renderPage();
-    await user.type(await screen.findByLabelText("ID do widget"), "widget-1");
+    await user.selectOptions(await screen.findByLabelText("widget_id"), "widget-1");
     await user.type(screen.getByLabelText("Solicitação"), "Consulte o widget.");
     await user.click(screen.getByRole("button", { name: "Executar agente protegido" }));
 
@@ -183,11 +189,91 @@ describe("playground protegido", () => {
     const user = userEvent.setup();
 
     renderPage();
-    await user.type(await screen.findByLabelText("ID do widget"), "widget-1");
+    await user.selectOptions(await screen.findByLabelText("widget_id"), "widget-1");
     await user.type(screen.getByLabelText("Solicitação"), "Consulte o widget.");
     await user.click(screen.getByRole("button", { name: "Executar agente protegido" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Quota horária atingida");
     expect(screen.getByRole("alert")).not.toHaveTextContent("Acesso recusado");
+  });
+
+  it("preenche um roteiro industrial quando o conector Tractian está publicado", async () => {
+    vi.spyOn(api, "playgroundConfig").mockResolvedValue({
+      ...config,
+      connectors: [
+        ...config.connectors,
+        {
+          id: "tractian",
+          name: "Tractian Industrial Support",
+          context_fields: ["user_id", "company_id", "asset_id", "case_id"],
+        },
+      ],
+    });
+    const run = vi.spyOn(api, "run").mockResolvedValue({
+      ...result,
+      connector_id: "tractian",
+      intent_id: "agir",
+      decision: "act",
+    });
+    sessionStorage.setItem("indusguard.owner_token", "owner-session-token");
+    const user = userEvent.setup();
+
+    renderPage();
+
+    await user.click(await screen.findByRole("button", { name: /Especialista Tractian/ }));
+    expect(screen.getByLabelText("company_id")).toHaveValue("comp_petro_delta");
+    expect(screen.getByLabelText("asset_id")).toHaveValue("asset_C710");
+    expect(screen.getByLabelText("case_id")).toHaveValue("case_tkt_exe_13");
+    expect(screen.getByRole("option", { name: /Compressor de gás/ })).toBeInTheDocument();
+    expect(screen.queryByLabelText("user_id")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Solicitação")).toHaveValue(
+      "Esse compressor tá com comportamento estranho e o insight não convence. Quero que um especialista da Tractian veja.",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Executar agente protegido" }));
+
+    await waitFor(() =>
+      expect(run).toHaveBeenCalledWith(
+        {
+          connector_id: "tractian",
+          message:
+            "Esse compressor tá com comportamento estranho e o insight não convence. Quero que um especialista da Tractian veja.",
+          seed: 42,
+          context: {
+            company_id: "comp_petro_delta",
+            asset_id: "asset_C710",
+            case_id: "case_tkt_exe_13",
+          },
+          direct_request: true,
+        },
+        "owner-session-token",
+      ),
+    );
+  });
+
+  it("oferece valores de contexto e preenche empresa e ativo a partir do caso", async () => {
+    vi.spyOn(api, "playgroundConfig").mockResolvedValue({
+      ...config,
+      connectors: [
+        ...config.connectors,
+        {
+          id: "tractian",
+          name: "Tractian Industrial Support",
+          context_fields: ["user_id", "company_id", "asset_id", "case_id"],
+        },
+      ],
+    });
+    sessionStorage.setItem("indusguard.owner_token", "owner-session-token");
+    const user = userEvent.setup();
+
+    renderPage();
+
+    await user.selectOptions(await screen.findByLabelText("Conector público"), "tractian");
+    await user.selectOptions(screen.getByLabelText("case_id"), "case_tkt_inv_04");
+
+    expect(screen.getByLabelText("company_id")).toHaveValue("comp_mineracao_andes");
+    expect(screen.getByLabelText("asset_id")).toHaveValue("asset_G501");
+    expect(screen.getByRole("option", { name: /Mineração Andes/ })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /Falha sem aviso/ })).toBeInTheDocument();
   });
 });

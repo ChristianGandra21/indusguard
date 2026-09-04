@@ -9,6 +9,7 @@ export type ConnectorSummary = components["schemas"]["ConnectorSummary"];
 export type OperationSummary = components["schemas"]["OperationSummary"];
 export type EvaluationDashboard = components["schemas"]["PublicEvaluationDashboard"];
 export type RunTrace = components["schemas"]["PublicRunTrace"];
+export type RecentRunSummary = components["schemas"]["PublicRecentRunSummary"];
 export type PlaygroundConfig = components["schemas"]["PublicPlaygroundConfig"];
 export type PublicRunRequest = components["schemas"]["PublicRunRequest"];
 export type PublicRunResult = components["schemas"]["PublicRunResult"];
@@ -194,7 +195,14 @@ export const evaluationDashboardSchema: z.ZodType<EvaluationDashboard> = z.objec
   dataset_version: z.string(),
   model: z.string(),
   git_commit: z.string(),
-  execution_kind: z.enum(["offline_smoke", "groq_pilot", "groq_benchmark", "unknown"]),
+  execution_kind: z.enum([
+    "offline_smoke",
+    "groq_pilot",
+    "groq_benchmark",
+    "gemini_pilot",
+    "gemini_benchmark",
+    "unknown",
+  ]),
   scientific_evidence: z.boolean(),
   started_at: z.iso.datetime({ offset: true }),
   completed_at: z.iso.datetime({ offset: true }).nullable(),
@@ -300,3 +308,17 @@ export const runTraceSchema: z.ZodType<RunTrace> = z.object({
     }),
   ),
 }).strict();
+
+export const recentRunSummarySchema: z.ZodType<RecentRunSummary> = z
+  .object({
+    run_id: z.string(),
+    connector_id: z.string(),
+    status: z.string(),
+    intent_id: z.string().nullable(),
+    decision: z.string(),
+    termination_reason: z.string(),
+    model: z.string(),
+    started_at: z.iso.datetime({ offset: true }),
+    completed_at: z.iso.datetime({ offset: true }),
+  })
+  .strict();
