@@ -966,6 +966,13 @@ class AgentRuntime:
                 )
                 data.termination = AgentTerminationReason.AMBIGUOUS_INTENT
                 data.stop_planning = True
+            else:
+                data.tools = self._tools_for_intent(
+                    data.tools,
+                    data.domain,
+                    data.intent.intent_id,
+                )
+                data.tool_map = {tool.alias: tool for tool in data.tools}
             for uncertainty in data.intent.uncertainties:
                 _add_uncertainty(data, uncertainty)
             return {"data": data, "step": "classified"}
@@ -1372,6 +1379,34 @@ class AgentRuntime:
                 )
             )
         return sorted(selected, key=lambda tool: tool.alias)
+
+    @staticmethod
+    def _tools_for_intent(
+        tools: Sequence[AgentToolDefinition],
+        domain: ConnectorDomain,
+        intent_id: str | None,
+    ) -> list[AgentToolDefinition]:
+        """Publica ao modelo somente operações da intenção classificada."""
+
+        selected_intent = next(
+            (intent for intent in domain.intents if intent.id == intent_id),
+            None,
+        )
+        if selected_intent is None:
+            return list(tools)
+        allowed_operations = [
+            *selected_intent.evidence_operations,
+            *selected_intent.action_operations,
+        ]
+        tool_by_operation = {
+            tool.alias.split("__", 1)[1] if "__" in tool.alias else tool.alias: tool
+            for tool in tools
+        }
+        return [
+            tool_by_operation[operation_id]
+            for operation_id in dict.fromkeys(allowed_operations)
+            if operation_id in tool_by_operation
+        ]
 
     @staticmethod
     def _planning_context(

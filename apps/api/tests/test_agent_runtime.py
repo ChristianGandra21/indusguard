@@ -251,6 +251,8 @@ def test_model_receives_only_allowlisted_trusted_context_and_policy_guidance() -
     assert "action_digest" not in serialized
 
     tools = {tool.mcp_name: tool for tool in gateway.seen_tools[0]}
+    assert "tractian.escalateCase" not in tools
+    assert "tractian.requestSpecialistAnalysis" in tools
     write_description = tools["tractian.updateAssetConfig"].description
     assert "permission=action_high" in write_description
     assert "direct_request=true" in write_description
@@ -323,8 +325,8 @@ def test_agent_rejects_technical_connector_without_domain(tmp_path: Path) -> Non
         )
 
 
-def test_exposes_only_selected_connector_tools_with_model_safe_aliases() -> None:
-    """O planejador não enxerga outro conector nem nomes MCP com ponto."""
+def test_exposes_only_selected_intent_tools_with_model_safe_aliases() -> None:
+    """O planejador não enxerga outro conector, outra intenção nem nomes MCP com ponto."""
 
     gateway = ScriptedAgentModelGateway(
         classification=AgentIntentDecision(intent_id="consultar"),
@@ -343,11 +345,9 @@ def test_exposes_only_selected_connector_tools_with_model_safe_aliases() -> None
     assert result.status == "completed"
     assert [tool.alias for tool in gateway.seen_tools[0]] == [
         "synthetic__getWidget",
-        "synthetic__updateWidget",
     ]
     assert [tool.mcp_name for tool in gateway.seen_tools[0]] == [
         "synthetic.getWidget",
-        "synthetic.updateWidget",
     ]
     assert upstream_requests == []
 
