@@ -109,6 +109,7 @@ class ImprovementPlan(BaseModel):
     model: str
     git_commit: str
     analyzed_runs: int
+    benchmark_criteria: dict[str, bool] = Field(default_factory=dict)
     findings: list[ImprovementFinding]
     failure_clusters: list[FailureCluster]
     recommendations: list[ImprovementRecommendation]
@@ -131,9 +132,20 @@ class ImprovementPlan(BaseModel):
             f"- Golden digest: `{self.golden_digest}`",
             f"- Runs analisadas: `{self.analyzed_runs}`",
             "",
-            "## Falhas recorrentes",
+            "## Critérios do benchmark",
             "",
         ]
+        if not self.benchmark_criteria:
+            lines.append("Nenhum critério resumido foi registrado.")
+        for key, value in sorted(self.benchmark_criteria.items()):
+            lines.append(f"- `{key}`: `{str(value).lower()}`")
+        lines.extend(
+            [
+                "",
+                "## Falhas recorrentes",
+                "",
+            ]
+        )
         if not self.failure_clusters:
             lines.append("Nenhuma falha determinística foi encontrada.")
         for cluster in self.failure_clusters:
@@ -307,6 +319,8 @@ class EvaluationAnalyzer:
             )
         ]
         present_categories = {cluster.category for cluster in clusters}
+        hypothesis = summary.get("hypothesis")
+        criteria = hypothesis.get("criteria") if isinstance(hypothesis, dict) else {}
         return ImprovementPlan(
             generated_at=datetime.now(UTC),
             evaluation_id=run.evaluation_id,
@@ -318,6 +332,9 @@ class EvaluationAnalyzer:
             model=run.model,
             git_commit=run.git_commit,
             analyzed_runs=len(samples),
+            benchmark_criteria={
+                str(key): value for key, value in criteria.items() if isinstance(value, bool)
+            },
             findings=findings,
             failure_clusters=clusters,
             recommendations=_recommendations(present_categories),

@@ -558,6 +558,17 @@ O bundle é redigido, registra os digests e sempre declara `calibrated=false`; r
 assistida é evidência auxiliar, nunca release gate. `improve` recusa smoke fake, avaliações
 `partial`/`invalid`, falhas de runtime, checkpoints incompletos e digests divergentes. O plano
 classifica falhas do agente, efeitos da policy e falhas de runtime por cenário, variante e seed.
+Para preparar a futura interface de melhoria, também é possível gravar o plano estruturado:
+
+```bash
+.venv/bin/indusguard-eval improve EVALUATION_ID \
+  --output improvement-plan.md --json-output improvement-plan.json
+```
+
+A automelhoria local é opt-in. Com `--write-patch`, o comando exige checkout limpo, confirma que
+`HEAD` ainda é o commit avaliado e aplica somente receitas allowlisted; goldens, corpus, `.env*`,
+migrações e deploy permanecem bloqueados. Depois do patch, o CLI imprime a checklist local e
+lembra que qualquer piloto externo exige commit, novo preflight e consentimento separado.
 
 Somente o piloto de 12 runs está autorizado a usar Groq. Antes de qualquer cliente externo, gere
 um manifesto auditável em um checkout limpo. Ele registra commit, corpus, modelo, agenda, hashes

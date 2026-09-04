@@ -502,6 +502,9 @@ class AgentRuntimeConfig(BaseModel):
     max_run_evidence_bytes: int = Field(default=128 * 1024, ge=256, le=4 * 1024 * 1024)
     prompt_version: str = PROMPT_VERSION
     policy_version: str = POLICY_VERSION
+    restrict_tools_to_intent: bool = True
+    propagate_seed_to_tools: bool = True
+    require_observed_analysis_ids: bool = True
 
 
 class AgentConfigurationError(ValueError):
@@ -1044,7 +1047,7 @@ class AgentRuntime:
                 )
                 data.termination = AgentTerminationReason.AMBIGUOUS_INTENT
                 data.stop_planning = True
-            else:
+            elif self._config.restrict_tools_to_intent:
                 data.tools = self._tools_for_intent(
                     data.tools,
                     data.domain,
@@ -1308,13 +1311,17 @@ class AgentRuntime:
             _add_uncertainty(data, "MODEL_TOOL_NOT_FOUND")
             return
 
-        effective_arguments = _arguments_with_run_seed(
-            planned.arguments,
-            definition,
-            data.request.seed,
+        effective_arguments = (
+            _arguments_with_run_seed(
+                planned.arguments,
+                definition,
+                data.request.seed,
+            )
+            if self._config.propagate_seed_to_tools
+            else dict(planned.arguments)
         )
         operation_id = _operation_id_from_alias(planned.alias)
-        if operation_id in _ANALYSIS_ID_OPERATIONS:
+        if self._config.require_observed_analysis_ids and operation_id in _ANALYSIS_ID_OPERATIONS:
             analysis_id = _analysis_id_argument(effective_arguments)
             if not analysis_id or analysis_id not in _observed_analysis_ids(data.evidence):
                 latency = (perf_counter() - started) * 1000

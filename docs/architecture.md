@@ -349,7 +349,8 @@ flowchart TD
     O --> D[scorer determinístico]
     D --> E[(evaluation_results)]
     E --> A[EvaluationAnalyzer]
-    A --> IP[improvement-plan-v1 somente leitura]
+    A --> IP[improvement-plan-v1]
+    IP -. --write-patch opt-in .-> PW[PatchWriter allowlisted]
     HR[CSV cegado + chave] --> RI[review-import]
     RI --> RB[bundle redigido calibrated=false]
     RB -. evidência auxiliar .-> A
@@ -374,8 +375,10 @@ continuam sendo pontuadas como desempenho.
 de caso do scorer para resolver trajetória esperada, classificar falhas e agregar recorrência por
 cenário, variante e seed. O módulo distingue decisão incorreta, evidência ausente, tool inesperada,
 ação ausente/incorreta, argumento incorreto, citação inválida, redundância e escrita insegura, além
-de separar falha do agente, efeito da policy e falha de runtime. O plano resultante não é um gate
-nem aplica mudanças automaticamente.
+de separar falha do agente, efeito da policy e falha de runtime. Por padrão o plano é somente
+diagnóstico; com `--write-patch`, `ImprovementPatchWriter` exige checkout limpo, commit compatível e
+aplica apenas receitas determinísticas em caminhos allowlisted. Corpus, goldens, `.env*`, migrações
+e deploy permanecem bloqueados.
 
 `AgentPlanningContext` é uma allowlist derivada de `TrustedRunContext`: IDs de contexto declarados
 no domínio, permissões, escopos e pedido direto. Confirmação, digest, headers e credenciais nunca

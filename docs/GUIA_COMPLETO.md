@@ -2026,8 +2026,10 @@ revisão humana pode ser exportada em CSV cegado.
 O CSV preenchido volta por `review-import`, que valida aliases, notas binárias e a chave da mesma
 avaliação e gera um bundle redigido com `calibrated=false`. Em seguida, `improve` aceita somente
 uma avaliação Groq concluída, sem falha de runtime e compatível com os digests atuais, classificando
-falhas recorrentes e propondo riscos e testes em `improvement-plan-v1`. Nenhum dos comandos altera
-código, banco, golden ou benchmark; revisão humana ou assistida permanece evidência auxiliar.
+falhas recorrentes e propondo riscos e testes em `improvement-plan-v1`. Por padrão nenhum comando
+altera código, banco, golden ou benchmark; com `--write-patch`, a automelhoria local exige checkout
+limpo, commit compatível e aplica somente receitas allowlisted fora de corpus, goldens, `.env*`,
+migrações e deploy. Revisão humana ou assistida permanece evidência auxiliar.
 
 A baseline concluída do primeiro ciclo é `d305451a…`. O piloto `b825a34e…` permanece congelado
 como `partial` e não deve ser retomado após mudanças no commit. Todo merge invalida manifestos

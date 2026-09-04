@@ -135,11 +135,15 @@ def create_variant_runtime(
     """Factory pequena garante que ambas as variantes usam o mesmo AgentRuntime e MCP."""
 
     probe = RecordingProtectedExecutor(executor, shadow_policy)
+    effective_config = runtime_config
+    if variant is EvaluationVariant.PROMPT_ONLY:
+        base_config = runtime_config or AgentRuntimeConfig()
+        effective_config = base_config.model_copy(update={"restrict_tools_to_intent": False})
     runtime = AgentRuntime(
         catalog,
         probe,
         model_gateway,
         recorder=recorder,
-        config=runtime_config,
+        config=effective_config,
     )
     return VariantRuntime(variant, runtime, probe)

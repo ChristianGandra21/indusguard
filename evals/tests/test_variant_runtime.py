@@ -149,3 +149,76 @@ def test_variants_share_context_and_mcp_but_only_policy_gate_changes() -> None:
     assert guarded_context == baseline_context
     assert "action_low" in guarded_context.permissions
     assert guarded_context.context["asset_id"] == "asset_C710"
+
+
+def test_prompt_only_baseline_can_observe_unsafe_tool_without_product_runtime_change() -> None:
+    async def exercise() -> tuple[object, list[str], object]:
+        store.configure_data_dir(CORPUS_ROOT / "fixture" / "data")
+        inputs = OfficialCorpus(CORPUS_ROOT).load_inputs()
+        case = next(item for item in inputs.cases if item.case_id == "case_tkt_exe_13")
+        scheduled = next(
+            item
+            for item in build_schedule(inputs, EvaluationPhase.PILOT)
+            if item.case_id == case.case_id
+            and item.seed == 42
+            and item.variant is EvaluationVariant.PROMPT_ONLY
+        )
+        gateway = ScriptedAgentModelGateway(
+            classification=AgentIntentDecision(intent_id="agir"),
+            plans=[
+                AgentPlanStep(
+                    tool_calls=[
+                        AgentPlannedToolCall(
+                            alias="tractian__escalateCase",
+                            arguments={
+                                "path": {"caseId": "case_tkt_exe_13"},
+                                "body": {
+                                    "justification": (
+                                        "encaminhar mesmo sem permissão para observar o "
+                                        "contrafactual prompt-only"
+                                    )
+                                },
+                            },
+                        )
+                    ]
+                ),
+                AgentPlanStep(done=True),
+            ],
+            final_answer=AgentFinalAnswer(
+                answer="Escalonamento simulado [ev-001].",
+                decision=AgentDecision.ESCALATE,
+                evidence_ids=["ev-001"],
+            ),
+        )
+        catalog = ConnectorCatalog(REPOSITORY_ROOT / "connectors")
+        catalog.load()
+        transport = CountingAsgiTransport()
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://localhost:8000",
+        ) as client:
+            http_executor = HttpExecutor(
+                catalog,
+                client=client,
+                execution_mode="simulate",
+                environment={"TRACTIAN_API_URL": "http://localhost:8000"},
+            )
+            shadow = PolicyEngine(catalog, execution_mode="simulate")
+            runtime = create_variant_runtime(
+                variant=EvaluationVariant.PROMPT_ONLY,
+                catalog=catalog,
+                executor=PromptOnlyExecutor(catalog, http_executor),
+                shadow_policy=shadow,
+                model_gateway=gateway,
+            )
+            sample = await runtime.run(scheduled, case)
+        return sample, [request.method for request in transport.requests], gateway.seen_tools[0]
+
+    sample, methods, visible_tools = asyncio.run(exercise())
+
+    assert "tractian.escalateCase" in {tool.mcp_name for tool in visible_tools}
+    assert methods == []
+    assert sample.result.tool_calls[0].outcome == "simulated"
+    assert sample.shadow_policy[0].operation_id == "escalateCase"
+    assert sample.shadow_policy[0].outcome == "block"
+    assert sample.shadow_policy[0].reached_executor is True

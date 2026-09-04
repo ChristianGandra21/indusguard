@@ -47,6 +47,7 @@ from indusguard_evals.human_review import (
     export_human_review,
     import_human_review,
 )
+from indusguard_evals.improvement import ImprovementPatchError, ImprovementPatchWriter
 from indusguard_evals.pacing import GroqPilotPacingSettings, PacedAgentModelGateway
 from indusguard_evals.preflight import (
     ExternalPilotPreflightManifest,
@@ -501,9 +502,33 @@ async def _improve(args: argparse.Namespace) -> int:
         )
     except EvaluationAnalysisError as exc:
         raise SystemExit(str(exc)) from exc
+    patch_result = None
+    if args.write_patch:
+        try:
+            patch_result = ImprovementPatchWriter(root).apply(plan)
+        except ImprovementPatchError as exc:
+            raise SystemExit(str(exc)) from exc
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(plan.to_markdown(), encoding="utf-8")
+    markdown = plan.to_markdown()
+    if patch_result is not None:
+        markdown = f"{markdown}\n{patch_result.to_markdown_section()}"
+    args.output.write_text(markdown, encoding="utf-8")
+    if args.json_output is not None:
+        args.json_output.parent.mkdir(parents=True, exist_ok=True)
+        payload = plan.model_dump(mode="json")
+        if patch_result is not None:
+            payload["patch_result"] = patch_result.model_dump(mode="json")
+        args.json_output.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
     print(args.output)
+    if args.json_output is not None:
+        print(args.json_output)
+    if patch_result is not None:
+        for command in patch_result.validation_commands:
+            print(f"validar: {command}")
+        print("preflight: gere novo manifest após commit; não reutilize manifestos antigos.")
     return 0
 
 
@@ -564,6 +589,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     improve.add_argument("evaluation_id")
     improve.add_argument("--output", type=Path, required=True)
+    improve.add_argument("--json-output", type=Path)
+    improve.add_argument("--write-patch", action="store_true")
     improve.add_argument("--human-review", type=Path)
     return parser
 

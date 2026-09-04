@@ -3,6 +3,8 @@
 import asyncio
 import csv
 import json
+import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,7 @@ from indusguard_api.connectors import ConnectorCatalog
 from indusguard_api.persistence import Base, SqlAlchemyAgentRunRecorder
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from indusguard_evals.analysis import FailureCategory, ImprovementFinding, ImprovementPlan
 from indusguard_evals.cli import main
 from indusguard_evals.contracts import (
     EvaluationExecutionKind,
@@ -21,6 +24,7 @@ from indusguard_evals.contracts import (
 )
 from indusguard_evals.corpus import OfficialCorpus
 from indusguard_evals.human_review import export_human_review
+from indusguard_evals.improvement import ImprovementPatchError, ImprovementPatchWriter
 from indusguard_evals.repository import EvaluationRepository
 from indusguard_evals.scorer import DeterministicScorer
 from tests.factories import agent_result, evidence, tool_call
@@ -123,6 +127,36 @@ def test_improve_cli_writes_only_the_requested_markdown(tmp_path: Path) -> None:
     assert list(tmp_path.rglob("*.md")) == [output]
 
 
+def test_improve_cli_writes_json_output_for_future_ui(tmp_path: Path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'eval.db'}"
+    evaluation_id, _ = asyncio.run(_seed_evaluation(database_url))
+    output = tmp_path / "artifacts" / "improvement-plan.md"
+    json_output = tmp_path / "artifacts" / "improvement-plan.json"
+
+    assert (
+        main(
+            [
+                "--database-url",
+                database_url,
+                "improve",
+                evaluation_id,
+                "--output",
+                str(output),
+                "--json-output",
+                str(json_output),
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(json_output.read_text(encoding="utf-8"))
+    markdown = output.read_text(encoding="utf-8")
+    assert payload["schema_version"] == "improvement-plan-v1"
+    assert payload["evaluation_id"] == evaluation_id
+    assert evaluation_id in markdown
+    assert "patch_result" not in payload
+
+
 def test_improve_cli_rejects_unknown_and_partial_evaluations(tmp_path: Path) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'eval.db'}"
     partial_id, _ = asyncio.run(_seed_evaluation(database_url, status="partial"))
@@ -184,10 +218,64 @@ def test_improve_cli_rejects_ineligible_evidence_with_stable_codes(
                 evaluation_id,
                 "--output",
                 str(output),
+                "--write-patch",
             ]
         )
 
     assert not output.exists()
+
+
+def test_patch_writer_applies_only_allowlisted_recipes_in_clean_matching_checkout(
+    tmp_path: Path,
+) -> None:
+    root = _seed_patch_repo(tmp_path)
+    head = _git(root, "rev-parse", "HEAD")
+
+    result = ImprovementPatchWriter(root).apply(_patchable_plan(head))
+
+    assert result.schema_version == "improvement-patch-v1"
+    assert {recipe.name for recipe in result.recipes} == {
+        "agent-guidance-recipe",
+        "baseline-contrast-recipe",
+    }
+    assert set(result.changed_files) == {
+        "connectors/tractian/domain.yaml",
+        "evals/src/indusguard_evals/execution.py",
+    }
+    assert "analysisId deve aparecer em evidência observada" in (
+        root / "connectors" / "tractian" / "domain.yaml"
+    ).read_text(encoding="utf-8")
+    assert "restrict_tools_to_intent" in (
+        root / "evals" / "src" / "indusguard_evals" / "execution.py"
+    ).read_text(encoding="utf-8")
+    assert (root / "evals" / "corpus" / "official-v1" / "goldens" / "scenarios.yaml").read_text(
+        encoding="utf-8"
+    ) == "golden: intacto\n"
+
+
+def test_patch_writer_rejects_dirty_checkout_and_commit_mismatch(tmp_path: Path) -> None:
+    dirty = _seed_patch_repo(tmp_path / "dirty")
+    (dirty / "connectors" / "tractian" / "domain.yaml").write_text("dirty\n", encoding="utf-8")
+    with pytest.raises(ImprovementPatchError, match="IMPROVEMENT_PATCH_DIRTY_WORKTREE"):
+        ImprovementPatchWriter(dirty).apply(_patchable_plan(_git(dirty, "rev-parse", "HEAD")))
+
+    mismatch = _seed_patch_repo(tmp_path / "mismatch")
+    with pytest.raises(ImprovementPatchError, match="IMPROVEMENT_PATCH_COMMIT_MISMATCH"):
+        ImprovementPatchWriter(mismatch).apply(_patchable_plan("b" * 40))
+
+
+def test_patch_writer_blocks_forbidden_paths(tmp_path: Path) -> None:
+    root = _seed_patch_repo(tmp_path)
+    writer = ImprovementPatchWriter(root)
+
+    for forbidden in (
+        ".env",
+        "deploy/api.Dockerfile",
+        "evals/corpus/official-v1/inputs.json",
+        "evals/corpus/official-v1/goldens/scenarios.yaml",
+    ):
+        with pytest.raises(ImprovementPatchError, match="IMPROVEMENT_PATCH_PATH_FORBIDDEN"):
+            writer._safe_path(forbidden)
 
 
 def test_review_import_cli_writes_a_redacted_assisted_bundle(tmp_path: Path) -> None:
@@ -236,3 +324,88 @@ def test_review_import_cli_writes_a_redacted_assisted_bundle(tmp_path: Path) -> 
     assert payload["review_method"] == "assisted"
     assert payload["calibrated"] is False
     assert "não copiar esta nota" not in output.read_text(encoding="utf-8")
+
+
+def _seed_patch_repo(root: Path) -> Path:
+    (root / "connectors" / "tractian").mkdir(parents=True)
+    (root / "evals" / "src" / "indusguard_evals").mkdir(parents=True)
+    (root / "evals" / "corpus" / "official-v1" / "goldens").mkdir(parents=True)
+    (root / "deploy").mkdir()
+    (root / "connectors" / "tractian" / "domain.yaml").write_text(
+        "intents:\n"
+        "  - id: agir\n"
+        "    description: Para requestSpecialistAnalysis, nunca use case_id, "
+        "asset_id ou id de baseline como analysisId.\n",
+        encoding="utf-8",
+    )
+    (root / "evals" / "src" / "indusguard_evals" / "execution.py").write_text(
+        "def create_variant_runtime(runtime_config):\n"
+        "    runtime = AgentRuntime(\n"
+        "        catalog,\n"
+        "        probe,\n"
+        "        model_gateway,\n"
+        "        recorder=recorder,\n"
+        "        config=runtime_config,\n"
+        "    )\n",
+        encoding="utf-8",
+    )
+    (root / "evals" / "corpus" / "official-v1" / "goldens" / "scenarios.yaml").write_text(
+        "golden: intacto\n",
+        encoding="utf-8",
+    )
+    (root / ".env").write_text("SECRET=1\n", encoding="utf-8")
+    (root / "deploy" / "api.Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+    _git(root, "init")
+    _git(root, "config", "user.email", "test@example.com")
+    _git(root, "config", "user.name", "Test User")
+    _git(root, "add", ".")
+    _git(root, "commit", "-m", "fixture")
+    return root
+
+
+def _patchable_plan(git_commit: str) -> ImprovementPlan:
+    finding = ImprovementFinding(
+        case_id="case_tkt_exe_13",
+        scenario_id="CEN-14",
+        variant="guarded",
+        seed=42,
+        categories=[
+            FailureCategory.MISSING_EVIDENCE,
+            FailureCategory.EXPECTED_ACTION_MISSING,
+        ],
+        allowed_decisions=["act"],
+        actual_decision="orient",
+        expected_operations=["listAnalyses", "getAnalysis", "getBaseline"],
+        actual_operations=["listAnalyses"],
+        missing_operations=["getAnalysis", "getBaseline"],
+        unexpected_operations=[],
+        expected_action="requestSpecialistAnalysis",
+        actual_actions=[],
+        termination_reason="COMPLETED",
+    )
+    return ImprovementPlan(
+        generated_at=datetime.now(UTC),
+        evaluation_id="22222222-2222-4222-8222-222222222222",
+        phase="pilot",
+        execution_kind="gemini_pilot",
+        dataset_version="official-v1",
+        input_digest="a" * 64,
+        golden_digest="b" * 64,
+        model="gemini:test",
+        git_commit=git_commit,
+        analyzed_runs=1,
+        benchmark_criteria={"prompt_only_more_unsafe_than_guarded": False},
+        findings=[finding],
+        failure_clusters=[],
+        recommendations=[],
+        limitations=[],
+    )
+
+
+def _git(root: Path, *args: str) -> str:
+    return subprocess.check_output(
+        ["git", *args],
+        cwd=root,
+        text=True,
+        stderr=subprocess.DEVNULL,
+    ).strip()
