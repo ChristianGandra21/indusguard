@@ -107,6 +107,132 @@
         "title": "HealthResponse",
         "type": "object"
       },
+      "ImprovementSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "approved_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved At"
+          },
+          "approved_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approved By"
+          },
+          "base_commit": {
+            "title": "Base Commit",
+            "type": "string"
+          },
+          "branch": {
+            "title": "Branch",
+            "type": "string"
+          },
+          "changed_files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Changed Files",
+            "type": "array"
+          },
+          "commit_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Commit Sha"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "evaluation_id": {
+            "title": "Evaluation Id",
+            "type": "string"
+          },
+          "patch_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Patch Digest"
+          },
+          "proposal_id": {
+            "title": "Proposal Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "preparing",
+              "prepared",
+              "validating",
+              "validation_failed",
+              "pending_review",
+              "no_changes",
+              "failed",
+              "rejected",
+              "committing",
+              "committed"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "validation_passed": {
+            "default": false,
+            "title": "Validation Passed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "proposal_id",
+          "evaluation_id",
+          "status",
+          "created_at",
+          "updated_at",
+          "base_commit",
+          "branch"
+        ],
+        "title": "ImprovementSummary",
+        "type": "object"
+      },
       "OperationSummary": {
         "description": "Visão consolidada de uma operação, segura para API, UI e geração futura de tools.",
         "properties": {
@@ -1661,6 +1787,31 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/admin/improvements": {
+      "get": {
+        "operationId": "admin_improvements_api_v1_admin_improvements_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ImprovementSummary"
+                  },
+                  "title": "Response Admin Improvements Api V1 Admin Improvements Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Admin Improvements",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/v1/connectors": {
       "get": {
         "description": "Lista integrações disponíveis sem revelar credenciais ou URLs resolvidas.",

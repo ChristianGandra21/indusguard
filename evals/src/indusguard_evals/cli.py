@@ -24,6 +24,7 @@ from indusguard_api.agent import (
 from indusguard_api.connectors import ConnectorCatalog
 from indusguard_api.executor import HttpExecutor
 from indusguard_api.groq_gateway import GroqAgentModelGateway, GroqAgentSettings
+from indusguard_api.improvements import ImprovementStore
 from indusguard_api.persistence import SqlAlchemyAgentRunRecorder, normalize_database_url
 from indusguard_api.policy import GuardedExecutor, PolicyEngine
 from indusguard_api.settings import Settings
@@ -61,6 +62,7 @@ from indusguard_evals.preflight import (
 from indusguard_evals.report import BenchmarkSummary
 from indusguard_evals.repository import EvaluationRepository
 from indusguard_evals.runner import BenchmarkRunner, EvaluationProgress
+from indusguard_evals.self_improvement import SelfImprovementAgent, SelfImprovementError
 from indusguard_evals.tractian_fixture import store
 
 
@@ -502,6 +504,15 @@ async def _improve(args: argparse.Namespace) -> int:
         )
     except EvaluationAnalysisError as exc:
         raise SystemExit(str(exc)) from exc
+    if args.command == "improvement-prepare":
+        try:
+            record = SelfImprovementAgent(root, ImprovementStore(args.improvements_dir)).prepare(
+                plan
+            )
+        except SelfImprovementError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(record.model_dump_json(indent=2, exclude={"plan", "worktree", "tree_sha"}))
+        return 0
     patch_result = None
     if args.write_patch:
         try:
@@ -592,6 +603,17 @@ def _parser() -> argparse.ArgumentParser:
     improve.add_argument("--json-output", type=Path)
     improve.add_argument("--write-patch", action="store_true")
     improve.add_argument("--human-review", type=Path)
+    prepare = subparsers.add_parser(
+        "improvement-prepare",
+        help="prepara proposta local isolada, sem commit ou PR",
+    )
+    prepare.add_argument("evaluation_id")
+    prepare.add_argument("--human-review", type=Path)
+    prepare.add_argument("--improvements-dir", type=Path, default=settings.improvements_dir)
+    for name in ("validate", "review", "recover"):
+        command = subparsers.add_parser(f"improvement-{name}")
+        command.add_argument("proposal_id")
+        command.add_argument("--improvements-dir", type=Path, default=settings.improvements_dir)
     return parser
 
 
@@ -640,6 +662,23 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_review(args))
     if args.command == "review-import":
         return asyncio.run(_review_import(args))
-    if args.command == "improve":
+    if args.command in {"improvement-validate", "improvement-review", "improvement-recover"}:
+        agent = SelfImprovementAgent(_repository_root(), ImprovementStore(args.improvements_dir))
+        try:
+            if args.command == "improvement-validate":
+                record = agent.validate(args.proposal_id)
+            elif args.command == "improvement-review":
+                record = agent.review(
+                    args.proposal_id,
+                    confirm=input,
+                    interactive=sys.stdin.isatty(),
+                )
+            else:
+                record = agent.recover(args.proposal_id)
+        except (SelfImprovementError, OSError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+        print(record.model_dump_json(indent=2, exclude={"plan", "worktree", "tree_sha"}))
+        return 0 if record.status != "validation_failed" else 1
+    if args.command in {"improve", "improvement-prepare"}:
         return asyncio.run(_improve(args))
     raise AssertionError("comando não tratado")

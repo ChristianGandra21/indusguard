@@ -11,6 +11,7 @@ const navigation = [
   { href: "/connectors", label: "Conectores", icon: Cable },
   { href: "/playground", label: "Playground", icon: Bot },
   { href: "/evaluations", label: "Avaliações", icon: ChartNoAxesCombined },
+  { href: "/improvements", label: "Melhorias", icon: ShieldCheck },
   { href: "/trace", label: "Trace", icon: GitBranch },
 ];
 
@@ -31,7 +32,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </span>
           </Link>
 
-          <nav className="mt-5 grid grid-cols-5 gap-1 pb-1 lg:mt-12 lg:block lg:space-y-1" aria-label="Principal">
+          <nav className="mt-5 grid grid-cols-3 sm:grid-cols-6 gap-1 pb-1 lg:mt-12 lg:block lg:space-y-1" aria-label="Principal">
             {navigation.map((item, index) => {
               const active = item.href === "/" ? pathname === "/" : pathname.startsWith(item.href);
               const Icon = item.icon;

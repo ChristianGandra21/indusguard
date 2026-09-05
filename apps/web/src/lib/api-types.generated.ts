@@ -4,6 +4,23 @@
  */
 
 export interface paths {
+    "/api/v1/admin/improvements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Admin Improvements */
+        get: operations["admin_improvements_api_v1_admin_improvements_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/connectors": {
         parameters: {
             query?: never;
@@ -261,6 +278,49 @@ export interface components {
              * @constant
              */
             status: "healthy";
+        };
+        /** ImprovementSummary */
+        ImprovementSummary: {
+            /** Approved At */
+            approved_at?: string | null;
+            /** Approved By */
+            approved_by?: string | null;
+            /** Base Commit */
+            base_commit: string;
+            /** Branch */
+            branch: string;
+            /** Changed Files */
+            changed_files?: string[];
+            /** Commit Sha */
+            commit_sha?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Error Code */
+            error_code?: string | null;
+            /** Evaluation Id */
+            evaluation_id: string;
+            /** Patch Digest */
+            patch_digest?: string | null;
+            /** Proposal Id */
+            proposal_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "preparing" | "prepared" | "validating" | "validation_failed" | "pending_review" | "no_changes" | "failed" | "rejected" | "committing" | "committed";
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+            /**
+             * Validation Passed
+             * @default false
+             */
+            validation_passed: boolean;
         };
         /**
          * OperationSummary
@@ -844,6 +904,26 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    admin_improvements_api_v1_admin_improvements_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImprovementSummary"][];
+                };
+            };
+        };
+    };
     list_connectors_api_v1_connectors_get: {
         parameters: {
             query?: never;

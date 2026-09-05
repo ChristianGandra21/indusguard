@@ -409,3 +409,21 @@ def _git(root: Path, *args: str) -> str:
         text=True,
         stderr=subprocess.DEVNULL,
     ).strip()
+
+
+def test_prepare_cli_rejects_invalid_eval_before_creating_proposal(tmp_path: Path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'eval.db'}"
+    evaluation_id, _ = asyncio.run(_seed_evaluation(database_url, status="invalid"))
+    directory = tmp_path / "proposals"
+    with pytest.raises(SystemExit, match="EVALUATION_NOT_ANALYZABLE"):
+        main(
+            [
+                "--database-url",
+                database_url,
+                "improvement-prepare",
+                evaluation_id,
+                "--improvements-dir",
+                str(directory),
+            ]
+        )
+    assert not directory.exists()

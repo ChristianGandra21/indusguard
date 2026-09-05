@@ -6,6 +6,7 @@ autenticação, quota, contexto confiável e observabilidade antes de alcançar 
 """
 
 import os
+import secrets
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -30,6 +31,7 @@ from indusguard_api.dashboard import (
     SqlAlchemyDashboardReader,
 )
 from indusguard_api.groq_gateway import GroqAgentModelGateway
+from indusguard_api.improvements import ImprovementStore, ImprovementSummary
 from indusguard_api.observability import Telemetry, mark_span_error, telemetry_from_settings
 from indusguard_api.public_runs import (
     NoOpPublicRunQuota,
@@ -190,6 +192,35 @@ def create_app(
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Accept", "Authorization", "Content-Type"],
     )
+
+    @application.get(
+        f"{current_settings.api_prefix}/admin/improvements",
+        response_model=list[ImprovementSummary],
+        tags=["admin"],
+    )
+    def admin_improvements(request: Request, response: Response) -> list[ImprovementSummary]:
+        token = current_settings.admin_token
+        supplied = request.headers.get("authorization", "")
+        if token is None or not secrets.compare_digest(
+            supplied.encode(), f"Bearer {token.get_secret_value()}".encode()
+        ):
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "code": "ADMIN_UNAUTHORIZED",
+                    "message": "Acesso administrativo necessário.",
+                },
+                headers={"Cache-Control": "no-store", "WWW-Authenticate": "Bearer"},
+            )
+        response.headers["Cache-Control"] = "no-store"
+        try:
+            return ImprovementStore(current_settings.improvements_dir).list_summaries()
+        except (OSError, ValueError):
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "IMPROVEMENTS_UNAVAILABLE", "message": "Auditoria indisponível."},
+                headers={"Cache-Control": "no-store"},
+            ) from None
 
     @application.exception_handler(RequestValidationError)
     async def public_run_validation_error(

@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./.data/indusguard.db"
     persist_runs: bool = True
 
+    # Volume local privado: compartilhado com o CLI; montagem read-only na API.
+    improvements_dir: Path = Path(".data/improvements")
+    admin_token: SecretStr | None = Field(default=None, min_length=32)
+
     # JSONL é a saída local gratuita e auditável. OTLP só é ativado explicitamente; endpoint e
     # headers são segredos operacionais e nunca entram em spans ou respostas.
     trace_jsonl_enabled: bool = True

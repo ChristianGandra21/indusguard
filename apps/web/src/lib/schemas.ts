@@ -322,3 +322,21 @@ export const recentRunSummarySchema: z.ZodType<RecentRunSummary> = z
     completed_at: z.iso.datetime({ offset: true }),
   })
   .strict();
+
+export const improvementSummarySchema = z.object({
+  proposal_id: z.string(),
+  evaluation_id: z.string(),
+  status: z.enum(["preparing", "prepared", "validating", "validation_failed", "pending_review", "no_changes", "failed", "rejected", "committing", "committed"]),
+  created_at: z.string(),
+  updated_at: z.string(),
+  base_commit: z.string(),
+  branch: z.string(),
+  changed_files: z.array(z.string()),
+  patch_digest: z.string().nullable(),
+  validation_passed: z.boolean(),
+  approved_by: z.string().nullable(),
+  approved_at: z.string().nullable(),
+  commit_sha: z.string().nullable(),
+  error_code: z.string().nullable(),
+});
+export type ImprovementSummary = z.infer<typeof improvementSummarySchema>;

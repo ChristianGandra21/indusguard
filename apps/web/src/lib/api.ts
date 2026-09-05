@@ -4,6 +4,7 @@ import {
   connectorSchema,
   evaluationDashboardSchema,
   healthSchema,
+  improvementSummarySchema,
   operationSchema,
   playgroundConfigSchema,
   publicRunResultSchema,
@@ -30,11 +31,12 @@ export class ApiError extends Error {
   }
 }
 
-async function get<Schema extends z.ZodType>(path: string, schema: Schema): Promise<z.output<Schema>> {
+async function get<Schema extends z.ZodType>(path: string, schema: Schema, token?: string): Promise<z.output<Schema>> {
   let response: Response;
   try {
     response = await fetch(`${apiBaseUrl}${path}`, {
-      headers: { Accept: "application/json" },
+      cache: "no-store",
+      headers: { Accept: "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
     });
   } catch {
     throw new ApiError(0, "API_UNREACHABLE", "Não foi possível alcançar o backend IndusGuard.");
@@ -99,6 +101,7 @@ async function post<Schema extends z.ZodType>(
 }
 
 export const api = {
+  improvements: (token: string) => get("/api/v1/admin/improvements", z.array(improvementSummarySchema), token),
   health: () => get("/api/v1/health", healthSchema),
   ready: () => get("/api/v1/ready", readySchema),
   version: () => get("/api/v1/version", versionSchema),

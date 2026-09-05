@@ -2292,3 +2292,11 @@ Se você guardar apenas três ideias, guarde estas:
 1. **OpenAPI descreve capacidade; profile concede permissão.**
 2. **O agente é probabilístico, mas as regras de segurança são determinísticas.**
 3. **O executor recebe operationId, nunca uma URL arbitrária.**
+
+### Ciclo supervisionado com commit humano e painel administrativo
+
+O fluxo `improvement-prepare` → `improvement-validate` → `improvement-review` acrescenta propostas
+persistidas em worktree isolada, validação local e confirmação do diff antes de criar um commit
+local. Não abre PR nem faz push. A tela `/improvements` oferece visibilidade protegida por token
+administrativo e não executa Git. Consulte [Melhoria supervisionada](self-improvement.md) para
+comandos, configuração do volume, critérios de aprovação e limites da receita determinística.
